@@ -13,7 +13,8 @@ view recomputed per run and replaced atomically; nobody edits it by hand.
 Manual events (append-only, read here, written by the console): ``<project>/manual-events.jsonl``,
 one JSON object per line: ``{"event_id", "agency_id", "request_id", "type", "date", "summary",
 "actor"}`` plus optional ``"new_date"`` (extension notices and promised dates) and ``"corrects"``
-(an earlier event_id; both stay listed, the earlier one is marked superseded).
+(an event_id earlier in the journal for the same request; both stay listed, the earlier one is
+marked superseded).
 """
 from __future__ import annotations
 
@@ -160,7 +161,7 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
     _need(today is not None, "timeline_register_as_of")
     requests, matched = [], set()
     items = list((received or {}).get("items", []))
-    superseded = {m.get("corrects") for m in manual if m.get("corrects")}
+
     for row in register.get("requests", []):
         agency, request = row.get("agency_key"), row.get("ledger_request_id")
         events, draft_rows = [], []
@@ -218,15 +219,21 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
                                  "follow-up sent" if followup else "request sent",
                                  {"kind": "outbox_receipt", "key": o.get("idempotency_key"),
                                   "message_id": o.get("message_id")}))
+        manual_by_id = {}
         for m in manual:
             if not _matches(row, m.get("agency_id"), m.get("request_id")):
                 continue
-            matched.add(("manual", m.get("event_id")))
+            event_id, corrects = m.get("event_id"), m.get("corrects")
+            matched.add(("manual", event_id))
+            # Resolve against this row's earlier journal entries, before sorting by date.
+            if corrects and corrects in manual_by_id:
+                manual_by_id[corrects]["superseded"] = True
             new = [m["new_date"]] if _day(m.get("new_date")) else []
-            events.append(_event(_day(m.get("date")), m["type"], m.get("summary") or m["type"],
-                                 {"kind": "manual", "event_id": m.get("event_id"), "actor": m.get("actor")},
-                                 new_dates=new, superseded=m.get("event_id") in superseded,
-                                 corrects=m.get("corrects")))
+            event = _event(_day(m.get("date")), m["type"], m.get("summary") or m["type"],
+                           {"kind": "manual", "event_id": event_id, "actor": m.get("actor")},
+                           new_dates=new, superseded=False, corrects=corrects)
+            manual_by_id[event_id] = event
+            events.append(event)
         events = [e for e in events if e["date"] or e["type"] == "extension notice"]
         events.sort(key=lambda e: (e["date"] or "9999", e["type"], json.dumps(e["source"], sort_keys=True)))
         live = [e for e in events if not e.get("superseded")]
