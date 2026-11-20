@@ -132,6 +132,12 @@ class WriteTests(unittest.TestCase):
         self.root = Path(self.temp.name)
         (self.root / "runs").mkdir(mode=0o700)
 
+    def test_written_outcomes_schema_matches_manifest_reader(self):
+        # A producer header change must not silently break the manifest reader.
+        native_extract.write_private_list(self.root, "schema-drift", [row("EXTRACT_ERROR")])
+        written = json.loads((self.root / "runs" / "extract-schema-drift.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["schema"], ef.OUTCOMES_SCHEMA)
+
     def test_failures_prefix_run_id_cannot_collide_with_manifest_name(self):
         out = native_extract.write_private_list(self.root, "failures-x", [])
         self.assertEqual(out["run_id"], "failures-x")
