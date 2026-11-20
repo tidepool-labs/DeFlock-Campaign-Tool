@@ -14,7 +14,7 @@ import re
 import stat
 import sys
 
-RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
+RULES_VERSION = "2"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX, PACKAGE_MAX = 512 * 1024, 2 * 1024 * 1024
 NUM = r"[0-9]+(?:\.[0-9]+)*"
 CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|"
@@ -22,6 +22,9 @@ CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|
 CITATION = re.compile(rf"{CODE}\s+(?:§§?\s*|[Ss]ections?\s+)?({NUM})(?:\([a-z0-9]+\))*|§§?\s*({NUM})(?:\([a-z0-9]+\))*")
 LABEL = re.compile(r"(?<![\w-])(?:VERIFIED-IN-PACKAGE|UNVERIFIED)(?![\w-])")
 ET_SEQ = re.compile(r"(?i:\bet\s+seq\b)|\bff\.")
+ORDERED_MARKER = r"\d+[.)]"
+LIST_PREFIX = re.compile(rf"^\s*(?:[-+*]|{ORDERED_MARKER})\s+")
+ORDERED_PREFIX = re.compile(rf"^[^\S\n]*{ORDERED_MARKER}(?=[^\S\n]|\Z)")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?<!\bpp\.)(?<!\bp\.)(?<!\bNo\.)(?<!\be\.g\.)(?<!\bi\.e\.)\s+")
 MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 NUMWORD = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty)"
@@ -96,7 +99,7 @@ def lint(text, sections):
         # List items delimit C4 sentence spans even without terminal punctuation.
         spans, span = [], []
         for number, raw in paragraph:
-            if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", raw) and span:
+            if LIST_PREFIX.match(raw) and span:
                 spans.append(span)
                 span = []
             span.append((number, raw))
@@ -124,7 +127,10 @@ def lint(text, sections):
                     hits.append((number, "C1_label_missing"))
                 elif (label.group() == "UNVERIFIED") != (section not in sections):
                     hits.append((number, "C2_label_mismatch"))
-            blanked = CITATION.sub(lambda m: " " * len(m.group()), joined)
+            # Mask only for C4, after finding item boundaries and citation labels.
+            # Preserve the newline and character offsets for diagnostics.
+            blanked = ORDERED_PREFIX.sub(lambda m: " " * len(m.group()), joined)
+            blanked = CITATION.sub(lambda m: " " * len(m.group()), blanked)
             joined = ET_SEQ.sub(lambda m: " " * len(m.group()), blanked)
             start = 0
             for boundary in list(SENTENCE_SPLIT.finditer(joined)) + [None]:
