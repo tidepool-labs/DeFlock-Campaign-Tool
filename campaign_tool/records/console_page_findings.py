@@ -91,14 +91,20 @@ def render_body(doc):
     if doc["state"] != "ok":
         return "".join(out) + console_layout.sources_banner(
             [], ["Findings: unavailable (%s). Nothing is listed; this is not an empty list." % doc["code"]])
-    rows = doc["rows"]
-    out.append('<p role="status">%d finding%s in every review state. Read-only: this page cannot approve, reject or publish anything. '
-               'Only a finding waiting for a human review is decided, on the finding review page.</p>' % (len(rows), "" if len(rows) == 1 else "s"))
-    if doc["broken"]:
+    rows, broken = doc["rows"], doc["broken"]
+    if broken and not rows:
+        summary = "No findings could be listed from the readable agencies. The total for the analysis root is unknown."
+    else:
+        summary = "%d finding%s in every review state." % (len(rows), "" if len(rows) == 1 else "s")
+    out.append('<p role="status">%s Read-only: this page cannot approve, reject or publish anything. '
+               'Only a finding waiting for a human review is decided, on the finding review page.</p>' % summary)
+    if broken:
         out.append('<p class="diag" role="status">%d agency review%s could not be read (finding_inputs_unavailable); its findings are not listed.</p>' % (
-            doc["broken"], "" if doc["broken"] == 1 else "s"))
+            broken, "" if broken == 1 else "s"))
     if not rows:
-        return "".join(out) + "<p>The analysis root holds no findings.</p>"
+        if not broken:
+            out.append("<p>The analysis root holds no findings.</p>")
+        return "".join(out)
     states, holds = {}, {}
     for row in rows:
         states[_state(row)] = states.get(_state(row), 0) + 1
