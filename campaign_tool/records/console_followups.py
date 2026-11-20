@@ -72,8 +72,9 @@ def _row_ok(row):
         return False
     if row["state_source"] == "ok":
         flags = row["flags"]
-        if (row["display_state"] not in STATES or type(flags) is not list or len(set(flags)) != len(flags)
-                or not set(flags) <= FLAGS or not _needs_ok(row["item_needs"])):
+        if (row["display_state"] not in STATES or type(flags) is not list
+                or not all(type(flag) is str and flag in FLAGS for flag in flags)
+                or len(set(flags)) != len(flags) or not _needs_ok(row["item_needs"])):
             return False
     elif row["state_source"] == "unavailable":
         if (row["display_state"], row["flags"], row["item_needs"]) != (None, None, None):
