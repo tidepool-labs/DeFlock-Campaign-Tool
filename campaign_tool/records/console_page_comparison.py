@@ -186,7 +186,12 @@ def render(loaded, agency=None, status=None):
     if not every:
         body.append("<p>This comparison lists no agencies or requests.</p>")
     else:
-        link = lambda a: '<a href="/comparison?agency=%s">%s</a>' % (esc(urllib.parse.quote(a, safe="")), esc(a))
+        status_query = "&" + urllib.parse.urlencode({"status": status}) if status is not None else ""
+
+        def link(a):
+            href = "/comparison?agency=" + urllib.parse.quote(a, safe="") + status_query
+            return '<a href="%s">%s</a>' % (esc(href), esc(a))
+
         body.append(_table("Counts per agency", "Rows per status", ("Agency",) + STATUSES,
                            ["<tr><td>%s</td>%s</tr>" % (link(a), "".join("<td>%d</td>" % every[a][s] for s in STATUSES)) for a in shown]))
         keep = [("agency", agency)] if agency else []
