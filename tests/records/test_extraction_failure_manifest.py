@@ -99,9 +99,11 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(doc["ocr_pages_pending"], [2])
 
     def test_malformed_input_is_refused(self):
-        for bad in (None, [], {"documents": "x"}, {"documents": [1]}):
+        # A missing or unrelated header must not turn an empty list into a clean report.
+        for bad in (None, [], {**body(), "documents": "x"}, body(1),
+                    {"documents": []}, {**body(), "schema": "records-extract-failures-v1"}):
             with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, r"^extract_list_invalid$"):
                     ef.build_manifest(bad)
 
     def test_empty_run(self):
