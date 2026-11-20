@@ -59,7 +59,7 @@ def _project(inventory):
               and type(entry["bytes"]) is not bool and entry["bytes"] >= 0)
         proposal = entry["proposal"]
         state = proposal.get("state")
-        _need(state in _STATES)
+        _need(type(state) is str and state in _STATES)
         receipts = {}
         for member in entry["receipts"]:
             _need(type(member) is dict and sha(member.get("receipt_sha256"))
