@@ -6,7 +6,7 @@ for this analysis root goes through the one DF2007-05 writer (`finding_review.ap
 journal ``entry_id``), and its final outcome is receipted in ``ROOT/.analysis/finding-decisions-applied.jsonl`` (0600,
 append-only, locked, fsynced; entry id, UTC time and outcome only, never a signature, claim or reason).
 
-Outcomes: APPLIED, STALE_FINDING (the finding changed since the page), SIGNATURE_REFUSED, ``REFUSED <code>`` (final);
+Outcomes: APPLIED, STALE_FINDING (the finding changed since the page), SIGNATURE_REFUSED, SUPERSEDED, ``REFUSED <code>`` (final);
 ALREADY (a receipt exists). A missing trust anchor, a busy or unreadable review store and I/O faults are deferred: nothing is
 receipted and the next tick tries again. An unreadable receipt file refuses the whole pass. Nothing here signs, verifies a
 signature itself, sends or publishes.
@@ -15,6 +15,7 @@ import fcntl
 import hashlib
 import json
 import os
+import re
 import stat
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,7 +23,8 @@ from pathlib import Path
 from . import console_journal as cj, finding_review as fr
 
 RECEIPTS = (".analysis", "finding-decisions-applied.jsonl")
-FINAL = {"APPLIED", "STALE_FINDING", "SIGNATURE_REFUSED"}
+FINAL = {"APPLIED", "STALE_FINDING", "SIGNATURE_REFUSED", "SUPERSEDED"}
+REFUSED_OUTCOME = re.compile(r"REFUSED ([a-z][a-z0-9_]*)")
 DEFERRED_CODES = {fr.DEFERRED, fr.UNAVAILABLE, "finding_inputs_unavailable"}
 OUTCOMES = {"finding_stale": "STALE_FINDING", "finding_signature_refused": "SIGNATURE_REFUSED"}
 
@@ -72,7 +74,12 @@ def read_receipts(root):
             row = None
         if not (isinstance(row, dict) and set(row) == {"entry_id", "at", "outcome"} and all(isinstance(v, str) for v in row.values())):
             raise ApplyError("finding_receipts_unreadable")
-        found[row["entry_id"]] = row["outcome"]
+        outcome = row["outcome"]
+        if outcome not in FINAL:
+            refused = REFUSED_OUTCOME.fullmatch(outcome)
+            if refused is None or refused[1] in DEFERRED_CODES:
+                raise ApplyError("finding_receipts_unreadable")
+        found[row["entry_id"]] = outcome
     return found
 
 
