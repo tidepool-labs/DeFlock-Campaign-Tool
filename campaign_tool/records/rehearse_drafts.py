@@ -13,10 +13,14 @@ inside the sandbox. Read-only access to the engine's own shipped code and resour
 is not Python source is recorded once, with its sha256, in ``engine-resources.json``; a later step that reads one more
 fails with ``ENGINE_RESOURCE_UNRECORDED``. Files are created only through the replay's own sandbox writer (new 0600
 files; an existing path is refused). The only child process allowed is the engine's
-own extraction worker on sandbox paths; the only sockets are loopback, and a listening socket binds port 0. Anything
+own extraction worker on sandbox paths, run by this interpreter with the inherited cwd and environment (which only
+the replay's trigger variable may change); ctypes loads no named library and resolves no symbol, and an
+extension module loads only from the interpreter's library or the engine; the only sockets are loopback, and a
+listening socket binds port 0. Anything
 else is refused before it happens and fails the step with ``SANDBOX_BOUNDARY_VIOLATION``.
 """
 
+import _imp
 import argparse
 import contextlib
 from datetime import datetime, timedelta, timezone
@@ -32,11 +36,17 @@ from pathlib import Path
 import site
 import sqlite3
 import stat
+import subprocess
 import sys
 import sysconfig
 import threading
 import urllib.parse
 import zoneinfo
+
+try:
+    import _posixsubprocess
+except ImportError:  # not POSIX
+    _posixsubprocess = None
 
 from . import approval_queue, e2e_proof, followup_clock
 from .run_stages import SANDBOX_MARKER
@@ -65,7 +75,9 @@ _ENGINE = Path(__file__).resolve().parents[2]  # the directory holding campaign_
 _WORKER = ("-B", "-m", "campaign_tool.records.extraction_routes", "_worker")
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 _REFUSED = ("os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "pty.spawn",
-            "smtplib.connect", "smtplib.send", "imaplib.open", "poplib.connect", "ftplib.connect", "urllib.Request")
+            "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function", "smtplib.connect", "smtplib.send",
+            "imaplib.open", "poplib.connect", "ftplib.connect", "urllib.Request")
+_ENV_SETTABLE = ("RECORDS_RUN_TRIGGER",)  # the only variable the real replay sets (and clears) in the window
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
 # The fictional fee letter (one line per text-layer line of the attached PDF); the outputs stage selects a fee reply.
 REPLY_LINES = ("Fictional Synthetic Valley Records Unit", "The duplication fee is $12.00 for the requested records.",
@@ -159,12 +171,17 @@ class _Boundary:
             name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else ""
             if not self.sqlite_allowed(name):
                 self.refuse("sqlite")
-        elif event == "subprocess.Popen":
-            argv = [os.fsdecode(a) for a in args[1]] if isinstance(args[1], (list, tuple)) else []
-            if not (len(argv) in (10, 11) and argv[0] == sys.executable and tuple(argv[1:5]) == _WORKER
-                    and all(self.in_sandbox(argv[i]) for i in (5, 8, 9))
-                    and argv[10:] in ([], ["wrap-image"]) and args[2] is None):
+        elif event == "subprocess.Popen":  # (executable, args, cwd, env)
+            if not self.worker_allowed(args[0], args[1], args[2], args[3]):
                 self.refuse("subprocess")
+        elif event in ("os.putenv", "os.unsetenv"):
+            # A child given env=None inherits this environment, so it is as closed as an env= argument would be.
+            name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes)) else None
+            if name not in _ENV_SETTABLE:
+                self.refuse("environment")
+        elif event == "ctypes.dlopen":
+            if args[0] is not None:  # None is a handle on the already-loaded process (ctypes' own import)
+                self.refuse(event)
         elif event in ("socket.connect", "socket.bind"):
             address = args[1]
             host = address[0] if isinstance(address, tuple) and address else None
@@ -179,6 +196,29 @@ class _Boundary:
                 self.refuse(event)
         elif event in _REFUSED:
             self.refuse(event)
+
+    def worker_allowed(self, executable, argv, cwd, env):
+        """The one child-process decision: the engine's worker run by this very interpreter on sandbox paths, with
+        the inherited cwd (the sandbox root) and the inherited environment. POSIX execs ``executable`` when one is
+        given, not argv[0], so both must name this interpreter."""
+        if not isinstance(executable, (str, bytes, os.PathLike)) or os.fsdecode(executable) != sys.executable:
+            return False
+        argv = [os.fsdecode(a) for a in argv] if isinstance(argv, (list, tuple)) else []
+        return (len(argv) in (10, 11) and argv[0] == sys.executable and tuple(argv[1:5]) == _WORKER
+                and all(self.in_sandbox(argv[i]) for i in (5, 8, 9))
+                and argv[10:] in ([], ["wrap-image"]) and cwd is None and env is None)
+
+    def fork_exec_allowed(self, args):
+        """``_posixsubprocess.fork_exec(argv, executable_list, close_fds, pass_fds, cwd, env, ...)`` raises no audit
+        event of its own (multiprocessing's spawn path calls it directly); it is judged like subprocess.Popen."""
+        candidates = args[1] if len(args) > 5 and isinstance(args[1], (list, tuple)) else ()
+        return len(candidates) == 1 and self.worker_allowed(candidates[0], args[0], args[4], args[5])
+
+    def native_allowed(self, spec):
+        """An extension module is loaded (dlopen, no audit event) only from the engine or the interpreter library."""
+        origin = getattr(spec, "origin", None)
+        real = _real(origin) if isinstance(origin, (str, bytes, os.PathLike)) else None
+        return real is not None and _inside(real, self.engine + self.library)
 
     def in_sandbox(self, path):
         """The one real-path boundary decision for a path the guard must judge (sqlite, worker argv)."""
@@ -228,6 +268,21 @@ class _Boundary:
         self.refuse("open_write" if write else "open_read")
 
 
+def _judged(guard, real, allowed, kind):
+    """``real`` wrapped so that ``allowed(args, kwargs)`` decides first (unchecked by the hook, like a hook check)."""
+    def judged(*args, **kwargs):
+        before = getattr(_REENTRY, "on", False)
+        _REENTRY.on = True
+        try:
+            ok = allowed(args, kwargs)
+        finally:
+            _REENTRY.on = before
+        if not ok:
+            guard.refuse(kind)
+        return real(*args, **kwargs)
+    return judged
+
+
 @contextlib.contextmanager
 def _guarded(sandbox):
     global _GUARD, _HOOKED
@@ -259,9 +314,21 @@ def _guarded(sandbox):
     supports = os.supports_dir_fd
     added = open_at not in supports
     entered = False
+    # Two native entry points raise no audit event; inside the window each is judged before the real call.
+    swaps = [(subprocess, "_fork_exec", lambda args, kwargs: not kwargs and guard.fork_exec_allowed(args),
+              "subprocess"),
+             (_imp, "create_dynamic", lambda args, kwargs: bool(args) and guard.native_allowed(args[0]), "native")]
+    if _posixsubprocess is not None:
+        swaps.insert(0, (_posixsubprocess, "fork_exec", swaps[0][2], "subprocess"))
+    swapped = []
     try:
         os.open = open_at
         supports.add(open_at)  # keep "os.open in os.supports_dir_fd" true while the wrapper is installed
+        for owner, name, allowed, kind in swaps:
+            original = getattr(owner, name, None)
+            if original is not None:
+                swapped.append((owner, name, original))
+                setattr(owner, name, _judged(guard, original, allowed, kind))
         os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
         entered = True
         # the replay worker child inherits that cwd, so it must find the engine by path rather than the old cwd
@@ -270,6 +337,8 @@ def _guarded(sandbox):
         yield guard
     finally:  # every setup failure restores the process state it had already changed
         _GUARD = None
+        for owner, name, original in reversed(swapped):
+            setattr(owner, name, original)
         os.open = real_open
         if added:
             supports.discard(open_at)

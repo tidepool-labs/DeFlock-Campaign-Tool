@@ -565,11 +565,124 @@ class DriverContractTests(_Base):
             return [sys.executable, *driver._WORKER, first, "x", "y", str(self.sandbox / "real"),
                     str(self.sandbox / "real")]
         with driver._guarded(self.sandbox) as guard:
-            guard.check("subprocess.Popen", (None, argv(str(self.sandbox / "real")), None, None))  # control: allowed
+            guard.check("subprocess.Popen", (sys.executable, argv(str(self.sandbox / "real")), None, None))  # allowed
             self.assertEqual(guard.violations, [])
             with self.assertRaises(PermissionError):
                 subprocess.Popen(argv(str(self.sandbox / "dir.lnk")))
         self.assertEqual(guard.violations, ["subprocess"])
+
+    def _worker_argv(self):
+        """A worker argv the boundary accepts on its own (sandbox paths, no wrap-image)."""
+        (self.sandbox / "real").mkdir(exist_ok=True)
+        real = str(self.sandbox / "real")
+        return [sys.executable, *driver._WORKER, real, "x", "y", real, real]
+
+    def _escape(self):
+        """An outside marker path and an outside executable script that creates it when run."""
+        marker = self.root / "escaped.marker"
+        script = self.root / "escape.sh"
+        script.write_text("#!/bin/sh\n: > '%s'\n" % marker, encoding="utf-8")
+        script.chmod(0o700)
+        return marker, script
+
+    def test_c3_worker_argv_with_a_foreign_executable_is_refused(self):
+        """C3: Popen(valid worker argv, executable=<other program>) is refused; the other program never runs.
+
+        Bug caught: only argv was judged, but POSIX execs ``executable`` when given, so a valid worker argv
+        carried an arbitrary outside program past the boundary.
+        """
+        marker, script = self._escape()
+        for executable in (str(script), os.fsencode(script), script):
+            with self.subTest(executable=type(executable).__name__):
+                with driver._guarded(self.sandbox) as guard:
+                    with self.assertRaises(PermissionError):
+                        subprocess.Popen(self._worker_argv(), executable=executable).wait()
+                self.assertEqual(guard.violations, ["subprocess"])
+                self.assertFalse(marker.exists())
+
+    def test_c3_worker_with_a_custom_environment_or_cwd_is_refused(self):
+        """C3: the worker must inherit the environment and the cwd: env= (startup or path hooks) and cwd= refused.
+
+        Bug caught: env was not judged, so PYTHONPATH (a sitecustomize) or PYTHONSTARTUP made the trusted
+        interpreter run outside code beyond the hook.
+        """
+        marker, _ = self._escape()
+        hooks = self.root / "hooks"
+        hooks.mkdir()
+        (hooks / "sitecustomize.py").write_text("open(%r, 'w').close()\n" % str(marker), encoding="utf-8")
+        cases = ({"env": {**os.environ, "PYTHONSTARTUP": str(hooks / "sitecustomize.py")}},
+                 {"env": {**os.environ, "PYTHONPATH": str(hooks)}}, {"env": {}},
+                 {"cwd": str(self.sandbox)})
+        for kwargs in cases:
+            with self.subTest(kwargs=sorted(kwargs)):
+                with driver._guarded(self.sandbox) as guard:
+                    with self.assertRaises(PermissionError):
+                        subprocess.Popen(self._worker_argv(), stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                         **kwargs).wait()
+                self.assertEqual(guard.violations, ["subprocess"])
+                self.assertFalse(marker.exists())
+
+    def test_c3_interpreter_environment_cannot_be_changed_for_an_inherited_child(self):
+        """C3: inside the window only the replay's own trigger variable may be set; PYTHONPATH and LD_PRELOAD not.
+
+        Bug caught: env=None inherits the process environment, so setting it first would carry the same escape.
+        """
+        before = dict(os.environ)
+        with driver._guarded(self.sandbox) as guard:
+            for name in ("PYTHONPATH", "PYTHONHOME", "LD_PRELOAD"):
+                with self.assertRaises(PermissionError):
+                    os.environ[name] = str(self.root)
+                with self.assertRaises(PermissionError):
+                    os.putenv(name, str(self.root))
+            with self.assertRaises(PermissionError):
+                os.environ.pop("PYTHONPATH")  # the guard's own engine path cannot be removed either
+            os.environ["RECORDS_RUN_TRIGGER"] = "arrival"  # control: what the real replay sets and clears
+            del os.environ["RECORDS_RUN_TRIGGER"]
+        self.assertEqual(guard.violations, ["environment"] * 7)
+        self.assertEqual(dict(os.environ), before)
+
+    def test_c3_unaudited_fork_exec_is_judged_like_popen(self):
+        """C3: multiprocessing's spawn path (_posixsubprocess.fork_exec raises no audit event) is refused.
+
+        Bug caught: fork_exec bypassed the subprocess.Popen event, so a spawn/forkserver start ran any program.
+        """
+        import _posixsubprocess
+        from multiprocessing import util
+        marker, script = self._escape()
+        originals = (_posixsubprocess.fork_exec, subprocess._fork_exec)
+        with driver._guarded(self.sandbox) as guard:
+            with self.assertRaises(PermissionError):
+                pid = util.spawnv_passfds(os.fsencode(script), [os.fsencode(script)], [])
+                os.waitpid(pid, 0)
+        self.assertEqual(guard.violations, ["subprocess"])
+        self.assertFalse(marker.exists())
+        self.assertEqual((_posixsubprocess.fork_exec, subprocess._fork_exec), originals)  # restored after
+
+    def test_c3_native_code_loads_and_foreign_calls_are_refused(self):
+        """C3: a named ctypes library, a symbol lookup, the low-level foreign call and an outside extension module
+        are refused.
+
+        Bug caught: native code runs beyond the hook; none of these routes was judged.
+        """
+        import _ctypes
+        import ctypes
+        import importlib.util
+        origin = importlib.util.find_spec("_lzma").origin
+        copied = self.sandbox / os.path.basename(origin)
+        shutil.copyfile(origin, copied)
+        libc = ctypes.CDLL(None)
+        address = ctypes.cast(libc.getpid, ctypes.c_void_p).value
+        actions = ((lambda: ctypes.CDLL("libc.so.6"), "ctypes.dlopen"), (lambda: libc.getppid, "ctypes.dlsym"),
+                   (lambda: _ctypes.call_function(address, ()), "ctypes.call_function"),
+                   (lambda: importlib.util.module_from_spec(importlib.util.spec_from_file_location("_lzma", copied)),
+                    "native"))
+        for action, kind in actions:
+            with self.subTest(kind=kind):
+                with driver._guarded(self.sandbox) as guard:
+                    with self.assertRaises(PermissionError):
+                        action()
+                    ctypes.CDLL(None)  # control: a handle on the already-loaded process (what ctypes' import does)
+                self.assertEqual(guard.violations, [kind])
 
     def test_c4_failed_guard_entry_restores_process_state(self):
         """C4: a sandbox that vanishes before the chdir leaves os.open, cwd, PYTHONPATH and dir_fd support untouched.
