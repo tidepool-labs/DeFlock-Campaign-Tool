@@ -398,7 +398,7 @@ def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", froze
                                "mail": [{"id": m["id"], "received_at": m["received_at"], "subject": _subject(m)}
                                         for m in messages.get(occurrence["original_sha256"], [])]})
         arrival = answer_arrived(deliveries, occurrences, data["mail_messages"], started,
-                                 _text(row.get("determination_at")))
+                                 clock["determination_at"])
         if arrival["state"] == "unknown":
             issues.append("arrival_unresolved")
         asked = row.get("asked") or "Unknown — request scope not recorded"

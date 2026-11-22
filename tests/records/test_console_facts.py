@@ -71,7 +71,7 @@ class Facts(Panel):
         detail = self.live_get("/facts?agency=" + AGENCIES[0])
         self.assertIn(page.LEAD, detail)
         self.assertIn(page.BASIS, detail)
-        self.assertIn('<li>Annual fee: $12,345.67. <a href="/documents?agency=synthetic-mesa-pd">%s page 3</a></li>' % DOC[0][:12], detail)
+        self.assertIn('<li>Annual fee: $12,345.67. %s page 3 — <a href="/document?id=%s">Record details</a></li>' % (DOC[0][:12], DOC[0][:12]), detail)
         self.assertIn("%s page 7" % DOC[1][:12], detail)
         self.assertIn("<li>page_locator_unavailable: 2</li>", detail)
         self.assertIn("<li>statement_too_long: 1</li>", detail)

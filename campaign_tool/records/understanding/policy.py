@@ -39,6 +39,7 @@ def validate_versions(versions):
                 "versions": [], "issues": [{"code": "versions_must_be_list"}], "gaps": []}
     ids = set()
     parsed = []
+    overlap_candidates = []
     for i, v in enumerate(versions):
         if not isinstance(v, dict):
             issues.append({"code": "version_must_be_object", "index": i})
@@ -53,7 +54,10 @@ def validate_versions(versions):
             if not isinstance(v.get(field), str) or not v[field]:
                 issues.append({"code": "required_field_missing", "field": field, "version_id": vid})
         roles = v.get("regulated_roles")
-        if not isinstance(roles, list) or not roles or any(not isinstance(x, str) or not x for x in roles):
+        if isinstance(roles, list) and roles and all(isinstance(role, str) and role for role in roles):
+            role_set = set(roles)
+        else:
+            role_set = None
             issues.append({"code": "regulated_roles_required", "version_id": vid})
         source = _source(v)
         for field in ("source_id", "url", "locator", "verification_status"):
@@ -84,12 +88,14 @@ def validate_versions(versions):
             gaps.append({"code": "issued_date_unknown", "version_id": vid})
         if dates["retrieved_at"] is None:
             gaps.append({"code": "retrieved_date_unknown", "version_id": vid})
-        parsed.append((v, dates, end))
+        parsed.append(v)
+        if role_set is not None:
+            overlap_candidates.append((v, start, end, role_set))
 
     # Different captures of the same source locator are a change signal, not proof
     # that the source or governing rule changed on a particular date.
     captures = {}
-    for v, _, _ in parsed:
+    for v in parsed:
         s = _source(v)
         key = (s.get("source_id"), s.get("url"), s.get("locator"))
         digest = s.get("content_sha256")
@@ -99,18 +105,17 @@ def validate_versions(versions):
         elif digest:
             captures[key] = digest
 
-    for i, (a, ad, ae) in enumerate(parsed):
-        for b, bd, be in parsed[i + 1:]:
+    for i, (a, ast, ae, aroles) in enumerate(overlap_candidates):
+        for b, bst, be, broles in overlap_candidates[i + 1:]:
             # A wildcard agency version intersects every agency-specific version.
             if (a.get("family_id") != b.get("family_id") or
                     a.get("jurisdiction") != b.get("jurisdiction") or
                     (a.get("agency_id") not in (None, "*", b.get("agency_id")) and
                      b.get("agency_id") not in (None, "*", a.get("agency_id")))):
                 continue
-            common_roles = set(a.get("regulated_roles", [])) & set(b.get("regulated_roles", []))
+            common_roles = aroles & broles
             if not common_roles:
                 continue
-            ast, bst = ad["effective_from"], bd["effective_from"]
             # Only assert overlap when both start boundaries are known.
             if ast and bst and (ae is None or bst < ae) and (be is None or ast < be):
                 issues.append({"code": "overlapping_versions", "version_ids":

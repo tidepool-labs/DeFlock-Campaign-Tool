@@ -127,7 +127,8 @@ def disposition(outcome, detail):
 
 def build_manifest(body):
     """Project ``body`` (a ``records-extract-outcomes-v1`` dict); raise ``ValueError`` when malformed."""
-    if not isinstance(body, dict) or not isinstance(body.get("documents"), list):
+    if (not isinstance(body, dict) or body.get("schema") != OUTCOMES_SCHEMA
+            or not isinstance(body.get("documents"), list)):
         raise ValueError("extract_list_invalid")
     run_id = body.get("run_id")
     rows, by_outcome, by_reason = [], {}, {}
