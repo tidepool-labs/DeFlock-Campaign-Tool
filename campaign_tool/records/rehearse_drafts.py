@@ -13,11 +13,19 @@ inside the sandbox. Read-only access to the engine's own shipped code and resour
 is not Python source is recorded once, with its sha256, in ``engine-resources.json``; a later step that reads one more
 fails with ``ENGINE_RESOURCE_UNRECORDED``. Files are created only through the replay's own sandbox writer (new 0600
 files; an existing path is refused). The only child process allowed is the engine's
-own extraction worker on sandbox paths, run by this interpreter with the inherited cwd and environment (which only
-the replay's trigger variable may change); ctypes loads no named library and resolves no symbol, and an
+own extraction worker on sandbox paths, run by this interpreter with the sandbox cwd and an explicit environment;
+ctypes loads no named library and resolves no symbol, and an
 extension module loads only from the interpreter's library or the engine; the only sockets are loopback, and a
 listening socket binds port 0. Anything
 else is refused before it happens and fails the step with ``SANDBOX_BOUNDARY_VIOLATION``.
+
+Threat model
+------------
+The rehearsal guards against accidental out-of-sandbox effects of the trusted stage 13/14 code and its designated worker under ordinary operator configuration. It is not hostile-code isolation. The worker starts with an explicit minimal environment and isolated Python startup; covered filesystem mutations and process launches are refused before effect unless explicitly allowed. The driver never inspects live records; an independent synthetic-fixture check compares stand-in records/state roots before and after the run.
+
+NOTE: Deliberately hostile in-process code (closure extraction, preexec_fn tricks, ctypes memory writes, gc/frame
+walking), and anything not reachable from the stage 13/14 code path or the designated worker under ordinary
+operator configuration, are out of contract.
 """
 
 import _imp
@@ -48,6 +56,13 @@ try:
 except ImportError:  # not POSIX
     _posixsubprocess = None
 
+if __name__ == "__main__" and not __package__ and sys.flags.isolated and sys.argv[1:2] == ["_worker"]:
+    # -I omits the checkout from sys.path. Add only this script's engine, not the cwd or operator paths.
+    sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+    from campaign_tool.records import extraction_routes
+
+    raise SystemExit(extraction_routes.main())
+
 from . import approval_queue, e2e_proof, followup_clock
 from .run_stages import SANDBOX_MARKER
 
@@ -73,12 +88,29 @@ _JOURNAL = Path("approvals") / "queue.jsonl"
 _SEND_LOG = Path("approvals") / "mail-send.jsonl"
 _ENGINE = Path(__file__).resolve().parents[2]  # the directory holding campaign_tool/ and schemas/
 _WORKER = ("-B", "-m", "campaign_tool.records.extraction_routes", "_worker")
+_ISOLATED_WORKER = ("-I", "-B", str(Path(__file__).resolve()), "_worker")
 _LOOPBACK = ("127.0.0.1", "::1", "localhost")
 _REFUSED = ("os.system", "os.exec", "os.posix_spawn", "os.spawn", "os.fork", "os.forkpty", "pty.spawn",
             "ctypes.dlsym", "ctypes.dlsym/handle", "ctypes.call_function", "smtplib.connect", "smtplib.send",
             "imaplib.open", "poplib.connect", "ftplib.connect", "urllib.Request")
 _ENV_SETTABLE = ("RECORDS_RUN_TRIGGER",)  # the only variable the real replay sets (and clears) in the window
 _WRITE_FLAGS = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+# Audit argument indexes: each pair binds a path to its own dir_fd, if present.
+# CPython's os.* events report an omitted dir_fd as -1.
+_CURRENT_DIR_FDS = (None, -1, getattr(os, "AT_FDCWD", -100))
+_MUTATIONS = {
+    "os.rename": ((0, 2), (1, 3)), "os.link": ((0, 2), (1, 3)),
+    "os.symlink": ((1, 2), (0, None)),  # check the link name before interpreting its target
+    "os.remove": ((0, 1),), "os.rmdir": ((0, 1),),
+    "os.mkdir": ((0, 2),), "os.chmod": ((0, 2),), "os.chown": ((0, 3),),
+    "os.truncate": ((0, None),), "os.utime": ((0, 3),),
+    "os.chflags": ((0, None),), "os.lchflags": ((0, None),),
+    "os.setxattr": ((0, None),), "os.removexattr": ((0, None),),
+    "shutil.copyfile": ((0, None), (1, None)), "shutil.copymode": ((0, None), (1, None)),
+    "shutil.copystat": ((0, None), (1, None)), "shutil.copytree": ((0, None), (1, None)),
+    "shutil.move": ((0, None), (1, None)), "shutil.rmtree": ((0, 1),),
+    "shutil.make_archive": ((0, None), (2, None), (3, None)), "shutil.unpack_archive": ((0, None), (1, None)),
+}
 # The fictional fee letter (one line per text-layer line of the attached PDF); the outputs stage selects a fee reply.
 REPLY_LINES = ("Fictional Synthetic Valley Records Unit", "The duplication fee is $12.00 for the requested records.",
                "Please remit payment before we release them.")
@@ -147,6 +179,8 @@ class _Boundary:
 
     def __init__(self, sandbox):
         self.sandbox = _both([str(sandbox)])
+        root = os.path.realpath(sandbox)
+        self.worker_env = {"PATH": os.defpath, "HOME": root, "TMPDIR": root, "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
         self.engine = _both([str(_ENGINE / "campaign_tool"), str(_ENGINE / "schemas")])
         library = {sysconfig.get_paths(vars=v).get(k) for v in (None, {"base": sys.base_prefix,
                                                                         "platbase": sys.base_exec_prefix})
@@ -174,8 +208,11 @@ class _Boundary:
         elif event == "subprocess.Popen":  # (executable, args, cwd, env)
             if not self.worker_allowed(args[0], args[1], args[2], args[3]):
                 self.refuse("subprocess")
+        elif event in _MUTATIONS:
+            if not self.mutation_allowed(event, args):
+                self.refuse(event)
         elif event in ("os.putenv", "os.unsetenv"):
-            # A child given env=None inherits this environment, so it is as closed as an env= argument would be.
+            # Only the replay may set or clear its trigger; nothing can modify the window's startup settings.
             name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes)) else None
             if name not in _ENV_SETTABLE:
                 self.refuse("environment")
@@ -197,22 +234,96 @@ class _Boundary:
         elif event in _REFUSED:
             self.refuse(event)
 
-    def worker_allowed(self, executable, argv, cwd, env):
-        """The one child-process decision: the engine's worker run by this very interpreter on sandbox paths, with
-        the inherited cwd (the sandbox root) and the inherited environment. POSIX execs ``executable`` when one is
-        given, not argv[0], so both must name this interpreter."""
+    def worker_argv(self, executable, argv, prefix):
         if not isinstance(executable, (str, bytes, os.PathLike)) or os.fsdecode(executable) != sys.executable:
             return False
-        argv = [os.fsdecode(a) for a in argv] if isinstance(argv, (list, tuple)) else []
-        return (len(argv) in (10, 11) and argv[0] == sys.executable and tuple(argv[1:5]) == _WORKER
+        if not isinstance(argv, (list, tuple)) or not all(isinstance(a, (str, bytes, os.PathLike)) for a in argv):
+            return False
+        argv = [os.fsdecode(a) for a in argv]
+        return (len(argv) in (10, 11) and argv[0] == sys.executable and tuple(argv[1:5]) == prefix
                 and all(self.in_sandbox(argv[i]) for i in (5, 8, 9))
-                and argv[10:] in ([], ["wrap-image"]) and cwd is None and env is None)
+                and argv[10:] in ([], ["wrap-image"]))
+
+    def worker_allowed(self, executable, argv, cwd, env):
+        """Require the isolated launch contract at both Popen and native exec, never an inherited environment."""
+        return (cwd is None and os.getcwd() == self.worker_env["HOME"] and env == self.worker_env
+                and not any(name.startswith("PYTHON") for name in os.environ)
+                and self.worker_argv(executable, argv, _ISOLATED_WORKER))
 
     def fork_exec_allowed(self, args):
         """``_posixsubprocess.fork_exec(argv, executable_list, close_fds, pass_fds, cwd, env, ...)`` raises no audit
         event of its own (multiprocessing's spawn path calls it directly); it is judged like subprocess.Popen."""
         candidates = args[1] if len(args) > 5 and isinstance(args[1], (list, tuple)) else ()
-        return len(candidates) == 1 and self.worker_allowed(candidates[0], args[0], args[4], args[5])
+        if len(candidates) != 1 or not isinstance(args[5], (list, tuple)):
+            return False
+        expected = [os.fsencode(key + "=" + value) for key, value in self.worker_env.items()]
+        return list(args[5]) == expected and self.worker_allowed(candidates[0], args[0], args[4], self.worker_env)
+
+    def mutation_fd_path(self, fd, *, directory):
+        """Prove the descriptor's current name and identity, not the name it was opened with."""
+        try:
+            held = os.fstat(fd)
+            if directory and not stat.S_ISDIR(held.st_mode):
+                return None
+            target = os.readlink(f"/proc/self/fd/{fd}")
+            if not os.path.isabs(target):
+                return None
+            path = _real(target)
+            root = self.worker_env["HOME"]
+            if path is None or os.path.commonpath((root, path)) != root:
+                return None
+            current = os.stat(path)
+            if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+                return None
+        except (OSError, TypeError, ValueError, OverflowError):
+            return None  # no descriptor provenance, no mutation
+        return path
+
+    def mutation_at(self, name, dir_fd):
+        if dir_fd in _CURRENT_DIR_FDS:
+            return name
+        if os.sep in name or name in (".", ".."):
+            return None
+        parent = self.mutation_fd_path(dir_fd, directory=True)
+        if parent is None:
+            return None
+        return os.path.join(parent, name)
+
+    def mutation_allowed(self, event, args):
+        link_name = ""
+        for index, fd_index in _MUTATIONS[event]:
+            path = args[index]
+            if path is None and ((event == "shutil.make_archive" and index in (2, 3))
+                                 or (event == "shutil.unpack_archive" and index == 1)):
+                path = os.getcwd()
+            if isinstance(path, int):  # fchmod/fchown/ftruncate/etc. report the target descriptor itself
+                path = self.mutation_fd_path(path, directory=False)
+            if not isinstance(path, (str, bytes, os.PathLike)):
+                return False
+            name = os.fsdecode(path)
+            if not name:
+                return False
+            if fd_index is not None:
+                name = self.mutation_at(name, args[fd_index])
+                if name is None:
+                    return False
+            if event == "shutil.make_archive" and index == 3 and not os.path.isabs(name):
+                name = os.path.join(os.fsdecode(args[2]) if args[2] is not None else os.getcwd(), name)
+            elif event == "os.symlink":
+                if index == 1:
+                    link_name = name
+                elif not os.path.isabs(name):
+                    # A relative symlink target is interpreted at the link's resolved parent, not at cwd.
+                    parent = _real(os.path.dirname(link_name) or ".")
+                    if parent is None:
+                        return False
+                    name = os.path.join(parent, name)
+            # A rename or unlink can mutate the directory entry, not the referent of its last symlink.
+            entry = name.rstrip(os.sep)
+            if not self.in_sandbox(name) or (os.path.islink(entry)
+                                             and not self.in_sandbox(os.path.dirname(entry) or ".")):
+                return False
+        return True
 
     def native_allowed(self, spec):
         """An extension module is loaded (dlopen, no audit event) only from the engine or the interpreter library."""
@@ -293,8 +404,18 @@ def _guarded(sandbox):
         raise ValueError("REHEARSAL_ALREADY_RUNNING")
     guard = _Boundary(sandbox)
     previous = os.getcwd()
-    path_env = os.environ.get("PYTHONPATH")
+    previous_env = dict(os.environb)
+    previous_bytecode = sys.dont_write_bytecode
     real_open = os.open
+    real_popen = subprocess.Popen.__init__
+
+    def start_worker(process, args, *positional, **kwargs):
+        # Adapt the existing bounded launch only. Popen's audit event and fork_exec both judge the final request.
+        if (positional or any(key in kwargs for key in ("executable", "cwd", "env", "shell"))
+                or not guard.worker_argv(sys.executable, args, _WORKER)):
+            guard.refuse("subprocess")
+        argv = [sys.executable, *_ISOLATED_WORKER, *args[5:]]
+        return real_popen(process, argv, env=dict(guard.worker_env), **kwargs)
 
     def open_at(path, flags, mode=0o777, *, dir_fd=None):
         # The audit "open" event carries no dir_fd, so a name relative to a held descriptor is judged here, on the
@@ -331,23 +452,25 @@ def _guarded(sandbox):
                 setattr(owner, name, _judged(guard, original, allowed, kind))
         os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
         entered = True
-        # the replay worker child inherits that cwd, so it must find the engine by path rather than the old cwd
-        os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(_ENGINE), path_env)))
+        os.environb.clear()
+        os.environ.update(guard.worker_env)
+        sys.dont_write_bytecode = True  # do not attempt import-cache mutations outside the sandbox
+        subprocess.Popen.__init__ = start_worker
         _GUARD = guard
         yield guard
     finally:  # every setup failure restores the process state it had already changed
         _GUARD = None
+        subprocess.Popen.__init__ = real_popen
+        sys.dont_write_bytecode = previous_bytecode
         for owner, name, original in reversed(swapped):
             setattr(owner, name, original)
         os.open = real_open
         if added:
             supports.discard(open_at)
         if entered:
+            os.environb.clear()
+            os.environb.update(previous_env)
             os.chdir(previous)
-        if path_env is None:
-            os.environ.pop("PYTHONPATH", None)
-        else:
-            os.environ["PYTHONPATH"] = path_env
 
 
 def _resources_record(sandbox, guard):

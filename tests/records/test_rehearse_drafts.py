@@ -41,6 +41,29 @@ def _physical_tmp(test):
     return Path(test.enterContext(tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())))
 
 
+def _stand_in_roots(parent):
+    """Synthetic neighbours, not paths taken from live records configuration."""
+    roots = parent / "records", parent / "state"
+    for root in roots:
+        (root / "nested").mkdir(parents=True, mode=0o700)
+        marker = root / "nested" / "keep.txt"
+        marker.write_bytes(root.name.encode())
+        marker.chmod(0o600)
+    return roots
+
+
+def _fingerprint(root):
+    entries = {}
+    for path in sorted((root, *root.rglob("*"))):
+        mode = path.lstat().st_mode
+        if stat.S_ISLNK(mode):
+            digest = hashlib.sha256(os.fsencode(os.readlink(path))).hexdigest()
+        else:
+            digest = _digest(path) if stat.S_ISREG(mode) else None
+        entries[path.relative_to(root).as_posix()] = (digest, mode)
+    return entries
+
+
 def _expected(sandbox, failure_at=None, code=None, manual=()):
     steps = []
     for name in driver.STEP_NAMES:
@@ -89,9 +112,12 @@ class FullRehearsalTests(_Base):
     def setUpClass(cls):
         cls.tmp = tempfile.TemporaryDirectory(dir=Path(tempfile.gettempdir()).resolve())
         cls.real = Path(cls.tmp.name) / "real"
+        cls.stand_ins = _stand_in_roots(Path(cls.tmp.name))
+        cls.before = tuple(map(_fingerprint, cls.stand_ins))
         out, err = StringIO(), StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             cls.code = driver.main(["--sandbox", str(cls.real)])
+        cls.after = tuple(map(_fingerprint, cls.stand_ins))
         cls.stdout, cls.stderr = out.getvalue(), err.getvalue()
         cls.project = cls.real / "replay" / "project"
         cls.queue = approval_queue.load_queue(str(cls.project))
@@ -304,6 +330,38 @@ class FullRehearsalTests(_Base):
         self.assertEqual(set(seen), {PermissionError})
         self.assertIsNone(driver._GUARD)
         self.assertEqual(self.outside.read_bytes(), b"not sandbox data\n")  # inert after the run
+
+    def test_c3_real_worker_launch_is_isolated_from_operator_environment(self):
+        """C3: inherited interpreter settings must not reach the actual worker launch."""
+        fork_exec, launches = getattr(subprocess, "_fork_exec"), []
+        expected_env = {
+            b"PATH": os.fsencode(os.defpath), b"HOME": os.fsencode(self.sandbox),
+            b"TMPDIR": os.fsencode(self.sandbox), b"LANG": b"C.UTF-8", b"LC_ALL": b"C.UTF-8",
+        }
+
+        def observe(*args):
+            # Stop an unsafe launch before exec, including when this test runs against the old driver.
+            argv, env = args[0], args[5]
+            actual_env = None if env is None else dict(item.split(b"=", 1) for item in env)
+            isolated = os.fsdecode(argv[1]) == "-I"
+            launches.append((actual_env, isolated))
+            if (actual_env, isolated) != (expected_env, True):
+                raise PermissionError("unsafe test worker launch")
+            return fork_exec(*args)
+
+        with mock.patch.dict(os.environ, {"PYTHONPATH": str(self.root)}), \
+                mock.patch.object(subprocess, "_fork_exec", observe):
+            result = driver.run(self.sandbox)
+        self.assertTrue(launches, "the real extraction stage must start its worker")
+        for env, isolated in launches:
+            self.assertIsNotNone(env, "worker must receive an explicit environment")
+            self.assertEqual((env, isolated), (expected_env, True))
+        self.assertEqual(result, _expected(self.sandbox))
+
+    def test_c3_full_rehearsal_preserves_stand_in_roots(self):
+        """C3: independent byte/mode and path preservation across the same successful full run."""
+        self.assertEqual(self.code, 0)
+        self.assertEqual(self.before, self.after)
 
 
 class DriverContractTests(_Base):
@@ -565,7 +623,8 @@ class DriverContractTests(_Base):
             return [sys.executable, *driver._WORKER, first, "x", "y", str(self.sandbox / "real"),
                     str(self.sandbox / "real")]
         with driver._guarded(self.sandbox) as guard:
-            guard.check("subprocess.Popen", (sys.executable, argv(str(self.sandbox / "real")), None, None))  # allowed
+            safe = [sys.executable, *driver._ISOLATED_WORKER, *argv(str(self.sandbox / "real"))[5:]]
+            guard.check("subprocess.Popen", (sys.executable, safe, None, guard.worker_env))  # allowed
             self.assertEqual(guard.violations, [])
             with self.assertRaises(PermissionError):
                 subprocess.Popen(argv(str(self.sandbox / "dir.lnk")))
@@ -601,7 +660,7 @@ class DriverContractTests(_Base):
                 self.assertFalse(marker.exists())
 
     def test_c3_worker_with_a_custom_environment_or_cwd_is_refused(self):
-        """C3: the worker must inherit the environment and the cwd: env= (startup or path hooks) and cwd= refused.
+        """C3: caller-supplied env= or cwd= cannot override the driver's worker startup contract.
 
         Bug caught: env was not judged, so PYTHONPATH (a sitecustomize) or PYTHONSTARTUP made the trusted
         interpreter run outside code beyond the hook.
@@ -635,11 +694,152 @@ class DriverContractTests(_Base):
                 with self.assertRaises(PermissionError):
                     os.putenv(name, str(self.root))
             with self.assertRaises(PermissionError):
-                os.environ.pop("PYTHONPATH")  # the guard's own engine path cannot be removed either
+                os.unsetenv("PYTHONPATH")  # direct unsets are refused even when the key is absent
             os.environ["RECORDS_RUN_TRIGGER"] = "arrival"  # control: what the real replay sets and clears
             del os.environ["RECORDS_RUN_TRIGGER"]
         self.assertEqual(guard.violations, ["environment"] * 7)
         self.assertEqual(dict(os.environ), before)
+
+    def test_c3_minimal_environment_restores_exact_bytes_on_every_exit(self):
+        """C3: replacing the operator environment cannot drop bytes or retain the replay's trigger."""
+        operator = {b"PYTHONPATH": os.fsencode(self.root), b"SYNTHETIC_BYTES": b"\xff=", b"RECORDS_RUN_TRIGGER": b"old"}
+        with mock.patch.dict(os.environb, operator):
+            before = tuple(os.environb.items())
+            for raises in (False, True):
+                with self.subTest(raises=raises):
+                    with ExitStack() as stack:
+                        if raises:
+                            stack.enter_context(self.assertRaisesRegex(RuntimeError, "fixture error"))
+                        with driver._guarded(self.sandbox) as guard:
+                            self.assertEqual(dict(os.environ), guard.worker_env)
+                            os.environ["RECORDS_RUN_TRIGGER"] = "arrival"
+                            if raises:
+                                raise RuntimeError("fixture error")
+                    self.assertEqual(tuple(os.environb.items()), before)
+
+    def test_c3_rename_checks_both_paths_and_directory_descriptors(self):
+        """C3: neither outside rename operand nor descriptor anchoring is allowed before effect."""
+        dst = self.root / "other.txt"
+        dst.write_bytes(b"second marker")
+        inside = self.sandbox / self.outside.name
+        inside.write_bytes(b"inside")
+        fd = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with driver._guarded(self.sandbox) as guard:
+                for src, target, kwargs in (
+                    (self.outside, dst, {}), (self.outside, inside, {}), (inside, dst, {}),
+                    (self.outside.name, "new.txt", {"src_dir_fd": fd}),
+                    (inside, dst.name, {"dst_dir_fd": fd}),
+                ):
+                    with self.assertRaises(PermissionError):
+                        os.rename(src, target, **kwargs)
+                os.rename(inside, "new.txt")
+        finally:
+            os.close(fd)
+        self.assertEqual(guard.violations, ["os.rename"] * 5)
+        self.assertEqual((self.outside.read_bytes(), dst.read_bytes()), (b"not sandbox data\n", b"second marker"))
+        self.assertEqual((self.sandbox / "new.txt").read_bytes(), b"inside")
+
+    def test_c3_proven_dir_fds_allow_approval_creation_and_temp_cleanup(self):
+        """C3: blanket refusal of dir_fd would break the queue writer and secure temporary-tree cleanup."""
+        with driver._guarded(self.sandbox) as guard:
+            fd = os.open(self.sandbox, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                approvals = approval_queue._open_approvals(fd, create=True)
+                assert approvals is not None
+                os.close(approvals)
+            finally:
+                os.close(fd)
+            with tempfile.TemporaryDirectory(dir=self.sandbox) as temporary:
+                temp = Path(temporary)
+                (temp / "nested").mkdir()
+                (temp / "nested" / "file").write_bytes(b"fixture")
+            self.assertFalse(temp.exists())
+        self.assertTrue((self.sandbox / "approvals").is_dir())
+        self.assertEqual(guard.violations, [])
+
+    def test_c3_dir_fd_requires_a_single_name_and_current_directory_identity(self):
+        """C3: a held dir_fd is not authority for a multipiece name or for a directory moved outside."""
+        held = self.sandbox / "held"
+        held.mkdir()
+        (held / "nested").mkdir()
+        fd = os.open(held, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            with driver._guarded(self.sandbox) as guard:
+                for name in ("nested/new", "../new", "..", "."):
+                    with self.subTest(name=name), self.assertRaises(PermissionError):
+                        os.mkdir(name, dir_fd=fd)
+            self.assertEqual(guard.violations, ["os.mkdir"] * 4)
+            self.assertFalse((held / "nested" / "new").exists())
+            self.assertFalse((self.sandbox / "new").exists())
+
+            moved = self.root / "moved"
+            held.rename(moved)  # prepare the stale-descriptor fixture before reentering the guard
+            held.mkdir()  # an old name is not evidence of the held descriptor's current location
+            before = _fingerprint(moved)
+            with driver._guarded(self.sandbox) as guard:
+                with self.assertRaises(PermissionError):
+                    os.mkdir("new", dir_fd=fd)
+            self.assertEqual(guard.violations, ["os.mkdir"])
+            self.assertEqual(_fingerprint(moved), before)
+        finally:
+            os.close(fd)
+
+    def test_c3_direct_file_descriptor_mutation_needs_proven_target(self):
+        """C3: outputs' in-sandbox fchmod works, but a held outside file is not writable by descriptor."""
+        inside = self.sandbox / "fixture"
+        inside.write_bytes(b"fixture")
+        before = self.outside.stat().st_mode
+        with self.outside.open("rb") as outer, inside.open("rb") as inner:
+            with driver._guarded(self.sandbox) as guard:
+                with self.assertRaises(PermissionError):
+                    os.fchmod(outer.fileno(), 0o400)
+                os.fchmod(inner.fileno(), 0o400)
+        self.assertEqual(guard.violations, ["os.chmod"])
+        self.assertEqual(self.outside.stat().st_mode, before)
+        self.assertEqual(stat.S_IMODE(inside.stat().st_mode), 0o400)
+
+    def test_c3_mutations_refused_outside_and_allowed_inside(self):
+        """C3: mutation events protect data and metadata; the same ordinary operations still work inside."""
+        def fixture(root):
+            root.mkdir()
+            for name in ("remove", "chmod", "truncate", "utime"):
+                (root / name).write_bytes(b"keep")
+                (root / name).chmod(0o600)
+            (root / "tree").mkdir()
+
+        def actions(root):
+            return (
+                ("os.remove", lambda: os.remove(root / "remove")),
+                ("os.mkdir", lambda: os.mkdir(root / "new")),
+                ("os.symlink", lambda: os.symlink("chmod", root / "link")),
+                ("os.chmod", lambda: os.chmod(root / "chmod", 0o400)),
+                ("os.truncate", lambda: os.truncate(root / "truncate", 1)),
+                ("os.utime", lambda: os.utime(root / "utime", ns=(1_000_000_000, 1_000_000_000))),
+                ("shutil.rmtree", lambda: shutil.rmtree(root / "tree")),
+            )
+
+        outside, inside = self.root / "markers", self.sandbox / "markers"
+        for root in (outside, inside):
+            fixture(root)
+        before, mtime = _fingerprint(outside), (outside / "utime").stat().st_mtime_ns
+        with driver._guarded(self.sandbox) as guard:
+            for event, action in actions(outside):
+                with self.subTest(event=event), self.assertRaises(PermissionError):
+                    action()
+            for event, action in actions(inside):
+                with self.subTest(event=event):
+                    action()
+        self.assertEqual(guard.violations, [event for event, _ in actions(outside)])
+        self.assertEqual(_fingerprint(outside), before)
+        self.assertEqual((outside / "utime").stat().st_mtime_ns, mtime)
+        self.assertFalse((inside / "remove").exists())
+        self.assertTrue((inside / "new").is_dir())
+        self.assertEqual(os.readlink(inside / "link"), "chmod")
+        self.assertEqual(stat.S_IMODE((inside / "chmod").stat().st_mode), 0o400)
+        self.assertEqual((inside / "truncate").read_bytes(), b"k")
+        self.assertEqual((inside / "utime").stat().st_mtime_ns, 1_000_000_000)
+        self.assertFalse((inside / "tree").exists())
 
     def test_c3_unaudited_fork_exec_is_judged_like_popen(self):
         """C3: multiprocessing's spawn path (_posixsubprocess.fork_exec raises no audit event) is refused.
