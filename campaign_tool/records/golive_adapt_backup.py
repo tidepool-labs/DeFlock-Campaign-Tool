@@ -146,9 +146,7 @@ def _unique_object(pairs):
     return result
 
 
-def _read(path):
-    if path is None:
-        return None
+def _read_with_bytes(path):
     fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW)
     with os.fdopen(fd, "rb") as source:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
@@ -159,7 +157,11 @@ def _read(path):
     value = json.loads(raw, object_pairs_hook=_unique_object)
     if not isinstance(value, dict):
         raise ValueError("expected a JSON object")
-    return value
+    return value, raw
+
+
+def _read(path):
+    return _read_with_bytes(path)[0] if path is not None else None
 
 
 def main(argv=None):
@@ -171,8 +173,17 @@ def main(argv=None):
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args(argv)
     try:
+        restore_bytes = b""
+        if args.restore is not None:
+            restore, restore_bytes = _read_with_bytes(args.restore)
+        else:
+            restore = None
         rows = records(_read(args.backup), _read(args.verify), datetime.now(timezone.utc),
-                       digest_row=_read(args.digest_row), restore_receipt=_read(args.restore))
+                       digest_row=_read(args.digest_row), restore_receipt=restore)
+        if args.restore is not None:
+            rows[1]["source"]["sha256"] = hashlib.sha256(restore_bytes).hexdigest()
+            rows[1]["source"]["name"] = os.path.basename(args.restore)
+            validate(rows[1])
     except (OSError, ValueError, RecursionError):
         print("BACKUP_EVIDENCE_BAD_INPUT", file=sys.stderr)
         return 2

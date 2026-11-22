@@ -153,6 +153,26 @@ class BackupAdapterCliTests(unittest.TestCase):
         path.write_text(json.dumps(value), encoding="utf-8")
         return str(path)
 
+    def test_restore_source_is_actual_input_bytes_and_basename(self):
+        with tempfile.TemporaryDirectory(dir=Path.cwd()) as root:
+            backup = self.fixture(root, "backup.json", REPORT)
+            verify = self.fixture(root, "verify.json", REPORT)
+            pin = self.fixture(root, "pin.json", PIN)
+            for receipt in (RESTORE, RESTORE_V2):
+                with self.subTest(schema=receipt["schema"]):
+                    path = Path(root, "custom-restore.json")
+                    raw = (json.dumps(receipt, indent=2) + "\n").encode()
+                    path.write_bytes(raw)
+                    status, stdout, stderr = self.cli([backup, verify, "--digest-row", pin,
+                                                       "--restore", str(path), "--json"])
+                    self.assertEqual((status, stderr), (0, ""))
+                    rows = json.loads(stdout)
+                    self.assertEqual(rows[0], EXPECTED)
+                    self.assertEqual(rows[1]["source"], {
+                        "schema": receipt["schema"], "sha256": hashlib.sha256(raw).hexdigest(),
+                        "name": path.name,
+                    })
+
     def test_c3_json_and_text(self):
         """C3: Read saved API reports and print complete JSON or the standard text row."""
         with tempfile.TemporaryDirectory(dir=Path.cwd()) as root:
