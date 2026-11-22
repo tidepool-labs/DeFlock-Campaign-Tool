@@ -96,6 +96,9 @@ def _port_closed(port):
         return probe.connect_ex((_HOST, port)) == errno.ECONNREFUSED
 
 
+_JOIN_TIMEOUT = 10
+
+
 def run(sandbox):
     sandbox = Path(os.path.abspath(sandbox))
     result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
@@ -126,10 +129,10 @@ def run(sandbox):
         port = server.server_port
         worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
         try:
-            worker.start()
-        except RuntimeError:
-            return step("start_console", "CONSOLE_START_FAILED")
-        try:
+            try:
+                worker.start()
+            except RuntimeError:
+                return step("start_console", "CONSOLE_START_FAILED")
             step("start_console")
             outputs = []
             for route, heading in _PAGES:
@@ -157,8 +160,11 @@ def run(sandbox):
                 return step("console_check", code)
             step("console_check")
         finally:
-            server.shutdown()
-            worker.join()
+            # Entered before start(): an interrupt raised inside start() can
+            # leave the worker already running. Stop it before the socket closes.
+            if worker.ident is not None:
+                server.shutdown()
+                worker.join(_JOIN_TIMEOUT)
 
     try:
         if _port_closed(port):

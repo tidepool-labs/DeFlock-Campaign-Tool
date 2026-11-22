@@ -8,6 +8,7 @@ import json
 import socket
 import stat
 import tempfile
+import threading
 import unittest
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
@@ -253,6 +254,29 @@ class RehearseConsoleTests(unittest.TestCase):
             result = rehearse_console.run(self.sandbox)
         self.assert_stopped(started=False)
         self.assertEqual(result, self.expected(self.export_step(), ("start_console", "CONSOLE_START_FAILED", [])))
+
+    def test_c2_interrupt_during_thread_start_stops_started_worker(self):
+        """C2: An interrupt raised by Thread.start() after the worker began still stops it before the socket closes."""
+        real_start = rehearse_console.Thread.start
+
+        def start_then_interrupt(thread):
+            real_start(thread)
+            raise KeyboardInterrupt
+
+        with self.listen(), patch.object(rehearse_console.Thread, "start", start_then_interrupt):
+            with self.assertRaises(KeyboardInterrupt):
+                rehearse_console.run(self.sandbox)
+        self.assertEqual(len(self.workers), 1)
+        self.assertFalse(self.workers[0].is_alive())
+        self.assert_stopped()
+
+    def test_c2_failure_before_start_leaves_no_thread(self):
+        """C2: An exception before the worker starts leaves no thread and a closed listener."""
+        before = set(threading.enumerate())
+        with self.listen(), patch.object(rehearse_console.Thread, "start", side_effect=RuntimeError):
+            rehearse_console.run(self.sandbox)
+        self.assertEqual(set(threading.enumerate()), before)
+        self.assert_stopped(started=False)
 
     def test_c1_bind_failure_stops_probes(self):
         """C1: Bind failure is classified at startup, not reported as a failing HTTP page."""
