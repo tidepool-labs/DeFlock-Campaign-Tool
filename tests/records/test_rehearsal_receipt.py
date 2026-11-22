@@ -301,6 +301,68 @@ class ReceiptTests(unittest.TestCase):
                 path.write_text(json.dumps(candidate), encoding="utf-8")
                 self.assert_refused(ValueError, rr.read, path)
 
+    def tampered(self, **changes):
+        """A shape-valid receipt whose recorded verdict contradicts its own facts."""
+        return dict(self.build(), **changes)
+
+    def assert_inconsistent_both_ways(self, receipt):
+        """Writer refuses before creating anything; reader refuses the hand-written file."""
+        with self.assertRaises(ValueError) as caught:
+            rr.write(receipt, self.root)
+        self.assertEqual(str(caught.exception), "qualification_inconsistent")
+        self.assertEqual(sorted(p.name for p in self.root.iterdir()), ["sandbox"])
+        path = self.root / "hand-written.json"
+        path.write_text(json.dumps(receipt), encoding="utf-8")
+        self.assert_refused(ValueError, rr.read, path)
+        path.unlink()
+        with self.assertRaises(ValueError):
+            rr.qualify(receipt, now=NOW)
+
+    def test_c3_refuses_failed_step_recorded_as_qualified(self):
+        """C3: A failed step with result=fail cannot be stored as qualified with no codes."""
+        self.driver["steps"][0]["code"] = "INVENTED_FAILURE"
+        receipt = self.tampered(qualified=True, qualify_codes=[])
+        self.assertEqual(receipt["result"], "fail")
+        self.assert_inconsistent_both_ways(receipt)
+
+    def test_c3_refuses_recorded_codes_that_differ_from_recomputed(self):
+        """C3: A missing, extra or out-of-order code is refused, not trusted."""
+        self.driver["steps"][0]["code"] = "INVENTED_FAILURE"
+        self.driver["manual_steps"] = ["invented manual step"]
+        failed, manual = "REHEARSAL_FAILED_STEP", "REHEARSAL_MANUAL_STEP"
+        for codes in ([failed], [manual], [failed, manual, "REHEARSAL_NO_STEPS"]):
+            with self.subTest(codes=codes):
+                self.assert_inconsistent_both_ways(self.tampered(qualified=False, qualify_codes=codes))
+
+    def test_c3_refuses_extra_code_on_clean_receipt(self):
+        """C3: A recorded fact code with no supporting fact is refused."""
+        self.assert_inconsistent_both_ways(self.tampered(qualified=False, qualify_codes=["REHEARSAL_NO_STEPS"]))
+
+    def test_c3_refuses_unrecorded_manual_step_recorded_as_qualified(self):
+        """C3: A manual step cannot hide behind qualified=true."""
+        self.driver["manual_steps"] = ["invented manual step"]
+        self.assert_inconsistent_both_ways(self.tampered(qualified=True, qualify_codes=[]))
+
+    def test_c3_refuses_unknown_engine_recorded_as_qualified(self):
+        """C3: A receipt with no engine identity cannot claim to be qualified."""
+        self.assert_inconsistent_both_ways(dict(self.build(engine=None), qualified=True, qualify_codes=[]))
+
+    def test_c3_consistent_receipts_round_trip_byte_exact(self):
+        """C3: Honest qualified and unqualified receipts are still accepted unchanged."""
+        self.marker.unlink()
+        for index, receipt in enumerate((self.build(engine=None), self.build())):
+            with self.subTest(qualified=receipt["qualified"]):
+                out = self.root / f"out{index}"
+                out.mkdir()
+                path = rr.write(receipt, out)
+                self.assertEqual(path.read_bytes(),
+                                 (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())
+                self.assertEqual(rr.read(path), receipt)
+        self.marker.touch(mode=0o600)
+        receipt = self.build()
+        self.assertTrue(receipt["qualified"])
+        self.assertEqual(rr.read(rr.write(receipt, self.root)), receipt)
+
 
 class IdentityTests(unittest.TestCase):
     def test_c4_verified_engine_commit(self):

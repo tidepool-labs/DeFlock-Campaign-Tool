@@ -84,6 +84,19 @@ def _parts(path):
 
 
 def _validate(receipt):
+    """Shape checks plus a recomputation of the verdict from the receipt's own facts."""
+    _validate_shape(receipt)
+    # Observed output/sandbox codes cannot be re-observed; keep them as recorded and
+    # recompute everything else with the same qualifier that build() uses. Stale and
+    # target-mismatch are contextual (see qualify), so they are never part of the facts.
+    observations = [code for code in (OUTPUT, SANDBOX) if code in receipt["qualify_codes"]]
+    facts = _qualify(receipt, _timestamp(receipt["finished_at"]), None, 14, observations)[1]
+    recorded = [code for code in receipt["qualify_codes"] if code not in (STALE, MISMATCH)]
+    if recorded != facts:
+        raise ValueError("qualification_inconsistent")
+
+
+def _validate_shape(receipt):
     if not _keys(receipt, _FIELDS) or receipt["schema"] != SCHEMA:
         raise ValueError("invalid rehearsal receipt schema")
     if not _matches(r"[A-Za-z_][A-Za-z_0-9]*", receipt["module"]):
@@ -159,7 +172,7 @@ def build(module, result, sandbox, started_at, finished_at, engine):
         **deepcopy({k: result[k] for k in ("stages", "steps", "manual_steps", "codes")}),
     )
     receipt["result"] = _result(receipt)
-    _validate(receipt)
+    _validate_shape(receipt)
     outputs = [out for step in receipt["steps"] for out in step["outputs"]]
     try:
         fd = os.open(sandbox, _DIR_FLAGS)
@@ -176,6 +189,7 @@ def build(module, result, sandbox, started_at, finished_at, engine):
     receipt["qualified"], receipt["qualify_codes"] = _qualify(
         receipt, _timestamp(receipt["finished_at"]), None, 14, observations,
     )
+    _validate(receipt)
     return receipt
 
 
