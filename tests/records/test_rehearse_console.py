@@ -31,7 +31,7 @@ class RehearseConsoleTests(unittest.TestCase):
         self.sandbox = Path(self.enterContext(tempfile.TemporaryDirectory(dir=Path.cwd()))).resolve()
 
     @contextmanager
-    def listen(self):
+    def listen(self, entered=None):
         build = admin_panel.build_server
         self.servers = []
         self.workers = []
@@ -47,6 +47,8 @@ class RehearseConsoleTests(unittest.TestCase):
 
             def record_worker(poll_interval=0.5):
                 self.workers.append(current_thread())
+                if entered is not None:
+                    entered.set()
                 serve(poll_interval=poll_interval)
 
             server.serve_forever = record_worker
@@ -259,12 +261,15 @@ class RehearseConsoleTests(unittest.TestCase):
     def test_c2_interrupt_during_thread_start_stops_started_worker(self):
         """C2: An interrupt raised by Thread.start() after the worker began still stops it before the socket closes."""
         real_start = rehearse_console.Thread.start
+        entered = threading.Event()
 
         def start_then_interrupt(thread):
             real_start(thread)
+            # Thread.start() does not guarantee the target ran; wait until the worker is in serve_forever.
+            assert entered.wait(5), "worker never entered serve_forever"
             raise KeyboardInterrupt
 
-        with self.listen(), patch.object(rehearse_console.Thread, "start", start_then_interrupt):
+        with self.listen(entered), patch.object(rehearse_console.Thread, "start", start_then_interrupt):
             with self.assertRaises(KeyboardInterrupt):
                 rehearse_console.run(self.sandbox)
         self.assertEqual(len(self.workers), 1)
