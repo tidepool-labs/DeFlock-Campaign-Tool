@@ -970,6 +970,7 @@ _MODULES = {
     "synthetic rehearsal inputs and evidence written only in the caller's private sandbox; no personal-data store": "records.rehearse_monitoring",
     "synthetic stage-15 rehearsal files only under an empty private sandbox; no live records or sends": "records.rehearse_followup_engine",
     "opt-in private health alerts with fixed failure codes only; no record bytes or catalog store": "records.console_check",
+    "synthetic console fixtures and HTTP digests only, under a caller-owned private sandbox": "records.rehearse_console",
     "A6 phone enrolment: public passkey records (no secret material) in the operator's enrolment dir and page response bytes; no catalog store": "records.console_phone_enrol records.phone_enrol",
     "backup archives and keys": "backup backup_crypt",
     "generated drafts, exports and public content, no catalog store": """
@@ -1207,6 +1208,7 @@ MODULE_FUNCTIONS = {
     'records.run_stages': ('backup_adoption_dbs', 'stage_outputs',),
     'records.pipeline_health': ('_put', 'main',),
     'records.console_check': ('_record_alerts',),
+    'records.rehearse_console': ('_build_export', '_get'),
     'records.runner.canonical_mail': ('CanonicalMailBackend._capture_verification',),
     'records.runner.core': ('journal', 'run', 'writer_lock',),
     'records.runner.export_proof': ('ExporterWrapper.prepare', 'export_lock',),
