@@ -116,6 +116,8 @@ def main(argv=None):
                 report = response_items._read_json("response-items.json", dir_fd=directory)
             if not isinstance(report, dict) or report.get("schema") != item_tiers.SCHEMA_IN:
                 return _refuse("response_sheet_input")
+            if report.get("run_id") != run_id:
+                return _refuse("response_sheet_input")
             requests = report.get("requests")
             if not isinstance(requests, list) or any(
                 not isinstance(r, dict) or not isinstance(r.get("asks"), list) for r in requests

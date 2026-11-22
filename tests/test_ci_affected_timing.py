@@ -2,6 +2,7 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import types
@@ -44,8 +45,28 @@ class TimingSummaryTest(unittest.TestCase):
                 mock.patch.object(ci_affected, 'partition', return_value=[[name]]):
             code = ci_affected.main(['--tier', 'full'])
         lines = out.getvalue().splitlines()
-        self.assertEqual((code, len(lines), json.loads(lines[0])['selected_modules']), (1, 2, [name]))
-        self.assertEqual([m for m, _ in json.loads(lines[1])['slowest']], ['unittest.loader'])
+        self.assertEqual((code, json.loads(lines[0])['selected_modules']), (1, [name]))
+        self.assertEqual([m for m, _ in json.loads(lines[-1])['slowest']], ['unittest.loader'])
+
+    def test_stalled_module_dumps_stack_and_exits_without_a_green_record(self):
+        # Exercise the actual watchdog in a disposable interpreter with a
+        # longer parent deadline; never arm an exit timer in this test runner.
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'stalled_fixture.py').write_text(
+                'import time, unittest\nclass Case(unittest.TestCase):\n'
+                '    def test_stalled(self):\n        time.sleep(30)\n')
+            driver = root / 'driver.py'
+            driver.write_text(f'import sys\nsys.path.insert(0, {str(ci_affected.ROOT)!r})\n'
+                              'from tools import ci_affected\nci_affected.MODULE_TIMEOUT = 1\n'
+                              'raise SystemExit(ci_affected.run_modules(["stalled_fixture"], "receipt"))\n')
+            child = subprocess.run([sys.executable, str(driver)], cwd=root, timeout=10,
+                                   text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+            self.assertFalse((root / 'receipt').exists(), child.stdout)
+        self.assertEqual(child.returncode, 1, child.stdout)
+        self.assertRegex(child.stdout, r'CI_MODULE_START stalled_fixture phase=run started=\S+ timeout_seconds=1')
+        self.assertRegex(child.stdout, r'Timeout .*\nThread ')
+        self.assertIn('stalled_fixture.py", line 4 in test_stalled', child.stdout)
 
     def test_skip_is_timed_and_passes(self):
         code, lines = run([synthetic('synthetic.skip', lambda self: self.skipTest('n/a'))])
@@ -65,3 +86,84 @@ class TimingSummaryTest(unittest.TestCase):
             for path, size in zip(files.values(), (50, 40, 30, 20, 10)):
                 path.write_text('x' * size)
             self.assertEqual(ci_affected.partition(set(files), files, 2), [['a', 'd', 'e'], ['b', 'c']])
+
+
+class ModuleFixtureTest(unittest.TestCase):
+    hooks = ('setUpModule', 'setUpClass', 'tearDownClass', 'tearDownModule')
+
+    def setUp(self):
+        self.events = []
+
+    def _module(self, label, *, fail_test=False, fail_setup=False):
+        name = f'tests.synthetic_ci_affected_fixture_{label}'
+        module = types.ModuleType(name)
+        events = self.events
+
+        def setUpModule():
+            events.append((label, 'setUpModule'))
+            if fail_setup:
+                raise RuntimeError('synthetic module setup error')
+
+        def tearDownModule():
+            events.append((label, 'tearDownModule'))
+            print(f'fixture teardown {name}')
+
+        class Case(unittest.TestCase):
+            @classmethod
+            def setUpClass(cls):
+                events.append((label, 'setUpClass'))
+
+            @classmethod
+            def tearDownClass(cls):
+                events.append((label, 'tearDownClass'))
+
+            def test_body(self):
+                if fail_test:
+                    self.fail('synthetic test failure')
+
+        Case.__module__ = name
+        module.__dict__.update(Case=Case, setUpModule=setUpModule, tearDownModule=tearDownModule)
+        self.assertNotIn(name, sys.modules)
+        sys.modules[name] = module
+        self.addCleanup(sys.modules.pop, name)
+        self.enterContext(mock.patch.object(sys.modules['tests'], name.split('.')[-1], module, create=True))
+        return name
+
+    def _run_modules(self, *, failfast=False, fail_test=False, fail_setup=False):
+        names = [self._module('A', fail_test=fail_test, fail_setup=fail_setup), self._module('B')]
+        result = unittest.TestResult()
+        result.failfast = failfast
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            ci_affected.ModuleSuite(names, ci_affected.load_modules(names)).run(result)
+        return result, names, out.getvalue().splitlines()
+
+    def _lifecycle(self, label):
+        return [(label, hook) for hook in self.hooks]
+
+    def test_module_fixtures_run_once_in_order_inside_watchdog_window(self):
+        # A child acting as a top-level suite tears A down again on entry to B.
+        # Deferring teardown until after the window also loses watchdog attribution.
+        result, (name, _), lines = self._run_modules()
+        self.assertTrue(result.wasSuccessful())
+        self.assertEqual(result.testsRun, 2)
+        self.assertEqual(self.events.count(('A', 'tearDownModule')), 1, 'A tearDownModule count')
+        self.assertEqual(self.events, self._lifecycle('A') + self._lifecycle('B'))
+        start = next(i for i, line in enumerate(lines) if line.startswith(f'CI_MODULE_START {name} phase=run '))
+        end = next(i for i, line in enumerate(lines) if line.startswith(f'CI_MODULE_END {name} phase=run '))
+        self.assertIn(f'fixture teardown {name}', lines[start + 1:end])
+
+    def test_failfast_tears_down_failing_module_without_starting_next(self):
+        # Stopping after a test failure must not skip the active module's teardown.
+        result, _, _ = self._run_modules(failfast=True, fail_test=True)
+        self.assertFalse(result.wasSuccessful())
+        self.assertEqual((result.testsRun, len(result.failures), len(result.errors)), (1, 1, 0))
+        self.assertEqual(self.events, self._lifecycle('A'))
+
+    def test_failed_module_setup_does_not_tear_down_or_block_next_module(self):
+        # Flush only initialized fixtures and don't carry A's setup failure into B.
+        result, _, _ = self._run_modules(fail_setup=True)
+        self.assertFalse(result.wasSuccessful())
+        self.assertEqual((result.testsRun, len(result.failures), len(result.errors)), (1, 0, 1))
+        self.assertIn('RuntimeError: synthetic module setup error', result.errors[0][1])
+        self.assertEqual(self.events, [('A', 'setUpModule')] + self._lifecycle('B'))

@@ -129,12 +129,15 @@ def _matrix(agencies):
 
 def _detail(a):
     docs = esc("/documents?agency=" + urllib.parse.quote(a["agency_id"], safe=""))
-    out = ["<h2>%s</h2>" % esc(_clean(a["agency"])), '<p>Agency id: %s. <a href="/facts">All agencies</a></p>' % esc(a["agency_id"])]
+    out = ["<h2>%s</h2>" % esc(_clean(a["agency"])),
+           '<p>Agency id: %s. <a href="/facts">All agencies</a> · <a href="%s">Agency library</a></p>' % (esc(a["agency_id"]), docs)]
     for key, (label, _) in fs.FIELDS.items():
         items = []
         for s in a["fields"][key]["statements"]:
             text, c = _clean(s["quote"]), s["citation"]
-            items.append('<li>%s%s <a href="%s">%s page %d</a></li>' % (esc(text[:CAP]), " (cut)" if len(text) > CAP else "", docs, c["document_sha256"][:12], c["page"]))
+            prefix = c["document_sha256"][:12]
+            items.append('<li>%s%s %s page %d — <a href="/document?id=%s">Record details</a></li>' % (
+                esc(text[:CAP]), " (cut)" if len(text) > CAP else "", prefix, c["page"], prefix))
         out.append("<h3>%s</h3>%s" % (esc(label), "<ul>%s</ul>" % "".join(items) if items else "<p>not found</p>"))
     gaps = sorted(collections.Counter(g["code"] for g in a["gaps"]).items())
     out.append("<h3>Coverage gaps</h3>" + ("<ul>%s</ul>" % "".join("<li>%s: %d</li>" % (esc(c), n) for c, n in gaps) if gaps else "<p>none recorded</p>"))

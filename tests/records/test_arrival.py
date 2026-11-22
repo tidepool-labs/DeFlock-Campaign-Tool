@@ -209,17 +209,43 @@ class PendingConsumeTests(ArrivalCase):
 
     def test_crash_between_moves_is_recovered_without_loss(self):
         names = sorted(self.stamps(3))
-        done = self.runtime / "arrival" / "done"
+        expected = arrival.pending(self.runtime)
+        arrival_dir = self.runtime / "arrival"
+        done = arrival_dir / "done"
         batch = done / RUN_1
         batch.mkdir(mode=0o700)
         (done / f".{RUN_1}.claim").write_text(json.dumps(names))
         os.chmod(done / f".{RUN_1}.claim", 0o600)
-        os.rename(self.runtime / "arrival" / names[0], batch / names[0])  # crashed after one move
-        self.stamps(1)  # a new arrival must not join the claimed batch
+        os.rename(arrival_dir / names[0], batch / names[0])  # crashed after one move
+        late = arrival.stamp(self.runtime, "drop-folder", REF_B)  # must not join the claimed batch
         again = arrival.consume(self.runtime, RUN_1)
-        self.assertEqual(len(again), 3)
+        self.assertEqual(again, expected)
         self.assertEqual(sorted(os.listdir(batch)), names)
-        self.assertEqual(len(arrival.pending(self.runtime)), 1)
+        self.assertEqual(sorted(p.name for p in arrival_dir.iterdir() if p.is_file()), [late])
+
+    def test_duplicate_claim_is_refused_before_any_stamp_moves(self):
+        moved, *queued = self.stamps(3)
+        arrival_dir = self.runtime / "arrival"
+        done = arrival_dir / "done"
+        batch = done / RUN_1
+        batch.mkdir(mode=0o700)
+        os.rename(arrival_dir / moved, batch / moved)
+        manifest = done / f".{RUN_1}.claim"
+        # A replay that checks duplicates during the move loop would move queued first.
+        manifest.write_text(json.dumps([moved, *queued, moved]))
+        manifest.chmod(0o600)
+
+        def snapshot():
+            return {p.relative_to(arrival_dir): p.read_bytes() if p.is_file() else None
+                    for p in arrival_dir.rglob("*")}
+
+        before = snapshot()
+        with mock.patch.object(arrival.os, "rename", wraps=os.rename) as rename:
+            with self.assertRaises(arrival.ArrivalError) as caught:
+                arrival.consume(self.runtime, RUN_1)
+            self.assertEqual(caught.exception.code, "ARRIVAL_STATE_UNSAFE")
+            rename.assert_not_called()
+        self.assertEqual(snapshot(), before)
 
     def test_invalid_run_id_and_traversal_are_refused(self):
         for run_id in ("", "run_1", "../../etc", RUN_1 + "/x", None, "run_20261104T180000Z_0123ABCD"):
