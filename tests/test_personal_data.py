@@ -958,7 +958,7 @@ _MODULES = {
         records.analysis_export records.outcomes.analysis_ready records.outcomes.comparison records.outcomes.received_items records.outcomes.release_links records.outcomes.response_items records.outcomes.factsheets records.outcomes.gap_proposals records.outcomes.reading records.outcomes.register records.outcomes.timeline
         records.outcomes.textstate records.outcomes.unmatched records.pipeline_health records.project_init records.portal.download records.portal.engine records.portal.ledger_adapter
         records.portal.store records.console_apply records.console_journal records.console_manual_events records.console_phone records.public_packets records.packet_changes records.public_updates records.publish records.queue_runtime records.recovery.backup
-        records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.review_bundle records.review_retirement
+        records.recovery.backup_v2 records.recovery.publication records.quiescence_audit records.records_backup records.rehearsal_receipt records.review_bundle records.review_retirement
         records.holds records.campaign_readiness
         records.run records.run_orchestrator records.run_stages records.runner.canonical_mail records.runner.core
         records.runner.export_proof records.runtime records.schedule records.systemd_control records.unattended
@@ -1183,6 +1183,7 @@ MODULE_FUNCTIONS = {
         'PublicationOutbox.__init__', 'PublicationOutbox.execute', 'PublicationOutbox.lock',
         'atomic_public_artifact'
     ),
+    'records.rehearsal_receipt': ('write',),  # Synthetic receipt only, written privately to an explicit output directory.
     'records.review_bundle': ('_locked', '_new',),
     'records.review_retirement': ('arm', 'finish', 'start',),
     'records.run': (
