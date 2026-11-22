@@ -217,11 +217,24 @@ class ModuleSuite(unittest.TestSuite):
         self.loaded = loaded
 
     def run(self, result, debug=False):
-        for name in self.names:
-            if result.shouldStop:
-                break
-            with module_window(name, 'run'):
-                self.loaded[name].run(result, debug)
+        # PR #1823 review t_d8bf528c: run children as nested suites so they
+        # don't tear down fixtures on their own. Finish each module's fixtures
+        # inside its watchdog window and clear the class before the next module.
+        top_level = not getattr(result, '_testRunEntered', False)
+        if top_level:
+            result._testRunEntered = True
+        try:
+            for name in self.names:
+                if result.shouldStop:
+                    break
+                with module_window(name, 'run'):
+                    self.loaded[name].run(result, debug)
+                    self._tearDownPreviousClass(None, result)
+                    self._handleModuleTearDown(result)
+                    result._previousTestClass = None
+        finally:
+            if top_level:
+                result._testRunEntered = False
         return result
 
 
