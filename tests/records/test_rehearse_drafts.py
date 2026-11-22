@@ -8,8 +8,10 @@ import os
 from pathlib import Path
 import shutil
 import socket
+import sqlite3
 import stat
 import subprocess
+import sys
 import tempfile
 import unittest
 from unittest import mock
@@ -493,6 +495,81 @@ class DriverContractTests(_Base):
                 open("link.txt", "rb")  # and the same link reached by a relative name
         self.assertEqual(guard.violations, ["open_read", "open_write", "open_read"])
         self.assertEqual(self.outside.read_text(encoding="utf-8"), "not sandbox data\n")
+
+    def _outside_db(self):
+        """An outside SQLite file with one empty table, and a symlink to it inside the sandbox."""
+        db = self.root / "outside.db"
+        connection = sqlite3.connect(str(db))
+        connection.execute("create table t (v integer)")
+        connection.commit()
+        connection.close()
+        (self.sandbox / "db.lnk").symlink_to(db)
+        return db
+
+    @staticmethod
+    def _rows(db):
+        connection = sqlite3.connect(str(db))
+        try:
+            return connection.execute("select count(*) from t").fetchone()[0]
+        finally:
+            connection.close()
+
+    def test_c3_sqlite_symlink_to_an_outside_database_is_refused(self):
+        """C3: sqlite3.connect decides on the real path: plain, file: URI and percent-encoded forms are refused.
+
+        Bug caught: the sqlite branch judged the lexical name, so a sandbox symlink to an outside database passed
+        and a write landed outside with no violation.
+        """
+        db = self._outside_db()
+        link = str(self.sandbox / "db.lnk")
+        encoded = "file:" + link.replace("/", "%2F").replace("db.lnk", "db%2Elnk") + "?mode=rw"
+        cases = ((link, {}), ("file:%s?mode=rw" % link, {"uri": True}), (encoded, {"uri": True}),
+                 ("file:db.lnk?mode=rw", {"uri": True}), ("db.lnk", {}))
+        for name, kwargs in cases:
+            with self.subTest(name=name):
+                with driver._guarded(self.sandbox) as guard:
+                    with self.assertRaises(PermissionError):
+                        connection = sqlite3.connect(name, **kwargs)
+                        connection.execute("insert into t values (1)")
+                        connection.commit()
+                self.assertEqual(guard.violations, ["sqlite"])
+                self.assertEqual(self._rows(db), 0)
+
+    def test_c3_sqlite_readonly_symlink_uri_is_refused(self):
+        """C3: a read-only file: URI through the symlink is refused too (the boundary covers reads)."""
+        self._outside_db()
+        with driver._guarded(self.sandbox) as guard:
+            with self.assertRaises(PermissionError):
+                sqlite3.connect("file:%s?mode=ro" % (self.sandbox / "db.lnk"), uri=True)
+        self.assertEqual(guard.violations, ["sqlite"])
+
+    def test_c3_sqlite_memory_and_sandbox_files_are_still_allowed(self):
+        """C3: in-memory databases (both spellings) and a real file inside the sandbox are not refused."""
+        with driver._guarded(self.sandbox) as guard:
+            sqlite3.connect(":memory:").close()
+            sqlite3.connect("file::memory:?mode=memory", uri=True).close()
+            sqlite3.connect(str(self.sandbox / "own.db")).close()
+        self.assertEqual(guard.violations, [])
+
+    def test_c3_worker_argv_symlink_to_an_outside_directory_is_refused(self):
+        """C3: a worker argv path that is a sandbox symlink to an outside directory is refused before exec.
+
+        Bug caught: argv 5/8/9 were judged lexically, so the unaudited child could read and write outside.
+        """
+        outside_dir = self.root / "outside_dir"
+        outside_dir.mkdir()
+        (self.sandbox / "real").mkdir()
+        (self.sandbox / "dir.lnk").symlink_to(outside_dir, target_is_directory=True)
+
+        def argv(first):
+            return [sys.executable, *driver._WORKER, first, "x", "y", str(self.sandbox / "real"),
+                    str(self.sandbox / "real")]
+        with driver._guarded(self.sandbox) as guard:
+            guard.check("subprocess.Popen", (None, argv(str(self.sandbox / "real")), None, None))  # control: allowed
+            self.assertEqual(guard.violations, [])
+            with self.assertRaises(PermissionError):
+                subprocess.Popen(argv(str(self.sandbox / "dir.lnk")))
+        self.assertEqual(guard.violations, ["subprocess"])
 
     def test_c4_failed_guard_entry_restores_process_state(self):
         """C4: a sandbox that vanishes before the chdir leaves os.open, cwd, PYTHONPATH and dir_fd support untouched.

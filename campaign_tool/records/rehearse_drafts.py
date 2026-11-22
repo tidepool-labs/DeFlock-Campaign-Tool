@@ -35,6 +35,7 @@ import stat
 import sys
 import sysconfig
 import threading
+import urllib.parse
 import zoneinfo
 
 from . import approval_queue, e2e_proof, followup_clock
@@ -114,6 +115,16 @@ def _inside(path, roots):
     return any(path == root or path.startswith(root.rstrip(os.sep) + os.sep) for root in roots)
 
 
+def _real(path):
+    """The one decision path: absolute and symlink-free, or None when a relative name climbs with '..'."""
+    path = os.fsdecode(path)
+    if not os.path.isabs(path):
+        if ".." in path.split(os.sep):
+            return None
+        path = os.path.join(os.getcwd(), path)  # the guarded window runs with cwd at the sandbox root
+    return os.path.realpath(path)
+
+
 def _both(paths):
     return tuple(sorted({form for p in paths if p for form in (os.path.normpath(os.path.abspath(p)),
                                                               os.path.realpath(p))}))
@@ -146,13 +157,12 @@ class _Boundary:
             self.check_open(*args[:3])
         elif event == "sqlite3.connect":
             name = os.fsdecode(args[0]) if isinstance(args[0], (str, bytes, os.PathLike)) else ""
-            name = name[5:].split("?", 1)[0] if name.startswith("file:") else name
-            if name != ":memory:" and not _inside(os.path.normpath(os.path.abspath(name)), self.sandbox):
+            if not self.sqlite_allowed(name):
                 self.refuse("sqlite")
         elif event == "subprocess.Popen":
             argv = [os.fsdecode(a) for a in args[1]] if isinstance(args[1], (list, tuple)) else []
             if not (len(argv) in (10, 11) and argv[0] == sys.executable and tuple(argv[1:5]) == _WORKER
-                    and all(_inside(os.path.normpath(argv[i]), self.sandbox) for i in (5, 8, 9))
+                    and all(self.in_sandbox(argv[i]) for i in (5, 8, 9))
                     and argv[10:] in ([], ["wrap-image"]) and args[2] is None):
                 self.refuse("subprocess")
         elif event in ("socket.connect", "socket.bind"):
@@ -170,17 +180,35 @@ class _Boundary:
         elif event in _REFUSED:
             self.refuse(event)
 
+    def in_sandbox(self, path):
+        """The one real-path boundary decision for a path the guard must judge (sqlite, worker argv)."""
+        real = _real(path)
+        return real is not None and _inside(real, self.sandbox)
+
+    def sqlite_allowed(self, name):
+        if name == "":  # unchanged behaviour: the cwd (the sandbox root) is judged lexically
+            return _inside(os.path.normpath(os.path.abspath(name)), self.sandbox)
+        if name == ":memory:":
+            return True
+        if name.startswith("file:"):
+            split = urllib.parse.urlsplit(name)
+            if split.netloc not in ("", "localhost"):
+                return False
+            path = urllib.parse.unquote(split.path)
+            if path in ("", ":memory:") and "memory" in urllib.parse.parse_qs(split.query).get("mode", []):
+                return True
+            return self.in_sandbox(path)
+        return self.in_sandbox(name)
+
     def check_open(self, path, mode, flags):
         if not isinstance(path, (str, bytes, os.PathLike)):
             return  # an already-open descriptor
-        path = os.fsdecode(path)
         flags = flags if type(flags) is int else 0
         write = bool(flags & _WRITE_FLAGS) or (isinstance(mode, str) and any(c in mode for c in "wax+"))
-        if not os.path.isabs(path):
-            if ".." in path.split(os.sep):
-                self.refuse("open_write" if write else "open_read")
-            path = os.path.join(os.getcwd(), path)  # the guarded window runs with cwd at the sandbox root
-        for candidate in (os.path.realpath(path),):  # the real path alone decides, never the lexical form
+        candidate = _real(path)
+        if candidate is None:
+            self.refuse("open_write" if write else "open_read")
+        for candidate in (candidate,):  # the real path alone decides, never the lexical form
             if _inside(candidate, self.sandbox):
                 return
             if write:
