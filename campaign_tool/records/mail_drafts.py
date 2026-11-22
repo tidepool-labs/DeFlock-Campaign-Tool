@@ -161,7 +161,8 @@ def _eml_for(con, subject):
             emls.add(occ["original_sha256"])
         elif occ["parent_occurrence_id"]:
             pending.append(occ["parent_occurrence_id"])
-    if len(emls) != 1:
+    # A pending occurrence already checked does not make the walk incomplete.
+    if len(emls) != 1 or any(oid not in seen for oid in pending):
         return None
     eml = next(iter(emls))
     if con.execute("SELECT 1 FROM mail_messages WHERE eml_sha256=? LIMIT 1", (eml,)).fetchone() is None:
