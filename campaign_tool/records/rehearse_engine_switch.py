@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 from importlib.util import module_from_spec, spec_from_file_location
 from pathlib import Path
@@ -13,6 +14,28 @@ STAGES = ("15",)
 TITLE = "Engine switch and rollback"
 _PAIR = ("run-records.sh", "LIVE.json")
 _ENGINES = {"backup": "engine-1234567", "candidate": "engine-89abcde"}
+# Synthetic sandbox backend: read the pair named by argv, write one JSON line, touch nothing else.
+_BACKEND = '''"""Inert rehearsal backend; standard library only."""
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+
+def main(argv):
+    pair, result = Path(argv[1]), Path(argv[2])
+    wrapper = pair.with_name("run-records.sh")
+    if not pair.is_file() or not wrapper.is_file():
+        return 3
+    seen = {"pair_sha256": hashlib.sha256(pair.read_bytes()).hexdigest(),
+            "wrapper_sha256": hashlib.sha256(wrapper.read_bytes()).hexdigest()}
+    result.write_text(json.dumps(seen, sort_keys=True) + "\\n", encoding="ascii")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv))
+'''
 
 
 def _load_renderer():
@@ -81,7 +104,7 @@ def _preswitch(sandbox, candidate):
     engine = candidate / "source"
     source = engine / "campaign_tool" / "stub_backend.py"
     source.parent.mkdir(parents=True)
-    source.write_text('"""Inert rehearsal backend; no external dependencies."""\n', encoding="ascii")
+    source.write_text(_BACKEND, encoding="ascii")
     inventory = _save_json(sandbox / "inventory.json", [])
     report = preswitch.deps(engine, [stage[1] for stage in stages],
                             inventory=json.loads(inventory.read_text(encoding="utf-8")))
@@ -111,9 +134,29 @@ def _switch(sandbox, candidate, current, expected):
 
 
 def _stub_run(sandbox, current, expected):
-    # One in-process backend invocation. Neither member is executable input.
+    # One subprocess invocation of the sandbox-only stub backend, never through
+    # a shell and with an empty environment (no PYTHONPATH). It reads the CURRENT
+    # pair named by its argv and writes its own receipt, stub-run.json.
     observed = _check_pair(current, expected)
-    return (_save_json(sandbox / "stub-run.json", observed),)
+    backend = sandbox / "candidate" / "source" / "campaign_tool" / "stub_backend.py"
+    result = sandbox / "stub-run.json"
+    try:
+        done = subprocess.run([sys.executable, str(backend), str(current / "LIVE.json"), str(result)],
+                              cwd=sandbox, env={}, timeout=30, check=False, shell=False,
+                              capture_output=True)
+    except subprocess.TimeoutExpired:
+        raise _Failed("BACKEND_TIMEOUT")
+    if done.returncode != 0:
+        raise _Failed("BACKEND_EXIT_NONZERO")
+    try:
+        seen = json.loads(result.read_text(encoding="ascii"))
+        read = (seen["wrapper_sha256"], seen["pair_sha256"])
+    except (OSError, ValueError, KeyError, TypeError):
+        raise _Failed("BACKEND_RESULT_INVALID")
+    # What the backend hashed must be the pair the driver just swapped in.
+    if read != (observed["wrapper_sha256"], observed["live_sha256"]):
+        raise _Failed("BACKEND_PAIR_MISMATCH")
+    return (result,)
 
 
 def _verify_rollback(current, expected):
@@ -162,6 +205,12 @@ def run(sandbox: Path):
         result["steps"].append({"name": name, "code": codes[0] if codes else "OK", "outputs": outputs})
         if codes:
             result["codes"] = codes
+            if name in ("switch", "stub_run"):
+                # A failure after the swap still puts the starting pair back.
+                try:
+                    _copy_pair(backup, current)
+                except OSError:
+                    pass
             break
     return result
 

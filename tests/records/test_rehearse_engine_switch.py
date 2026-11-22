@@ -7,6 +7,7 @@ import json
 import os
 import socket
 import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -93,7 +94,11 @@ class EngineSwitchTests(unittest.TestCase):
         stub.assert_called_once()
         self.assertEqual(json.loads((self.sandbox / "preswitch.json").read_text()), {"status": "PASS", "rows": []})
         for receipt in ("switch.json", "stub-run.json"):
-            self.assertEqual(json.loads((self.sandbox / receipt).read_text()), _observed(_CANDIDATE, candidate))
+            expected = _observed(_CANDIDATE, candidate)
+            if receipt == "stub-run.json":
+                # The backend's own one-line receipt of the pair it read.
+                expected = {"pair_sha256": _digest(candidate[1]), "wrapper_sha256": _digest(candidate[0])}
+            self.assertEqual(json.loads((self.sandbox / receipt).read_text()), expected)
         self.assertEqual(inspect(*(self.sandbox / "current" / member for member in _PAIR)), _observed(_OLD, old))
         self.assertEqual(result, self.expected_report(self.sandbox))
         self.assertEqual(driver.STAGES, ("15",))
@@ -113,7 +118,9 @@ class EngineSwitchTests(unittest.TestCase):
 
         def guard(opener):
             def open_checked(path, *args, **kwargs):
-                record(path)
+                # Popen wraps its own pipe descriptors with io.open; those are not paths.
+                if not isinstance(path, int):
+                    record(path)
                 return opener(path, *args, **kwargs)
             return open_checked
 
@@ -123,14 +130,27 @@ class EngineSwitchTests(unittest.TestCase):
             record(directory)
             return real_temp(*args, **kwargs)
 
+        launched = []
+        real_popen = subprocess.Popen
+
+        def popen_checked(argv, *args, **kwargs):
+            # The one allowed child process is the sandbox backend, no shell.
+            launched.append((argv, kwargs))
+            return real_popen(argv, *args, **kwargs)
+
         with mock.patch.object(builtins, "open", guard(builtins.open)), \
                 mock.patch.object(io, "open", guard(io.open)), \
                 mock.patch.object(os, "open", guard(os.open)), \
                 mock.patch.object(tempfile, "TemporaryDirectory", side_effect=temp_checked), \
                 mock.patch.object(socket, "socket", side_effect=AssertionError("network")), \
-                mock.patch.object(subprocess, "Popen", side_effect=AssertionError("subprocess")):
+                mock.patch.object(subprocess, "Popen", side_effect=popen_checked):
             result = driver.run(self.sandbox)
         self.assertEqual(result, self.expected_report(self.sandbox))
+        self.assertEqual(len(launched), 1)
+        argv, kwargs = launched[0]
+        self.assertEqual(argv, [sys.executable, str(self.sandbox / "candidate" / "source" / "campaign_tool" / "stub_backend.py"),
+                                str(self.sandbox / "current" / "LIVE.json"), str(self.sandbox / "stub-run.json")])
+        self.assertEqual((kwargs["cwd"], kwargs["env"], kwargs["shell"]), (self.sandbox, {}, False))
         self.assertEqual(opened[0], self.sandbox / run_stages.SANDBOX_MARKER)
         self.assertIn(self.sandbox / "inventory.json", opened)
         self.assertIn(self.sandbox / "candidate" / "source" / "campaign_tool" / "stub_backend.py", opened)
@@ -167,6 +187,51 @@ class EngineSwitchTests(unittest.TestCase):
                                                              tampered=tampered))
                 self.assertEqual(_capture(root, "current"), _capture(root, "backup"))
                 self.assertFalse((root / "stub-run.json").exists())
+
+    def test_c1_backend_runs_on_the_switched_pair_and_rollback_restores_old(self):
+        """C1: The sandbox backend is really invoked on the current pair after the switch."""
+        # A stub_run that only hashes the pair (never runs the backend), or runs it
+        # on the backup/candidate folder instead of current, leaves no matching receipt.
+        result = driver.run(self.sandbox)
+        self.assertEqual(result["codes"], [])
+        old, candidate = (_capture(self.sandbox, label) for label in ("backup", "candidate"))
+        receipt = json.loads((self.sandbox / "stub-run.json").read_text())
+        self.assertEqual(receipt, {"pair_sha256": _digest(candidate[1]), "wrapper_sha256": _digest(candidate[0])})
+        # After rollback the same backend, pointed at current, now reads the old pair.
+        backend = self.sandbox / "candidate" / "source" / "campaign_tool" / "stub_backend.py"
+        again = self.sandbox / "again.json"
+        subprocess.run([sys.executable, str(backend), str(self.sandbox / "current" / "LIVE.json"), str(again)],
+                       cwd=self.sandbox, env={}, check=True)
+        self.assertEqual(json.loads(again.read_text()), {"pair_sha256": _digest(old[1]), "wrapper_sha256": _digest(old[0])})
+        self.assertNotEqual(receipt, json.loads(again.read_text()))
+
+    def test_c1_backend_exits_3_when_the_pair_is_missing(self):
+        """C1: The backend refuses a pair file that is not there instead of reporting a hash."""
+        backend = self.sandbox / "stub_backend.py"
+        backend.write_text(driver._BACKEND, encoding="ascii")
+        missing = subprocess.run([sys.executable, str(backend), str(self.sandbox / "nope" / "LIVE.json"),
+                                  str(self.sandbox / "out.json")], cwd=self.sandbox, env={}, check=False)
+        self.assertEqual(missing.returncode, 3)
+        self.assertFalse((self.sandbox / "out.json").exists())
+
+    def test_c1_stub_run_fails_on_bad_backend_and_still_restores_old_pair(self):
+        """C1: A failing or wrong-pair backend fails stub_run, and rollback restores the starting pair."""
+        # Catch a stub_run that ignores the exit status or trusts the driver's own hashes
+        # rather than the hashes the backend reported, or leaves the candidate current.
+        wrong = "0" * 64
+        cases = {
+            "BACKEND_EXIT_NONZERO": "raise SystemExit(5)\n",
+            "BACKEND_RESULT_INVALID": "raise SystemExit(0)\n",
+            "BACKEND_PAIR_MISMATCH": ("import sys\nopen(sys.argv[2], 'w').write('{\"pair_sha256\": \"%s\", "
+                                      "\"wrapper_sha256\": \"%s\"}\\n')\n" % (wrong, wrong)),
+        }
+        for code, source in cases.items():
+            with self.subTest(code=code):
+                root = self.new_sandbox(code)
+                with mock.patch.object(driver, "_BACKEND", source):
+                    result = driver.run(root)
+                self.assertEqual(result, self.expected_report(root, failure=("stub_run", [code])))
+                self.assertEqual(_capture(root, "current"), _capture(root, "backup"))
 
     def test_c1_switch_refuses_a_mixed_pair(self):
         """C1: A one-sided copy does not let the stub run."""
