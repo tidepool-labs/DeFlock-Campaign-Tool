@@ -494,6 +494,37 @@ class DriverContractTests(_Base):
         self.assertEqual(guard.violations, ["open_read", "open_write", "open_read"])
         self.assertEqual(self.outside.read_text(encoding="utf-8"), "not sandbox data\n")
 
+    def test_c3_dir_fd_relative_open_of_a_host_directory_is_refused(self):
+        """C3: os.open(name, dir_fd=<host dir>) resolves against that descriptor, not the cwd: read and write refused.
+
+        Bug caught: judging a dir_fd-relative name against the cwd approved sandbox/victim yet opened host/victim.
+        """
+        host = self.root / "host_dir"
+        host.mkdir()
+        victim = host / "victim.txt"
+        victim.write_text("host data", encoding="utf-8")
+        (self.sandbox / "victim.txt").write_text("decoy", encoding="utf-8")  # the cwd-relative name exists inside
+        host_fd = os.open(str(host), os.O_RDONLY | os.O_DIRECTORY)
+        sandbox_fd = os.open(str(self.sandbox), os.O_RDONLY | os.O_DIRECTORY)
+        original_open = os.open
+        try:
+            with driver._guarded(self.sandbox) as guard:
+                with self.assertRaises(PermissionError):
+                    os.open("victim.txt", os.O_RDONLY, dir_fd=host_fd)
+                with self.assertRaises(PermissionError):
+                    os.open("victim.txt", os.O_WRONLY | os.O_TRUNC, dir_fd=host_fd)
+                with self.assertRaises(PermissionError):
+                    os.open("../victim.txt", os.O_RDONLY, dir_fd=sandbox_fd)  # climbing out of a sandbox descriptor
+                fd = os.open("victim.txt", os.O_RDONLY, dir_fd=sandbox_fd)  # the same name below the sandbox is fine
+                self.assertEqual(os.read(fd, 10), b"decoy")
+                os.close(fd)
+            self.assertEqual(guard.violations, ["open_read", "open_write", "open_read"])
+            self.assertIs(os.open, original_open)  # the wrapper is removed with the guard
+            self.assertEqual(victim.read_text(encoding="utf-8"), "host data")
+        finally:
+            os.close(host_fd)
+            os.close(sandbox_fd)
+
     def test_c3_guard_cannot_nest(self):
         """C3: a second guarded run inside a running one is refused with ValueError."""
         with driver._guarded(self.sandbox):

@@ -211,6 +211,24 @@ def _guarded(sandbox):
     guard = _Boundary(sandbox)
     previous = os.getcwd()
     path_env = os.environ.get("PYTHONPATH")
+    real_open = os.open
+
+    def open_at(path, flags, mode=0o777, *, dir_fd=None):
+        # The audit "open" event carries no dir_fd, so a name relative to a held descriptor is judged here, on the
+        # real path of that descriptor's directory (fail closed when it cannot be resolved).
+        if dir_fd is not None and isinstance(path, (str, bytes, os.PathLike)) and not os.path.isabs(os.fsdecode(path)):
+            name = os.fsdecode(path)
+            try:
+                base = os.path.realpath(os.readlink("/proc/self/fd/%d" % dir_fd))
+            except (OSError, TypeError, ValueError):
+                base = None
+            if base is None or not os.path.isabs(base):
+                guard.refuse("open_write" if flags & _WRITE_FLAGS else "open_read")
+            if "." in name.split(os.sep) or ".." in name.split(os.sep):
+                guard.refuse("open_write" if flags & _WRITE_FLAGS else "open_read")
+            guard.check_open(os.path.join(base, name), None, flags)
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+    os.open = open_at
     os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
     # the replay worker child inherits that cwd, so it must find the engine by path rather than by the old cwd
     os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(_ENGINE), path_env)))
@@ -219,6 +237,7 @@ def _guarded(sandbox):
         yield guard
     finally:
         _GUARD = None
+        os.open = real_open
         os.chdir(previous)
         if path_env is None:
             os.environ.pop("PYTHONPATH", None)
