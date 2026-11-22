@@ -16,7 +16,7 @@ import stat
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
-from . import golive_evidence
+from . import golive_evidence, golive_pair
 from .golive_stages import STAGES
 
 SPEC_SCHEMA = "records-golive-gate-spec-v1"
@@ -96,6 +96,12 @@ def _validate_evidence(check):
         name = check["engine_input"]
         if not _text(name) or "=" in name or name == "evidence":
             raise ValueError("engine_input must be a file input name usable in name=path")
+    if "candidate_inputs" in check:
+        names = check["candidate_inputs"]
+        if ("engine_input" not in check or not isinstance(names, list) or len(names) != 2
+                or any(not _text(name) or "=" in name or name == "evidence" for name in names)
+                or len(set(names)) != 2):
+            raise ValueError("candidate_inputs must name distinct wrapper and live inputs with engine_input")
 
 
 def _validate_prior_gate(check):
@@ -253,7 +259,21 @@ def _evidence(check, get_input, now):
     if not _fresh(record, now, check["max_age_days"]):
         return EVIDENCE_STALE
     if "engine_input" in check:
-        return _check_engine(record, get_input(check["engine_input"]))
+        pair = get_input(check["engine_input"])
+        outcome = _check_engine(record, pair)
+        if outcome != EVIDENCE_MATCH or "candidate_inputs" not in check:
+            return outcome
+        wrapper, live = (get_input(name) for name in check["candidate_inputs"])
+        if wrapper is None or live is None:
+            return EVIDENCE_UNREADABLE
+        value = json.loads(pair.raw.decode("utf-8"), object_pairs_hook=_unique_object)
+        refs = {ref.decode("ascii") for item in (wrapper, live)
+                for ref in golive_pair._ENGINE_REF.findall(item.raw)}
+        if (refs != {"engine-" + record["engine"]}
+                or value.get("wrapper_sha256") != wrapper.sha256
+                or value.get("live_sha256") != live.sha256):
+            return "fail", "EVIDENCE_ENGINE_MISMATCH"
+        return EVIDENCE_MATCH
     return EVIDENCE_MATCH
 
 
@@ -290,7 +310,7 @@ CHECK_TYPES = {
     "window": CheckType(frozenset({"days", "start", "end"}), _window, _validate_window),
     "file_present": CheckType(frozenset({"input"}), _present),
     "evidence": CheckType(frozenset({"stage", "kind", "max_age_days"}), _evidence,
-                          _validate_evidence, frozenset({"engine_input"})),
+                          _validate_evidence, frozenset({"engine_input", "candidate_inputs"})),
     "prior_gate": CheckType(frozenset({"gate_id", "max_age_days"}), _prior_gate, _validate_prior_gate),
 }
 
