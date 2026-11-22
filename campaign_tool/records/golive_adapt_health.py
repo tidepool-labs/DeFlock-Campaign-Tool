@@ -63,6 +63,12 @@ def records(report, now, max_age_hours: float = 2):
         raise ValueError("invalid maximum report age")
     observed = _observation(report, now)
     checks = _check_states(report)
+    # Reproduce the producer's precedence using the original states: optional
+    # unconfigured checks are excluded from its aggregate, not promoted.
+    states = {item["state"] for item in report["checks"]
+              if item["reason_code"] not in pipeline_health.NOT_CONFIGURED}
+    if states and report["state"] != next(state for state in ("stop", "warn", "unknown", "ok") if state in states):
+        raise ValueError("invalid pipeline-health summary")
     codes = [name.upper() for name in _CHECKS if checks.get(name) != "ok"]
     stale = (now - observed).total_seconds() / 3600 > max_age_hours
     if stale:

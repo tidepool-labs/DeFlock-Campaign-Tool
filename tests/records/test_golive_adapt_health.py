@@ -94,6 +94,22 @@ class HealthEvidenceTests(unittest.TestCase):
                     adapter.records(payload, now, limit)
                 self.assertIs(type(error.exception), ValueError)
 
+    def test_inconsistent_complete_summary_is_refused(self):
+        for summary, exit_code in (("unknown", 2), ("warn", 1), ("stop", 3)):
+            with self.subTest(summary=summary):
+                value = report()
+                value.update(state=summary, exit_code=exit_code)
+                with self.assertRaisesRegex(ValueError, "invalid pipeline-health summary"):
+                    adapter.records(value, NOW)
+
+    def test_inconsistent_check_states_are_refused(self):
+        for state in ("warn", "stop", "unknown"):
+            with self.subTest(state=state):
+                value = report()
+                value["checks"][0]["state"] = state
+                with self.assertRaisesRegex(ValueError, "invalid pipeline-health summary"):
+                    adapter.records(value, NOW)
+
     def test_c2_warn_and_stop(self):
         """C2: Health warnings and stops are observations, not liveness failures."""
         value = report()
@@ -145,6 +161,11 @@ class HealthCLITests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=".") as tmp:
             path = Path(tmp) / "capture.json"
             refused = (2, "", "HEALTH_EVIDENCE_BAD_INPUT\n")
+            inconsistent = report()
+            inconsistent.update(state="unknown", exit_code=2)
+            path.write_text(json.dumps(inconsistent))
+            self.assertEqual(self.invoke(path, "--json"), refused)
+            path.unlink()
             self.assertEqual(self.invoke(path, "--json"), refused)
             self.assertEqual(self.invoke(tmp, "--json"), refused)
             for raw in (b'{"checks":[],"checks":[]}', b'{', b' ' * (1024 * 1024 + 1)):
