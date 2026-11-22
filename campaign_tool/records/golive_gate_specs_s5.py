@@ -3,8 +3,8 @@
 Supply the approved candidate wrapper/LIVE hashes, not hashes learned from the
 captures being checked. Supply `pair` as copied golive_pair JSON for the engine
 that will perform the step (the candidate for the switch and S8, the pre-switch
-engine for S5b). Read back that the report came from the intended pair, is
-consistent, and names the full engine commit. These specs do not run golive_pair.
+engine for S5b). The switch binds the pair and rehearsal to the candidate bytes;
+for S8 and S5b read back the intended pair. These specs do not run golive_pair.
 
 Required attended readback: confirm today's booked date in the SITTING6/engine
 packets. The Thursday time check is evidence only within that separately enforced
@@ -44,7 +44,7 @@ GATES = {
             {"type": "disk_floor_gib", "label": "Free space before the switch", "input": "disk", "min": _DISK_FLOOR},
             {"type": "window", "label": "Thursday Pacific switch slot (booking confirmed separately)",
              "days": ["thu"], "start": "10:00", "end": "10:10"},
-            _rehearsal("15", "Candidate engine switch rehearsal"),
+            {**_rehearsal("15", "Candidate engine switch rehearsal"), "candidate_inputs": ["wrapper", "live"]},
         ],
     },
     "s5b-backup": {

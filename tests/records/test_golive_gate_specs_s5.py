@@ -173,9 +173,39 @@ class GateEvaluationTests(support.GateFixture):
         changed = self.fixture('drift', b'different synthetic bytes\n')
         for i, name in enumerate(('wrapper', 'live')):
             with self.subTest(name=name):
-                self.assert_receipt(SWITCH, [self.row('15')], unavailable=(name,), changes={i: MISSING})
+                self.assert_receipt(SWITCH, [self.row('15')], unavailable=(name,), pair_read=True,
+                                    changes={i: MISSING, 4: ('unknown', 'EVIDENCE_UNREADABLE')})
                 self.assert_receipt(SWITCH, [self.row('15')], replace={name: changed},
-                                    changes={i: ('fail', 'GATE_SHA256_MISMATCH')})
+                                    changes={i: ('fail', 'GATE_SHA256_MISMATCH'),
+                                             4: ('fail', 'EVIDENCE_ENGINE_MISMATCH')})
+
+    def test_c3_switch_rejects_other_engine_pair_and_rehearsal(self):
+        other_wrapper = self.fixture('other-wrapper', f'#!/bin/sh\n# engine-{OTHER_ENGINE}\n'.encode())
+        other_live = self.fixture('other-live', json.dumps({'engine': f'engine-{OTHER_ENGINE}'}).encode())
+        other_pair = self.fixture('other-pair.json', json.dumps(golive_pair.inspect(other_wrapper, other_live)).encode())
+        self.assert_receipt(SWITCH, [self.row('15', engine=OTHER_ENGINE)],
+                            replace={'pair': other_pair},
+                            changes={4: ('fail', 'EVIDENCE_ENGINE_MISMATCH')})
+        forged = golive_pair.inspect(other_wrapper, other_live)
+        forged.update(wrapper_sha256=PINS['wrapper'], live_sha256=PINS['live'])
+        forged_pair = self.fixture('forged-pair.json', json.dumps(forged).encode())
+        self.assert_receipt(SWITCH, [self.row('15', engine=OTHER_ENGINE)],
+                            replace={'pair': forged_pair},
+                            changes={4: ('fail', 'EVIDENCE_ENGINE_MISMATCH')})
+        forged['engines'] = [f'engine-{ENGINE}']
+        forged['wrapper_sha256'] = '0' * 64
+        wrong_hash = self.fixture('wrong-hash-pair.json', json.dumps(forged).encode())
+        self.assert_receipt(SWITCH, [self.row('15')], replace={'pair': wrong_hash},
+                            changes={4: ('fail', 'EVIDENCE_ENGINE_MISMATCH')})
+
+    def test_c3_rejects_ambiguous_candidate_engine(self):
+        wrapper = self.fixture('mixed-wrapper', WRAPPER + f'# engine-{OTHER_ENGINE}\n'.encode())
+        pair = self.fixture('mixed-pair.json', json.dumps(golive_pair.inspect(wrapper, self.files['live'])).encode())
+        pins = {**PINS, 'wrapper': sha256(wrapper.read_bytes()).hexdigest()}
+        files = self.files | {'wrapper': wrapper, 'pair': pair, 'evidence': self.ledger([self.row('15')])[0]}
+        receipt = golive_gate.evaluate(pack.spec(SWITCH, **pins), files, NOW)
+        self.assertEqual(receipt['verdict'], 'NO-GO')
+        self.assertEqual(receipt['checks'][4]['code'], 'EVIDENCE_ENGINE_MISMATCH')
 
     def test_c3_disk_and_quiescence(self):
         """C3: enforce the plan's byte floor on both gates and require the S5b capture."""
