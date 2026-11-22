@@ -93,6 +93,10 @@ def _is_prior(ask, prior):
     return None
 
 
+def _ask_number(ask, position):
+    return ask.get("number") or position + 1
+
+
 def _validate(case):
     _need(isinstance(case, dict) and case.get("schema") == SCHEMA, "case_invalid", "schema")
     agency = case.get("agency")
@@ -103,12 +107,17 @@ def _validate(case):
     for key in ("request_date", "response_date", "contact", "sender", "subject", "recipient"):
         _need(case.get(key) is None or isinstance(case[key], str), "case_invalid", key)
     asks = case.get("asks")
-    _need(isinstance(asks, list) and asks, "case_invalid", "asks")
-    for ask in asks:
+    if not isinstance(asks, list) or not asks:
+        raise _pb.PlaybookError("case_invalid", "asks")
+    displayed_numbers = set()
+    for position, ask in enumerate(asks):
         _need(isinstance(ask, dict) and isinstance(ask.get("text"), str) and ask["text"].strip(), "case_invalid", "ask.text")
         _need(ask.get("produced") is None or (isinstance(ask["produced"], list) and all(
             isinstance(p, dict) and isinstance(p.get("file"), str) and p["file"].strip() for p in ask["produced"])),
             "case_invalid", "ask.produced")
+        displayed = str(_ask_number(ask, position))
+        _need(displayed not in displayed_numbers, "case_invalid", "duplicate displayed ask number")
+        displayed_numbers.add(displayed)
     prior = case.get("prior_asks", [])
     _need(isinstance(prior, list) and all(isinstance(p, dict) and isinstance(p.get("text") or p.get("ask_id"), str)
                                           and p.get("status") in _DONE_PRIOR | _PENDING_PRIOR for p in prior),
@@ -127,7 +136,7 @@ def _tiered(book, case):
     rows = []
     for position, ask in enumerate(case["asks"]):
         tier = _pb.tier_for(book, ask["text"])
-        rows.append({"ask_id": ask.get("ask_id"), "number": ask.get("number") or position + 1, "text": _clean(ask["text"]),
+        rows.append({"ask_id": ask.get("ask_id"), "number": _ask_number(ask, position), "text": _clean(ask["text"]),
                      "tier": tier, "state": _it.state_of(ask.get("rating")), "produced": ask.get("produced") or [], "_pos": position})
     open_asks, dropped = [], []
     for row in rows:
@@ -213,7 +222,8 @@ def draft(book, case, policy_rows=()):
     unfilled = []
 
     open_asks, dropped, all_asks = _tiered(book, case)
-    dropped_rows = [a for a in all_asks if a["number"] in {d["number"] for d in dropped}]
+    dropped_numbers = {str(d["number"]) for d in dropped}
+    dropped_rows = [a for a in all_asks if str(a["number"]) in dropped_numbers]
     policy = _policy_row(policy_rows, case["agency"]["id"], case.get("policy"))
     if case.get("policy") and policy is None:
         slots.pop("policy_section", None)
