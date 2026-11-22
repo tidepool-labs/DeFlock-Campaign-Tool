@@ -96,15 +96,21 @@ class Evidence(NamedTuple):
 def _read_input(path):
     try:
         with _parent_fd(path) as (parent, name):
-            # Nonblocking open avoids waiting on a FIFO before we can reject it.
+            info = os.stat(name, dir_fd=parent, follow_symlinks=False)
+            if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_INPUT:
+                return None
+            # Do not wait on a FIFO or follow a symlink swapped in after stat.
             fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK, dir_fd=parent)
-            with os.fdopen(fd, "rb") as stream:
-                info = os.fstat(stream.fileno())
+            try:
+                info = os.fstat(fd)
                 if not stat.S_ISREG(info.st_mode) or info.st_size > MAX_INPUT:
                     return None
-                raw = stream.read(MAX_INPUT + 1)
+                with os.fdopen(fd, "rb", closefd=False) as stream:
+                    raw = stream.read(MAX_INPUT + 1)
                 if len(raw) <= MAX_INPUT:
                     return Evidence(raw, hashlib.sha256(raw).hexdigest())
+            finally:
+                os.close(fd)
     except (OSError, ValueError):
         pass
     return None
