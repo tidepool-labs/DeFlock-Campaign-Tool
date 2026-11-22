@@ -1,14 +1,33 @@
 """Synthetic evidence for the loopback console rehearsal (A3)."""
 
+import argparse
+import errno
+import hashlib
+import http.client
 import io
+import json
 import os
+import socket
+import stat
+from pathlib import Path
+from threading import Thread
 from unittest.mock import patch
 
-from . import console_export, run_stages
+from . import admin_panel, console_check, console_export, run_stages
 
 STAGES = ("A3",)
 TITLE = "New console on loopback"
 _RUN_ID = "run_20200101T000000Z_00000001"
+_HOST = "127.0.0.1"
+_PAGES = (
+    ("/runs", "Run history"),
+    ("/documents", "Documents and findings"),
+    ("/findings", "All findings"),
+    ("/drafts", "Draft history"),
+    ("/decisions", "Decisions"),
+    ("/health", "System health"),
+    ("/stages", "Go-live stages"),
+)
 
 
 def _build_export(sandbox):
@@ -36,3 +55,133 @@ def _build_export(sandbox):
     stream.seek(0)
     name = console_export.install(str(root), stream)
     return root, root / "exports" / name / console_export.MANIFEST
+
+
+def _empty_private(path):
+    info = path.lstat()
+    return (stat.S_ISDIR(info.st_mode) and stat.S_IMODE(info.st_mode) == 0o700
+            and info.st_uid == os.geteuid() and next(path.iterdir(), None) is None)
+
+
+def _output(sandbox, path):
+    return {"path": path.relative_to(sandbox).as_posix(), "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
+
+
+def _get(sandbox, port, route, heading=None):
+    # No proxy, redirects, credentials, or custom Host header.
+    connection = http.client.HTTPConnection(_HOST, port, timeout=3)
+    try:
+        connection.request("GET", route)
+        with connection.getresponse() as response:
+            status, body = response.status, response.read()
+    finally:
+        connection.close()
+
+    receipt = sandbox / (route[1:] + "-http.json")
+    receipt.write_text(json.dumps({"route": route, "status": status,
+                                   "body_sha256": hashlib.sha256(body).hexdigest()}) + "\n", encoding="utf-8")
+    output = _output(sandbox, receipt)
+    if heading is None:
+        code = "OK" if status == 404 else "SEND_NOT_DISABLED"
+    elif status != 200:
+        code = "PAGE_STATUS_UNEXPECTED"
+    else:
+        code = "OK" if f"<h1>{heading}</h1>".encode() in body else "PAGE_HEADING_MISSING"
+    return code, output
+
+
+def _port_closed(port):
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(3)
+        return probe.connect_ex((_HOST, port)) == errno.ECONNREFUSED
+
+
+def run(sandbox):
+    sandbox = Path(os.path.abspath(sandbox))
+    result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
+
+    def step(name, code="OK", outputs=()):
+        result["steps"].append({"name": name, "code": code, "outputs": list(outputs)})
+        if code != "OK":
+            result["codes"].append(code)
+        return result
+
+    try:
+        if not _empty_private(sandbox):
+            return step("build_export", "SANDBOX_INVALID")
+    except OSError:
+        return step("build_export", "SANDBOX_INVALID")
+    try:
+        root, manifest = _build_export(sandbox)
+        step("build_export", outputs=[_output(sandbox, manifest)])
+    except (OSError, console_export.ExportError):
+        return step("build_export", "EXPORT_BUILD_FAILED")
+
+    try:
+        server = admin_panel.build_server(run_id="auto", actor="rehearsal", port=0,
+                                          export_root=str(root), system=False)
+    except (OSError, admin_panel.PanelError):
+        return step("start_console", "CONSOLE_START_FAILED")
+    with server:
+        port = server.server_port
+        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+        try:
+            worker.start()
+        except RuntimeError:
+            return step("start_console", "CONSOLE_START_FAILED")
+        try:
+            step("start_console")
+            outputs = []
+            for route, heading in _PAGES:
+                try:
+                    code, output = _get(sandbox, port, route, heading)
+                except (OSError, http.client.HTTPException):
+                    return step("pages", "PAGE_PROBE_FAILED", outputs)
+                outputs.append(output)
+                if code != "OK":
+                    return step("pages", code, outputs)
+            step("pages", outputs=outputs)
+
+            try:
+                code, output = _get(sandbox, port, "/send")
+            except (OSError, http.client.HTTPException):
+                return step("send_disabled", "SEND_PROBE_FAILED")
+            step("send_disabled", code, [output])
+            if code != "OK":
+                return result
+
+            # Use only the checker's freshness check: its full CLI sends POSTs
+            # and issues extra requests whose bodies it does not read.
+            code = console_check._export_check(root, 36)
+            if code != "PASS":
+                return step("console_check", code)
+            step("console_check")
+        finally:
+            server.shutdown()
+            worker.join()
+
+    try:
+        if _port_closed(port):
+            return step("stop")
+    except OSError:
+        pass
+    return step("stop", "CONSOLE_PORT_NOT_CLOSED")
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser.add_argument("--sandbox", required=True, type=Path)
+    sandbox = Path(os.path.abspath(parser.parse_args(argv).sandbox))
+    try:
+        sandbox.mkdir(mode=0o700, exist_ok=True)
+        if not _empty_private(sandbox):
+            parser.error("--sandbox must be an empty private directory (0700)")
+    except OSError:
+        parser.error("--sandbox must be a creatable or empty private directory (0700)")
+    result = run(sandbox)
+    print(json.dumps(result))
+    return int(any(step["code"] != "OK" for step in result["steps"]) or bool(result["manual_steps"]))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
