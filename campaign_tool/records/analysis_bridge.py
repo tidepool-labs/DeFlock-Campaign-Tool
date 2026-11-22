@@ -10,6 +10,7 @@ import collections
 import csv
 import datetime
 import importlib.util
+import io
 import json
 import os
 import re
@@ -96,7 +97,7 @@ def _rows(data):
     """
     if data is None:
         return []
-    reader = csv.DictReader(data.decode("utf-8").splitlines())
+    reader = csv.DictReader(io.StringIO(data.decode("utf-8"), newline=""))
     rows = list(reader)
     extended = reader.fieldnames == list(ae.FLAG_COLUMNS)
     if not extended and reader.fieldnames != list(ae.COLUMNS) or any(
