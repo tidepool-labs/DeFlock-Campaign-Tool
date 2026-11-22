@@ -971,7 +971,9 @@ _MODULES = {
     "synthetic rehearsal files only, in an explicit empty owner-only sandbox; no catalog store": "records.rehearse_arrival",
     "synthetic stage 19 rehearsal files only, under the caller's private sandbox; no live records or catalog writes": "records.rehearse_backup",
     "synthetic rehearsal inputs and evidence written only in the caller's private sandbox; no personal-data store": "records.rehearse_monitoring",
+    "synthetic phone rehearsal marker and allowed signers only, inside the caller's private sandbox": "records.rehearse_phone_sign",
     "synthetic stage-15 rehearsal files only under an empty private sandbox; no live records or sends": "records.rehearse_followup_engine",
+    "synthetic stage-16 analysis-lane rehearsal files only under an empty private sandbox; no live records, approvals or publication": "records.rehearse_findings",
     "opt-in private health alerts with fixed failure codes only; no record bytes or catalog store": "records.console_check",
     "synthetic console fixtures and HTTP digests only, under a caller-owned private sandbox": "records.rehearse_console",
     "A6 phone enrolment: public passkey records (no secret material) in the operator's enrolment dir and page response bytes; no catalog store": "records.console_phone_enrol records.phone_enrol",
@@ -986,6 +988,7 @@ _MODULES = {
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
     "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
+    "append-only 0600 go-live evidence metadata in an explicit directory; no copied receipt bytes or catalog store": "records.golive_record",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -1198,9 +1201,11 @@ MODULE_FUNCTIONS = {
     'records.rehearse': ('_run_driver',),  # Synthetic receipt only, inside its fresh private sandbox.
     'records.rehearse_anchor': ('_write_private', 'anchor_missing', 'approve_signed', 'approve_wrong_key', 'make_signer', 'run',),
     'records.rehearse_decisions': ('_apply_locked', 'run.init_project',),
+    'records.rehearse_phone_sign': ('_enrol', 'run',),  # Sandbox allowed-signers file and marker only.
     'records.rehearse_backup': ('_capture_units', '_mark_sandbox', '_seed_project', '_write', 'run.verify'),  # synthetic sandbox only
     'records.rehearse_monitoring': ('_add_report', '_observe', '_write_json',),
     'records.rehearse_followup_engine': ('_init_project', '_seed_inputs', '_write_json',),
+    'records.rehearse_findings': ('_csv_bytes', '_packet_import', '_put', '_seed',),  # sandbox marker, synthetic inputs, outbox move; _csv_bytes builds bytes in memory
     'records.review_bundle': ('_locked', '_new',),
     'records.review_retirement': ('arm', 'finish', 'start',),
     'records.run': (
@@ -1237,6 +1242,7 @@ MODULE_FUNCTIONS = {
     'social_threads': ('build_thread_social',),
     'source_bundle': ('bundle_bytes',),  # DF0022-11: builds the archive in memory; the caller writes it
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
+    'records.golive_record': ('append',),
 }
 
 
