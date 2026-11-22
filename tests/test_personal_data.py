@@ -971,10 +971,12 @@ _MODULES = {
     "synthetic decision apply rehearsal only, confined to a new or empty private marked sandbox": "records.rehearse_decisions",
     "synthetic rehearsal files only, in an explicit empty owner-only sandbox; no catalog store": "records.rehearse_arrival",
     "synthetic stage 19 rehearsal files only, under the caller's private sandbox; no live records or catalog writes": "records.rehearse_backup",
+    "synthetic stage 4 rehearsal only: private sandbox and loopback fixture writes": "records.rehearse_portal",
     "synthetic rehearsal inputs and evidence written only in the caller's private sandbox; no personal-data store": "records.rehearse_monitoring",
     "synthetic phone rehearsal marker and allowed signers only, inside the caller's private sandbox": "records.rehearse_phone_sign",
     "synthetic stage-15 rehearsal files only under an empty private sandbox; no live records or sends": "records.rehearse_followup_engine",
     "synthetic stage-16 analysis-lane rehearsal files only under an empty private sandbox; no live records, approvals or publication": "records.rehearse_findings",
+    "synthetic stage-17 packet and staging rehearsal files only under an empty private sandbox; no live records or publication": "records.rehearse_packets",
     "opt-in private health alerts with fixed failure codes only; no record bytes or catalog store": "records.console_check",
     "synthetic console fixtures and HTTP digests only, under a caller-owned private sandbox": "records.rehearse_console",
     "A6 phone enrolment: public passkey records (no secret material) in the operator's enrolment dir and page response bytes; no catalog store": "records.console_phone_enrol records.phone_enrol",
@@ -1205,9 +1207,11 @@ MODULE_FUNCTIONS = {
     'records.rehearse_decisions': ('_apply_locked', 'run.init_project',),
     'records.rehearse_phone_sign': ('_enrol', 'run',),  # Sandbox allowed-signers file and marker only.
     'records.rehearse_backup': ('_capture_units', '_mark_sandbox', '_seed_project', '_write', 'run.verify'),  # synthetic sandbox only
+    'records.rehearse_portal': ('_Handler.do_GET', '_mark_sandbox'),  # synthetic sandbox and loopback only
     'records.rehearse_monitoring': ('_add_report', '_observe', '_write_json',),
     'records.rehearse_followup_engine': ('_init_project', '_seed_inputs', '_write_json',),
     'records.rehearse_findings': ('_csv_bytes', '_packet_import', '_put', '_seed',),  # sandbox marker, synthetic inputs, outbox move; _csv_bytes builds bytes in memory
+    'records.rehearse_packets': ('_Rehearsal.project_approved_change', '_put',),  # synthetic sandbox only
     'records.review_bundle': ('_locked', '_new',),
     'records.review_retirement': ('arm', 'finish', 'start',),
     'records.run': (
