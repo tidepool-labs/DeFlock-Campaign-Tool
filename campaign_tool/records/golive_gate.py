@@ -16,6 +16,7 @@ import stat
 from typing import NamedTuple
 from zoneinfo import ZoneInfo
 
+from . import golive_evidence
 from .golive_stages import STAGES
 
 SPEC_SCHEMA = "records-golive-gate-spec-v1"
@@ -26,16 +27,23 @@ DAYS = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
 CLOCK = re.compile(r"(?:[01][0-9]|2[0-3]):[0-5][0-9]")
 DF_AVAIL = re.compile(rb"[ \t]*Avail[ \t]*\r?\n[ \t]*(-?[0-9]+)[ \t]*(?:\r?\n)?")
 MISSING = ("unknown", "GATE_INPUT_MISSING")
+GATE_ID = re.compile(r"[a-z0-9]+(?:-[a-z0-9]+)*")
+ENGINE_REF = re.compile(r"(?:engine-)?([0-9a-f]{40})")
+EVIDENCE_MISSING = ("unknown", "EVIDENCE_MISSING")
+EVIDENCE_UNREADABLE = ("unknown", "EVIDENCE_UNREADABLE")
+EVIDENCE_FAILED = ("fail", "EVIDENCE_FAILED")
+EVIDENCE_STALE = ("fail", "EVIDENCE_STALE")
+EVIDENCE_MATCH = ("pass", "EVIDENCE_MATCH")
 
 
 def _text(value):
     return isinstance(value, str) and bool(value.strip())
 
 
-def _fields(value, required, where):
+def _fields(value, required, where, optional=frozenset()):
     if not isinstance(value, dict):
         raise ValueError(f"{where} must be an object")
-    extra = value.keys() - required
+    extra = value.keys() - required - optional
     missing = required - value.keys()
     if extra:
         raise ValueError(f"{where}: unknown fields: {', '.join(sorted(map(repr, extra)))}")
@@ -70,6 +78,33 @@ def _validate_window(check):
         raise ValueError("start and end must differ")
 
 
+def _validate_age(check):
+    days = check["max_age_days"]
+    if (type(days) not in (int, float) or days < 0
+            or (isinstance(days, float) and not math.isfinite(days))):
+        raise ValueError("max_age_days must be a finite nonnegative number")
+
+
+def _validate_evidence(check):
+    stage = check["stage"]
+    if not isinstance(stage, str) or stage not in STAGES:
+        raise ValueError("stage must be a go-live stage id")
+    if check["kind"] not in ("rehearsal", "gate"):
+        raise ValueError("kind must be rehearsal or gate")
+    _validate_age(check)
+    if "engine_input" in check:
+        name = check["engine_input"]
+        if not _text(name) or "=" in name or name == "evidence":
+            raise ValueError("engine_input must be a file input name usable in name=path")
+
+
+def _validate_prior_gate(check):
+    gate_id = check["gate_id"]
+    if not isinstance(gate_id, str) or not GATE_ID.fullmatch(gate_id):
+        raise ValueError("gate_id must be lowercase-dash")
+    _validate_age(check)
+
+
 @contextmanager
 def _parent_fd(path):
     """Open directory components without resolving symlinks, including ancestors."""
@@ -91,6 +126,22 @@ def _parent_fd(path):
 class Evidence(NamedTuple):
     raw: bytes
     sha256: str
+
+
+class Ledger(NamedTuple):
+    records: list[dict] | None
+    sha256: str | None
+
+
+def _read_ledger(path):
+    try:
+        records = golive_evidence.load(path)
+    except ValueError:
+        return Ledger(None, None)
+    # Bind the validated snapshot in the reader's deterministic file order.
+    # Hash canonical record content, not directory paths or JSON formatting.
+    raw = json.dumps(records, sort_keys=True, separators=(",", ":")).encode("ascii")
+    return Ledger(records, hashlib.sha256(raw).hexdigest())
 
 
 def _read_input(path):
@@ -164,11 +215,75 @@ def _present(check, get_input, now):
     return "pass", "GATE_FILE_PRESENT"
 
 
+def _fresh(record, now, max_age_days):
+    recorded = datetime.strptime(record["recorded_at"], "%Y-%m-%dT%H:%M:%SZ")
+    age = now - recorded.replace(tzinfo=timezone.utc)
+    seconds = Fraction(age.seconds * 1_000_000 + age.microseconds, 1_000_000)
+    limit = Fraction(str(max_age_days)) if isinstance(max_age_days, float) else max_age_days
+    return age.days >= 0 and age.days + seconds / 86_400 <= limit
+
+
+def _check_engine(record, pair):
+    if pair is None:
+        return EVIDENCE_UNREADABLE
+    try:
+        value = json.loads(pair.raw.decode("utf-8"), object_pairs_hook=_unique_object)
+    except (ValueError, RecursionError):
+        return EVIDENCE_UNREADABLE
+    engines = value.get("engines") if isinstance(value, dict) else None
+    ref = engines[0] if isinstance(engines, list) and engines else None
+    match = ENGINE_REF.fullmatch(ref) if isinstance(ref, str) else None
+    if match is None or match[1] != record["engine"]:
+        return "fail", "EVIDENCE_ENGINE_MISMATCH"
+    return EVIDENCE_MATCH
+
+
+def _evidence(check, get_input, now):
+    ledger = get_input("evidence", directory=True)
+    if ledger is None:
+        return EVIDENCE_MISSING
+    if ledger.records is None:
+        return EVIDENCE_UNREADABLE
+    records = ledger.records
+    if check["kind"] == "rehearsal":
+        records = (row for row in records if row["source"]["schema"] != "records-e2e-proof-v1")
+    record = golive_evidence.latest(records, check["stage"], check["kind"])
+    if record is None:
+        return EVIDENCE_MISSING
+    if record["result"] != "pass":
+        return EVIDENCE_FAILED
+    if not _fresh(record, now, check["max_age_days"]):
+        return EVIDENCE_STALE
+    if "engine_input" in check:
+        return _check_engine(record, get_input(check["engine_input"]))
+    return EVIDENCE_MATCH
+
+
+def _prior_gate(check, get_input, now):
+    ledger = get_input("evidence", directory=True)
+    if ledger is None:
+        return EVIDENCE_MISSING
+    if ledger.records is None:
+        return EVIDENCE_UNREADABLE
+    outcome = EVIDENCE_MISSING
+    for record in ledger.records:
+        if record["kind"] != "gate" or not record["source"]["name"].startswith(check["gate_id"]):
+            continue
+        if record["result"] == "pass":
+            if _fresh(record, now, check["max_age_days"]):
+                return EVIDENCE_MATCH
+            outcome = EVIDENCE_STALE
+        elif outcome == EVIDENCE_MISSING:
+            outcome = EVIDENCE_FAILED
+    return outcome
+
+
 class CheckType(NamedTuple):
     """Fields, optional validation, and a (check, get_input, utc_now) handler."""
     fields: frozenset[str]
-    handler: Callable[[dict, Callable[[str], Evidence | None], datetime], tuple[str, str]]
+    handler: Callable[[dict, Callable[..., Evidence | Ledger | None], datetime], tuple[str, str]]
     validate: Callable[[dict], None] | None = None
+    optional: frozenset[str] = frozenset()
 
 
 CHECK_TYPES = {
@@ -176,6 +291,9 @@ CHECK_TYPES = {
     "disk_floor_gib": CheckType(frozenset({"input", "min"}), _disk, _validate_floor),
     "window": CheckType(frozenset({"days", "start", "end"}), _window, _validate_window),
     "file_present": CheckType(frozenset({"input"}), _present),
+    "evidence": CheckType(frozenset({"stage", "kind", "max_age_days"}), _evidence,
+                          _validate_evidence, frozenset({"engine_input"})),
+    "prior_gate": CheckType(frozenset({"gate_id", "max_age_days"}), _prior_gate, _validate_prior_gate),
 }
 
 
@@ -185,7 +303,7 @@ def load_spec(value):
     if value["schema"] != SPEC_SCHEMA:
         raise ValueError(f"schema must be {SPEC_SCHEMA}")
     gate_id = value["gate_id"]
-    if not isinstance(gate_id, str) or not re.fullmatch(r"[a-z0-9]+(?:-[a-z0-9]+)*", gate_id):
+    if not isinstance(gate_id, str) or not GATE_ID.fullmatch(gate_id):
         raise ValueError("gate_id must be lowercase-dash")
     stages = value["stages"]
     if not isinstance(stages, list) or not stages:
@@ -206,7 +324,7 @@ def load_spec(value):
         kind = CHECK_TYPES.get(name) if isinstance(name, str) else None
         if kind is None:
             raise ValueError(f"{where}: unknown check type {name!r}")
-        _fields(check, {"type", "label"} | kind.fields, where)
+        _fields(check, {"type", "label"} | kind.fields, where, kind.optional)
         if not _text(check["label"]):
             raise ValueError(f"{where}: label must be nonempty text")
         if "input" in kind.fields and (not _text(check["input"]) or "=" in check["input"]):
@@ -217,11 +335,12 @@ def load_spec(value):
 
 
 def evaluate(spec, inputs, now):
-    """Evaluate against explicitly mapped inputs, reading each used name once.
+    """Evaluate against explicitly mapped inputs, caching file and ledger reads.
 
     `now` is an aware datetime. The receipt records UTC, while window checks
     use Pacific wall time: both occurrences of a repeated minute are eligible.
-    Only readable, consulted inputs are hashed into the receipt.
+    Only readable, consulted inputs are hashed into the receipt. The evidence
+    directory is represented by a hash of its validated records.
     """
     spec = load_spec(spec)
     if not isinstance(now, datetime) or now.utcoffset() is None:
@@ -229,11 +348,13 @@ def evaluate(spec, inputs, now):
     now = now.astimezone(timezone.utc)
     cache = {}
 
-    def get_input(name):
-        if name not in cache:
+    def get_input(name, *, directory=False):
+        key = (name, directory)
+        if key not in cache:
             path = inputs.get(name)
-            cache[name] = None if path is None else _read_input(path)
-        return cache[name]
+            reader = _read_ledger if directory else _read_input
+            cache[key] = None if path is None else reader(path)
+        return cache[key]
 
     checks = []
     for check in spec["checks"]:
@@ -247,7 +368,8 @@ def evaluate(spec, inputs, now):
         "evaluated_at": now.isoformat(),
         "verdict": "GO" if all(check["state"] == "pass" for check in checks) else "NO-GO",
         "checks": checks,
-        "inputs": {name: item.sha256 for name, item in cache.items() if item is not None},
+        "inputs": {name: item.sha256 for (name, _), item in cache.items()
+                   if item is not None and item.sha256 is not None},
     }
 
 
