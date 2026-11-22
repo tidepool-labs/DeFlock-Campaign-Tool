@@ -7,12 +7,14 @@ import json
 import os
 from pathlib import Path
 import stat
+import subprocess
 import tempfile
 import unittest
 from unittest import mock
 
+from campaign_tool import approval
 from campaign_tool.records import analysis_bridge, analysis_export, analysis_packets, console_findings, console_packets
-from campaign_tool.records import finding_review, public_packets
+from campaign_tool.records import finding_review, public_packets, rehearsal_trust
 from campaign_tool.records import rehearse_findings as driver
 from campaign_tool.records.run_stages import SANDBOX_MARKER
 
@@ -23,14 +25,15 @@ PAGES = ("Synthetic record page one.", "Synthetic record page two.")
 DIGEST = hashlib.sha256(("SYNTHETIC STAGE 16 RECORD\n" + "\n".join(PAGES)).encode()).hexdigest()
 FACT_ID = "F-" + hashlib.sha256("\x1f".join((SLUG, DIGEST, "2", "synthetic_observation", "synthetic value")).encode()).hexdigest()[:12]
 SOURCE = "fr-" + hashlib.sha256((SLUG + "\x1f" + FINDING).encode()).hexdigest()[:24]
-PACKET = {"kind": "finding", "agency_key": AGENCY, "request_id": REQUEST, "source": SOURCE, "title": TOPIC, "text": CLAIM,
+DRAFT = "\n\nResearch draft - not legal advice. The us-ca law package is draft and unreviewed."  # the real lane adds it for a draft law package
+PACKET = {"kind": "finding", "agency_key": AGENCY, "request_id": REQUEST, "source": SOURCE, "title": TOPIC, "text": CLAIM + DRAFT,
           "documents": [{"sha256": DIGEST, "date_received": "2026-11-02", "source_request": REQUEST, "redaction_ids": [],
                          "use_restriction": False}],
           "citations": [{"ref": "record %s page 2 (%s)" % (DIGEST[:12], FACT_ID), "verified": True}],
           "finding_state": public_packets.PUBLIC_STATE}
 PACKET_ID = hashlib.sha256(json.dumps(["finding", AGENCY, REQUEST, SOURCE], sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16]
 REVIEW = "analysis/agencies/%s/review" % SLUG
-STEPS = ("seed", "analysis_sync", "packet_import", "packet_state", "console_findings")
+STEPS = ("seed", "analysis_sync", "finding_review", "packet_stage", "packet_import", "packet_state", "console_findings")
 PRIVATE_TEXT = (TOPIC, CLAIM, *PAGES)
 
 
@@ -41,8 +44,14 @@ class Base(unittest.TestCase):
         self.root = Path(root)
         self.sandbox = self.root / "sandbox"
         self.project = self.sandbox / "project"
-        for target in ("socket.socket", "subprocess.Popen", "subprocess.run"):
-            self.enterContext(mock.patch(target, side_effect=AssertionError(f"unexpected {target}")))
+        self.enterContext(mock.patch("socket.socket", side_effect=AssertionError("unexpected socket.socket")))
+        real_run = subprocess.run
+
+        def only_ssh_keygen(argv, *args, **kwargs):  # the sandbox signer and verifier are the only commands the rehearsal may run
+            if argv[0] != str(approval.SSH_KEYGEN):
+                raise AssertionError(f"unexpected command {argv[0]}")
+            return real_run(argv, *args, **kwargs)
+        self.enterContext(mock.patch("subprocess.run", side_effect=only_ssh_keygen))
         for name in ("approve", "decide", "enable", "write_change"):  # nothing is approved, decided, enabled or written
             self.enterContext(mock.patch.object(public_packets, name, side_effect=AssertionError(f"unexpected {name}")))
 
@@ -60,8 +69,11 @@ class Base(unittest.TestCase):
                      f"project/run-outputs/{RUN}/outcomes/received-items.json", f"export/{RUN}/EXPORT.json"],
             "analysis_sync": [f"analysis/.analysis/runs/{RUN}/EXPORT.json", f"{REVIEW}/inputs/SOURCES.csv",
                               f"analysis/agencies/{SLUG}/review-config.json", "analysis/.analysis/analysis-ledger.jsonl"],
-            "packet_import": [f"{REVIEW}/facts/store/agencies/{SLUG}/FACTS.csv", f"{run}/FINDINGS.csv", f"{run}/PUBLIC-OK.csv",
-                              sent.relative_to(self.sandbox).as_posix(), journal, receipt],
+            "finding_review": [f"{REVIEW}/facts/store/agencies/{SLUG}/FACTS.csv", f"{REVIEW}/facts/store/agencies/{SLUG}/FACT-REVIEWS.csv",
+                               f"{run}/FINDINGS.csv", f"{run}/PUBLIC-OK.csv", "rehearsal.allowed_signers",
+                               "analysis/.analysis/finding-reviews.jsonl"],
+            "packet_stage": [],
+            "packet_import": [sent.relative_to(self.sandbox).as_posix(), journal, receipt],
             "packet_state": [journal, receipt], "console_findings": [journal]}
 
     def expected(self):
@@ -165,11 +177,45 @@ class C1Steps(Base):
         for want in ("Packets switch: OFF.", "<dd>%s</dd>" % PACKET_ID, "<dt>status</dt><dd>proposed</dd>", "Exact signature payload"):
             self.assertIn(want, page)
         finding = {"finding_id": FINDING, "topic": TOPIC, "claim": CLAIM, "fact_ids": FACT_ID, "rule_ids": ""}
-        self.assertEqual(console_findings.load_all(os.path.realpath(self.sandbox / "analysis")), {"state": "ok", "broken": 0, "rows": [{
-            "agency": SLUG, "finding_id": FINDING, "review_state": "unreviewed", "reason": None, "hold_code": "EVIDENCE_FACT_UNREVIEWED",
+        root = os.path.realpath(self.sandbox / "analysis")
+        with rehearsal_trust.sandbox_anchor(self.sandbox, self.sandbox / "rehearsal.allowed_signers"), \
+                mock.patch.dict(os.environ, HOME=str(self.sandbox)):  # the signed review verifies only against the sandbox anchor
+            model = console_findings.load_all(root)
+        self.assertEqual(model, {"state": "ok", "broken": 0, "rows": [{
+            "agency": SLUG, "finding_id": FINDING, "review_state": "approved", "reason": None, "hold_code": None,
             "f4_verdict": "unavailable", "topic": TOPIC, "claim": CLAIM, "fact_ids": FACT_ID, "rule_ids": "",
             "finding_sha256": finding_review.finding_hash(finding), "payload": finding_review.finding_payload(SLUG, finding),
             "facts": [{"fact_id": FACT_ID, "source_sha256": DIGEST, "page": "2", "quote": PAGES[1]}]}]})
+
+    def test_c1_the_review_is_signed_by_the_sandbox_signer_and_trust_is_restored(self):
+        """C1: the packet exists only because a sandbox-signed review of the exact finding verified; approval's globals are restored."""
+        signers, check = approval.TRUSTED_SIGNERS, approval._require_root
+        self.run_driver()
+        self.assertEqual((approval.TRUSTED_SIGNERS, approval._require_root), (signers, check))
+        (entry,) = [json.loads(x) for x in (self.sandbox / "analysis/.analysis/finding-reviews.jsonl").read_text().splitlines()]
+        self.assertEqual((entry["decision"], entry["agency"], entry["finding_id"], entry["principal"]),
+                         ("approve", SLUG, FINDING, "stage20-rehearsal"))
+        self.assertIn("BEGIN SSH SIGNATURE", entry["signature"])
+        # Outside the sandbox anchor the same review is not trusted: the live trust anchor never saw this key.
+        state = finding_review.Reviews(self.sandbox / "analysis").state(SLUG, {
+            "finding_id": FINDING, "topic": TOPIC, "claim": CLAIM, "fact_ids": FACT_ID, "rule_ids": ""})
+        self.assertNotEqual(state["state"], "approved")
+
+    def test_c1_without_a_review_the_real_lane_holds_the_finding_and_stages_nothing(self):
+        """C1 negative: no review -> the real packet path holds FINDING_UNREVIEWED, stages zero packets, and packet_stage fails.
+
+        Catches a driver that fabricates the finding packet (the earlier version imported an unreviewed, held finding as public).
+        """
+        def seed_only(p):
+            return driver._analysis_result(p, json.loads(p.config.read_text(encoding="utf-8")))
+        with mock.patch.object(driver, "_finding_review", side_effect=seed_only):
+            self.failed("packet_stage", "FINDINGS_PACKET_NOT_STAGED")
+        self.assertFalse(self.sandbox.joinpath("analysis/.analysis/packet-outbox").exists())
+        self.assertFalse(os.path.lexists(self.project / "public-packets.jsonl"))
+        config = json.loads((self.sandbox / "analysis/agencies" / SLUG / "review-config.json").read_text())
+        with mock.patch.dict(os.environ, HOME=str(self.sandbox)):
+            outcome, _, _, summary, write = analysis_bridge._packets(self.sandbox / "analysis", SLUG, config)
+        self.assertEqual((outcome, summary, write), ("PACKET_ALL_HELD", "n=0 held=1 FINDING_UNREVIEWED=1", None))
 
     def test_c1_export_failure_stops_at_seed(self):
         """C1: an analysis-export that does not export the run fails seed with FINDINGS_EXPORT_FAILED."""
@@ -212,7 +258,15 @@ class C1Steps(Base):
 
     def test_c1_an_unreadable_findings_view_fails_console_findings(self):
         """C1: /findings that cannot read the agency fails console_findings with FINDINGS_FINDINGS_PAGE."""
-        with mock.patch.object(finding_review, "list_findings", side_effect=finding_review.FindingReviewError("finding_inputs_unavailable")):
+        real = finding_review.list_findings
+        calls = []
+
+        def unreadable(*args, **kwargs):
+            if not calls:  # the first call is the finding_review step reading the payload to sign
+                calls.append(1)
+                return real(*args, **kwargs)
+            raise finding_review.FindingReviewError("finding_inputs_unavailable")
+        with mock.patch.object(finding_review, "list_findings", side_effect=unreadable):
             self.failed("console_findings", "FINDINGS_FINDINGS_PAGE")
 
     def test_c1_a_console_read_that_writes_fails(self):

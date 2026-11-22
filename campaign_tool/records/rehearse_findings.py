@@ -3,15 +3,17 @@
 The steps follow deploy/records-runtime/run-analysis.sh.in. The driver calls the real verbs in-process: analysis-export,
 analysis-sync (receive, then replay) and analysis-packets-import. It then reads back the packet journal and the console's
 /packets and /findings handlers. The review DAG (analysis-tick) waits for model and human stages, so the driver does not
-run it. The packet step writes two stand-ins for its result: the analysis files for the one synthetic finding, and the
-host outbox file a reviewed finding stages. Every byte is synthetic and stays inside the sandbox. That includes the
-sandbox's own extraction ledger, which is not the canonical ledger. Nothing is approved, signed, sent or published, the
-publication switch stays OFF and no site-change file is written. The result carries only paths, hashes and fixed codes,
+run it. The driver stands in for only the DAG's model stages (one synthetic fact and one PUBLIC-OK finding). A
+sandbox-generated signer, trusted only inside the marked sandbox through rehearsal_trust.sandbox_anchor, signs a review of
+that exact finding. The real finding_review and analysis_bridge packet path then stage the outbox file; nothing fabricates a
+packet, and an unreviewed finding is held, not staged. Every byte is synthetic and stays inside the sandbox. That includes the
+sandbox's own extraction ledger, which is not the canonical ledger. Nothing is approved for publication, sent or published,
+the publication switch stays OFF and no site-change file is written. The result carries only paths, hashes and fixed codes,
 never record or finding text.
 """
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import csv
 import hashlib
 from io import StringIO
@@ -20,13 +22,16 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import subprocess
 import sys
 import tempfile
 from types import SimpleNamespace
+from unittest.mock import patch
 
-from .. import law
+from .. import approval, law
 from . import analysis_bridge, analysis_config, analysis_export, analysis_packets, console_findings
 from . import console_packets, console_page_findings, extraction_routes, finding_review, public_packets
+from . import rehearsal_trust, rehearse_anchor
 from .extraction_ledger import ExtractionLedgerAdapter, canonical, sha
 from .ledger import store
 from .outcomes import analysis_ready, received_items
@@ -47,7 +52,7 @@ _FINDING = "SYN-F1"
 _TOPIC = "Synthetic rehearsal topic"
 _CLAIM = "Synthetic rehearsal claim for the stage 16 sandbox."
 _FACT = {"fact_type": "synthetic_observation", "value": "synthetic value", "page": "2", "verbatim_quote": _PAGES[1]}
-_HOLD = "EVIDENCE_FACT_UNREVIEWED"  # the facts are unreviewed and no human reviewed the finding
+_REVIEWED = "2026-11-03"  # the synthetic fact review date (after the fact's added_at)
 
 
 class _StepFailed(Exception):
@@ -105,7 +110,8 @@ def _paths(sandbox):
         outcomes=project / "run-outputs" / _RUN / "outcomes", profile=analysis / "profiles" / (_SLUG + ".json"),
         config=analysis / "agencies" / _SLUG / "review-config.json",
         outbox=analysis / ".analysis" / "packet-outbox", journal=project / public_packets.JOURNAL,
-        receipt=project / analysis_packets.RECEIPT, ledger=analysis / ".analysis" / "analysis-ledger.jsonl")
+        receipt=project / analysis_packets.RECEIPT, ledger=analysis / ".analysis" / "analysis-ledger.jsonl",
+        signers=sandbox / "rehearsal.allowed_signers", key=sandbox / "trusted")
 
 
 def _digest():
@@ -217,8 +223,19 @@ def _analysis_sync(p):
     return [retained / "EXPORT.json", p.analysis / "agencies" / _SLUG / "review" / "inputs" / "SOURCES.csv", p.config, p.ledger]
 
 
+@contextmanager
+def _trusted(p):
+    """Trust only the sandbox's synthetic signers file (the DFRM-10 seam); approval's globals are restored on exit."""
+    with rehearsal_trust.sandbox_anchor(p.sandbox, p.signers), patch.dict(os.environ, HOME=str(p.sandbox)):
+        yield
+
+
 def _analysis_result(p, config):
-    """Stand-in for the finished review DAG: one unreviewed record fact and one PUBLIC-OK finding citing it."""
+    """Stand-in for the finished review DAG's model stages: one record fact and one PUBLIC-OK finding citing it.
+
+    Only these inputs are synthetic. The fact is then checked through the real `flock_facts review` verb, and the packet
+    itself is never written here: the real packet path (`analysis_bridge._packets`) derives it, or holds the finding.
+    """
     facts_tool, compare, verify = (analysis_bridge._tool(name) for name in ("flock_facts", "flock_compare", "flock_verify"))
     fact = dict(_FACT, agency=_NAME, request=_REQUEST, source_sha256=_digest(), kind="record", effective_from="", effective_to="",
                 added_by="synthetic-analysis", added_at=_RECEIVED[:10], status="unreviewed")
@@ -226,40 +243,58 @@ def _analysis_result(p, config):
     finding = {"finding_id": _FINDING, "topic": _TOPIC, "claim_class": "synthetic", "rating": "synthetic", "claim": _CLAIM,
                "fact_ids": fact["fact_id"], "rule_ids": "", "policy_refs": ""}
     run = Path(config["compare"]["f3"]["store"]) / "agencies" / _SLUG / "runs" / config["review"]["run_date"]
-    return fact, [_put(Path(config["compare"]["facts"]), facts_tool.serialize([fact])),
-                  _put(run / "FINDINGS.csv", _csv_bytes(compare.HEADER, [finding])),
-                  _put(run / "PUBLIC-OK.csv", _csv_bytes(verify.PUBLIC, [finding]))]
+    facts = _put(Path(config["compare"]["facts"]), facts_tool.serialize([fact]))
+    store = Path(config["facts_intake"]["fact_store"])
+    status, _, _ = _call(facts_tool.main, ["review", "--store", str(store), "--agency", _SLUG, "--ids", fact["fact_id"],
+                                           "--set", "checked", "--reviewer", "synthetic-fact-reviewer", "--date", _REVIEWED])
+    if status != 0:
+        raise _StepFailed("FINDINGS_FACT_REVIEW_REFUSED")
+    return [facts, store / "agencies" / _SLUG / "FACT-REVIEWS.csv",
+            _put(run / "FINDINGS.csv", _csv_bytes(compare.HEADER, [finding])),
+            _put(run / "PUBLIC-OK.csv", _csv_bytes(verify.PUBLIC, [finding]))]
 
 
-def _outbox_body(fact):
-    """The analysis-packet body the host stages for the finding once it is reviewed (the shape analysis_bridge writes)."""
-    digest = _digest()
-    packet = {"kind": "finding", "agency_key": _AGENCY, "request_id": _REQUEST,
-              "source": "fr-" + hashlib.sha256((_SLUG + "\x1f" + _FINDING).encode()).hexdigest()[:24], "title": _TOPIC,
-              "text": _CLAIM, "finding_state": public_packets.PUBLIC_STATE,
-              "documents": [{"sha256": digest, "date_received": _RECEIVED[:10], "source_request": _REQUEST, "redaction_ids": [],
-                             "use_restriction": False}],
-              "citations": [{"ref": "record %s page %s (%s)" % (digest[:12], fact["page"], fact["fact_id"]), "verified": True}]}
-    provenance = {"finding_id": _FINDING, "fact_ids": [fact["fact_id"]], "rule_ids": [], "withheld_rule_ids": [],
-                  "withheld_policy_refs": [], "documents": [{"sha256": digest, "run_id": _RUN, "received_at": _RECEIVED,
-                                                              "received_at_source": "mail_received_at"}]}
-    body = {"schema": analysis_packets.SCHEMA, "agency_id": _AGENCY, "slug": _SLUG, "packets": [{"packet": packet, "provenance": provenance}],
-            "held": []}
-    return dict(body, key=hashlib.sha256(json.dumps(body, sort_keys=True).encode()).hexdigest())
+def _sign(p, payload):
+    """The sandbox signer signs the exact finding payload, as a human reviewer's key would (ssh-keygen -Y sign)."""
+    approval._require_root(approval.SSH_KEYGEN)
+    done = subprocess.run([str(approval.SSH_KEYGEN), "-Y", "sign", "-n", approval.NAMESPACE, "-f", str(p.key)],
+                          input=payload.encode("utf-8"), cwd=p.sandbox, env={"HOME": str(p.sandbox), "LC_ALL": "C"},
+                          capture_output=True, check=True, timeout=30)
+    return done.stdout.decode("ascii")
+
+
+def _finding_review(p):
+    """Seed the one synthetic finding, then record a sandbox-signed review of exactly that finding through the real verbs."""
+    written = _analysis_result(p, json.loads(p.config.read_text(encoding="utf-8")))
+    signers = rehearse_anchor.make_signer(p.sandbox)
+    with _trusted(p):
+        (row,) = [r for r in finding_review.list_findings(p.analysis, agency=_SLUG) if r["finding_id"] == _FINDING]
+        entry = finding_review.approve(p.analysis, _SLUG, _FINDING, _sign(p, row["payload"]), expected_hash=row["finding_sha256"])
+    if entry.get("idempotent") or entry.get("decision") != "approve":
+        raise _StepFailed("FINDINGS_REVIEW_NOT_RECORDED")
+    return [*written, *signers, p.sandbox / "analysis" / ".analysis" / "finding-reviews.jsonl"]
+
+
+def _packet_stage(p):
+    """The real analysis_bridge packet path stages the outbox file; nothing here writes or edits a packet."""
+    with _trusted(p):
+        outcome, _, _, summary, write = analysis_bridge._packets(p.analysis, _SLUG, json.loads(p.config.read_text(encoding="utf-8")))
+    if outcome != "PACKET_STAGED" or summary != "n=1 held=0" or write is None:
+        raise _StepFailed("FINDINGS_PACKET_NOT_STAGED")
+    review, path, data = write
+    review.put(path, data)  # as analysis-tick does after _packets
+    return []
 
 
 def _packet_import(p):
-    fact, written = _analysis_result(p, json.loads(p.config.read_text(encoding="utf-8")))
-    body = _outbox_body(fact)
-    name = "%s-%s.json" % (_SLUG, body["key"][:12])
-    staged = _put(p.outbox / name, (json.dumps(body, indent=1, sort_keys=True) + "\n").encode())
+    (staged,) = [x for x in p.outbox.iterdir() if x.is_file()]
     status, out, _ = _call(analysis_packets.main, ["--project", str(p.project), "--from", str(p.outbox)])
     if (status, out.splitlines()[-1:]) != (0, ["analysis-packets-import: proposed=1 invalid=0"]):
         raise _StepFailed("FINDINGS_IMPORT_REFUSED")
-    sent = p.outbox / "sent" / name  # as run-analysis.sh moves an imported outbox file
+    sent = p.outbox / "sent" / staged.name  # as run-analysis.sh moves an imported outbox file
     sent.parent.mkdir(mode=0o700)
     os.replace(staged, sent)
-    return [*written, sent, p.journal, p.receipt]
+    return [sent, p.journal, p.receipt]
 
 
 def _packet_state(p):
@@ -325,13 +360,16 @@ def _console_findings(p):
     if (status != 200 or page.count("<section>") != 1 or "Packets switch: OFF." not in page or "<form" in page
             or "<dd>%s</dd>" % row["id"] not in page or "<dt>status</dt><dd>proposed</dd>" not in page):
         raise _StepFailed("FINDINGS_PACKETS_PAGE")
-    model = console_findings.load_all(root)
+    with _trusted(p):  # the review's signature is re-verified against the sandbox anchor
+        model = console_findings.load_all(root)
     listed = [(r.get("agency"), r.get("finding_id"), r.get("topic"), r.get("review_state"), r.get("hold_code"))
               for r in model.get("rows", [])]
     findings = _Handler("/findings", project, root)
-    if (model.get("state"), model.get("broken"), listed) != ("ok", 0, [(_SLUG, _FINDING, _TOPIC, "unreviewed", _HOLD)]):
+    if (model.get("state"), model.get("broken"), listed) != ("ok", 0, [(_SLUG, _FINDING, _TOPIC, "approved", None)]):
         raise _StepFailed("FINDINGS_FINDINGS_PAGE")
-    if not console_page_findings.serve(findings) or len(findings.sent) != 1:
+    with _trusted(p):
+        served = console_page_findings.serve(findings)
+    if not served or len(findings.sent) != 1:
         raise _StepFailed("FINDINGS_FINDINGS_PAGE")
     status, page = findings.sent[0]
     if status != 200 or "1 finding in every review state." not in page or _FINDING not in page or row["id"] in page:
@@ -350,7 +388,8 @@ def run(sandbox):
     saved = tempfile.tempdir
     tempfile.tempdir = str(p.tmp)  # analysis_config's flock_review --check copy stays inside the sandbox
     try:
-        for name, action in (("seed", _seed), ("analysis_sync", _analysis_sync), ("packet_import", _packet_import),
+        for name, action in (("seed", _seed), ("analysis_sync", _analysis_sync), ("finding_review", _finding_review),
+                             ("packet_stage", _packet_stage), ("packet_import", _packet_import),
                              ("packet_state", _packet_state), ("console_findings", _console_findings)):
             step = {"name": name, "code": "OK", "outputs": []}
             try:
@@ -359,7 +398,8 @@ def run(sandbox):
             except _StepFailed as error:
                 step["code"] = error.args[0]
             except (OSError, ValueError, KeyError, TypeError, sqlite3.Error,
-                    public_packets.PacketError, finding_review.FindingReviewError):
+                    public_packets.PacketError, finding_review.FindingReviewError, approval.ApprovalError,
+                    subprocess.SubprocessError):
                 # Do not print a dependency exception: it may carry record text or private paths.
                 step["code"] = "FINDINGS_" + name.upper() + "_ERROR"
             result["steps"].append(step)
