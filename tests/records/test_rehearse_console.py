@@ -247,6 +247,7 @@ class RehearseConsoleTests(unittest.TestCase):
                 rehearse_console.run(self.sandbox)
         self.assertIs(type(raised.exception), KeyboardInterrupt)
         self.assert_stopped()
+        self.assertFalse(any(w in threading.enumerate() for w in self.workers))
 
     def test_c2_start_failure_closes_bound_listener(self):
         """C2: A thread start failure leaves no socket open despite an already successful bind."""
@@ -269,6 +270,39 @@ class RehearseConsoleTests(unittest.TestCase):
         self.assertEqual(len(self.workers), 1)
         self.assertFalse(self.workers[0].is_alive())
         self.assert_stopped()
+
+    def test_c2_interrupt_before_worker_bootstraps_never_serves(self):
+        """C2: An interrupt after the native launch but before the worker runs or has an ident must leave
+        no server running; cleanup may not depend on Thread.ident (a worker that sees `stopped` never serves)."""
+        release = threading.Event()
+        launched = []
+        real_thread = rehearse_console.Thread
+
+        class LateWorker(real_thread):
+            def __init__(self, *args, target=None, **kwargs):
+                def held(*a, **kw):
+                    release.wait(10)
+                    target(*a, **kw)
+                super().__init__(*args, target=held, **kwargs)
+                launched.append(self)
+
+            @property
+            def ident(self):  # still "bootstrapping": no ident visible to cleanup
+                return None if not release.is_set() else super().ident
+
+            def start(self):
+                super().start()
+                raise KeyboardInterrupt
+
+        with self.listen(), patch.object(rehearse_console, "Thread", LateWorker):
+            with self.assertRaises(KeyboardInterrupt):
+                rehearse_console.run(self.sandbox)
+            worker, = launched
+            release.set()
+            worker.join(5)
+            self.assertFalse(worker.is_alive(), "worker still running after the listener closed")
+            self.assertEqual(self.workers, [], "worker entered serve_forever after cleanup")
+            self.assert_stopped(started=False)
 
     def test_c2_failure_before_start_leaves_no_thread(self):
         """C2: An exception before the worker starts leaves no thread and a closed listener."""

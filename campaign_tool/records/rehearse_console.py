@@ -10,7 +10,7 @@ import os
 import socket
 import stat
 from pathlib import Path
-from threading import Thread
+from threading import Event, Lock, Thread
 from unittest.mock import patch
 
 from . import admin_panel, console_check, console_export, run_stages
@@ -127,7 +127,22 @@ def run(sandbox):
         return step("start_console", "CONSOLE_START_FAILED")
     with server:
         port = server.server_port
-        worker = Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05})
+        gate = Lock()
+        state = {"stopped": False, "serving": False}
+        done = Event()
+
+        def serve():
+            with gate:
+                if state["stopped"]:
+                    done.set()
+                    return
+                state["serving"] = True
+            try:
+                server.serve_forever(poll_interval=0.05)
+            finally:
+                done.set()
+
+        worker = Thread(target=serve)
         try:
             try:
                 worker.start()
@@ -160,10 +175,16 @@ def run(sandbox):
                 return step("console_check", code)
             step("console_check")
         finally:
-            # Entered before start(): an interrupt raised inside start() can
-            # leave the worker already running. Stop it before the socket closes.
-            if worker.ident is not None:
+            # Entered before start(). Once `stopped` is set under the gate, the worker either already
+            # set `serving` (so shutdown stops it) or sees `stopped` and returns without serving.
+            with gate:
+                state["stopped"] = True
+                serving = state["serving"]
+            if serving:
                 server.shutdown()
+            if serving or worker.is_alive():
+                done.wait(_JOIN_TIMEOUT)
+            if worker.is_alive():
                 worker.join(_JOIN_TIMEOUT)
 
     try:
