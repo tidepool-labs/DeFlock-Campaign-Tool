@@ -87,11 +87,11 @@ def _open_directory(directory):
 def _names(dir_fd, label):
     names = []
     with os.scandir(dir_fd) as entries:
-        for entry in entries:
+        for count, entry in enumerate(entries, start=1):
+            if count > _MAX_FILES:
+                raise ValueError(f"{label}: more than {_MAX_FILES} directory entries")
             if entry.name.endswith(".json"):
                 names.append(entry.name)
-                if len(names) > _MAX_FILES:
-                    raise ValueError(f"{label}: more than {_MAX_FILES} JSON files")
     return sorted(names)
 
 

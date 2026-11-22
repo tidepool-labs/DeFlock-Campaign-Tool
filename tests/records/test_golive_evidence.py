@@ -221,10 +221,18 @@ class DirectoryTests(EvidenceCase):
             record = row(source=row()["source"] | {"sha256": digest})
             self.put(f"20261121T190000Z-17b-gate-{index:08x}.json", record)
             expected.append(record)
-        (self.directory / "notes.md").touch()
         self.assertEqual(evidence.load(self.directory), expected)
         self.put("20261121T190001Z-17b-gate-01234567.json", row(recorded_at="2026-11-21T19:00:01Z"))
-        self.refuses(evidence.load, f"{self.directory}: more than 5000 JSON files", self.directory)
+        self.refuses(evidence.load, f"{self.directory}: more than 5000 directory entries", self.directory)
+
+    def test_c2_count_boundary_includes_non_json_entries(self):
+        """C2: filtering by extension must not let an oversized directory pass."""
+        self.put()
+        for index in range(4999):
+            (self.directory / f"notes-{index}.txt").touch()
+        self.assertEqual(evidence.load(self.directory), [row()])
+        (self.directory / "overflow.txt").touch()
+        self.refuses(evidence.load, f"{self.directory}: more than 5000 directory entries", self.directory)
 
     def test_c2_rejects_symlink_swap_at_open(self):
         """C2: an entry replaced by a symlink after metadata checks still isn't read."""
