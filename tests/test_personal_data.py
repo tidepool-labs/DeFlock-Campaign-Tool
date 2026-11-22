@@ -970,6 +970,7 @@ _MODULES = {
     "synthetic rehearsal files only, in an explicit empty owner-only sandbox; no catalog store": "records.rehearse_arrival",
     "synthetic stage 19 rehearsal files only, under the caller's private sandbox; no live records or catalog writes": "records.rehearse_backup",
     "synthetic rehearsal inputs and evidence written only in the caller's private sandbox; no personal-data store": "records.rehearse_monitoring",
+    "synthetic phone rehearsal marker and allowed signers only, inside the caller's private sandbox": "records.rehearse_phone_sign",
     "synthetic stage-15 rehearsal files only under an empty private sandbox; no live records or sends": "records.rehearse_followup_engine",
     "synthetic stage-16 analysis-lane rehearsal files only under an empty private sandbox; no live records, approvals or publication": "records.rehearse_findings",
     "opt-in private health alerts with fixed failure codes only; no record bytes or catalog store": "records.console_check",
@@ -1198,6 +1199,7 @@ MODULE_FUNCTIONS = {
     'records.rehearsal_receipt': ('write',),  # Synthetic receipt only, written privately to an explicit output directory.
     'records.rehearse': ('_run_driver',),  # Synthetic receipt only, inside its fresh private sandbox.
     'records.rehearse_anchor': ('_write_private', 'anchor_missing', 'approve_signed', 'approve_wrong_key', 'make_signer', 'run',),
+    'records.rehearse_phone_sign': ('_enrol', 'run',),  # Sandbox allowed-signers file and marker only.
     'records.rehearse_backup': ('_capture_units', '_mark_sandbox', '_seed_project', '_write', 'run.verify'),  # synthetic sandbox only
     'records.rehearse_monitoring': ('_add_report', '_observe', '_write_json',),
     'records.rehearse_followup_engine': ('_init_project', '_seed_inputs', '_write_json',),
