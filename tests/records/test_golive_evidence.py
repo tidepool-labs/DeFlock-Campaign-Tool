@@ -303,9 +303,9 @@ class DirectoryTests(EvidenceCase):
             self.assertEqual((process.returncode, process.stdout, process.stderr), (0, stdout, ""))
 
     def test_c4_unknown_field_names_are_not_disclosed(self):
-        secret = "synthetic receipt text\nprivate detail"
-        for record, location in [(row(**{secret: "value"}), "$"),
-                                 (row(source=row()["source"] | {secret: "value"}), "$.source")]:
+        untrusted_name = "synthetic receipt text\nprivate detail"
+        for record, location in [(row(**{untrusted_name: "value"}), "$"),
+                                 (row(source=row()["source"] | {untrusted_name: "value"}), "$.source")]:
             with self.subTest(location=location):
                 self.put(record=record)
                 self.refuses(evidence.validate, f"{location}: unexpected field", record)
