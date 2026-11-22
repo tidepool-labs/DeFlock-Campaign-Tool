@@ -85,6 +85,8 @@ def validate_item(item):
     for d in deadlines:
         _need(isinstance(d, dict) and _citation(d.get("page"), d.get("quote")) and _text(d.get("date_text", "")),
               "deadline")
+        date = d.get("date")
+        _need(date is None or isinstance(date, str), "deadline")
 
 
 def select(item):
