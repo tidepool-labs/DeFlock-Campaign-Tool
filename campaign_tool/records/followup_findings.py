@@ -88,8 +88,12 @@ def load_reviewed_contradictions(project, run_id, analysis_root):
         try:
             report = fs._read(project / "run-outputs" / run_id / "outcomes" / "received-items.json")
         except FileNotFoundError:
-            report = {}
-        received = [i for i in report.get("items", []) if isinstance(i, dict)]
+            received = []
+        else:
+            if (not isinstance(report, dict) or report.get("schema") != received_items.SCHEMA
+                    or report.get("run_id") != run_id or not isinstance(report.get("items"), list)):
+                raise FindingsUnavailable()
+            received = [i for i in report["items"] if isinstance(i, dict)]
         slugs = collections.defaultdict(list)
         for path in sorted(root.glob("agencies/*/review-config.json")):
             slug = path.parent.name
