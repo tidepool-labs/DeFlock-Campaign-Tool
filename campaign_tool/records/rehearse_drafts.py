@@ -228,17 +228,25 @@ def _guarded(sandbox):
                 guard.refuse("open_write" if flags & _WRITE_FLAGS else "open_read")
             guard.check_open(os.path.join(base, name), None, flags)
         return real_open(path, flags, mode, dir_fd=dir_fd)
-    os.open = open_at
-    os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
-    # the replay worker child inherits that cwd, so it must find the engine by path rather than by the old cwd
-    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(_ENGINE), path_env)))
-    _GUARD = guard
+    supports = os.supports_dir_fd
+    added = open_at not in supports
+    entered = False
     try:
+        os.open = open_at
+        supports.add(open_at)  # keep "os.open in os.supports_dir_fd" true while the wrapper is installed
+        os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
+        entered = True
+        # the replay worker child inherits that cwd, so it must find the engine by path rather than the old cwd
+        os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(_ENGINE), path_env)))
+        _GUARD = guard
         yield guard
-    finally:
+    finally:  # every setup failure restores the process state it had already changed
         _GUARD = None
         os.open = real_open
-        os.chdir(previous)
+        if added:
+            supports.discard(open_at)
+        if entered:
+            os.chdir(previous)
         if path_env is None:
             os.environ.pop("PYTHONPATH", None)
         else:

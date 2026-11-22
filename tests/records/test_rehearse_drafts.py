@@ -494,6 +494,28 @@ class DriverContractTests(_Base):
         self.assertEqual(guard.violations, ["open_read", "open_write", "open_read"])
         self.assertEqual(self.outside.read_text(encoding="utf-8"), "not sandbox data\n")
 
+    def test_c4_failed_guard_entry_restores_process_state(self):
+        """C4: a sandbox that vanishes before the chdir leaves os.open, cwd, PYTHONPATH and dir_fd support untouched.
+
+        Bug caught: the os.open wrapper was installed before the try/finally, so a failed entry left it in place.
+        """
+        real_open, cwd = os.open, os.getcwd()
+        path_env, supported = os.environ.get("PYTHONPATH"), os.open in os.supports_dir_fd
+        with self.assertRaises(FileNotFoundError):
+            with driver._guarded(self.root / "missing_sandbox"):
+                self.fail("the guarded window must not open")
+        self.assertIs(os.open, real_open)
+        self.assertEqual(os.getcwd(), cwd)
+        self.assertEqual(os.environ.get("PYTHONPATH"), path_env)
+        self.assertEqual(os.open in os.supports_dir_fd, supported)
+        self.assertIsNone(driver._GUARD)
+        sandbox = self.root / "ok_sandbox"
+        sandbox.mkdir()
+        with driver._guarded(sandbox):
+            self.assertTrue(os.open in os.supports_dir_fd)
+        self.assertIs(os.open, real_open)
+        self.assertEqual(os.open in os.supports_dir_fd, supported)
+
     def test_c3_dir_fd_relative_open_of_a_host_directory_is_refused(self):
         """C3: os.open(name, dir_fd=<host dir>) resolves against that descriptor, not the cwd: read and write refused.
 
