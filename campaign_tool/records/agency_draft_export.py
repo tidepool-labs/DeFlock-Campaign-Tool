@@ -55,12 +55,14 @@ def _read(path, cap, code):
 
 
 def letter(markdown, section):
-    """(subject, body) from the first quote block under the exact heading text."""
+    """(subject, body) from the first quote block under a unique exact heading."""
     lines = markdown.replace("\r\n", "\n").split("\n")
     heads = [i for i, line in enumerate(lines) if HEADING.fullmatch(line.rstrip("\r"))]
     starts = [i for i in heads if HEADING.fullmatch(lines[i].rstrip("\r")).group(1) == section]
     if not starts:
         raise Refuse("section_unknown")
+    if len(starts) > 1:
+        raise Refuse("section_ambiguous")
     block = []
     for line in lines[starts[0] + 1:]:
         if HEADING.fullmatch(line.rstrip("\r")):
