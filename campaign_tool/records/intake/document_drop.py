@@ -1,4 +1,7 @@
 """Verified local PDF/XLSX acquisition. No fabricated mail or origin claims."""
+from contextlib import suppress
+import ctypes
+import errno
 import hashlib
 import io
 import json
@@ -136,13 +139,33 @@ def capture(output, path, manifest, entry):
             existing, _ = target.read(receipt_sha, 16384)
             require(existing == body)
         except FileNotFoundError:
-            fd = os.open(receipt_sha, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+            pending = ".receipt-" + os.urandom(16).hex()
+            fd = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC,
                          0o600, dir_fd=target.fd)
-            with os.fdopen(fd, "wb") as stream:
-                stream.write(body)
-                stream.flush()
-                os.fsync(stream.fileno())
-            os.fsync(target.fd)
+            try:
+                with os.fdopen(fd, "wb") as stream:
+                    os.fchmod(stream.fileno(), 0o600)
+                    stream.write(body)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                target.check()
+                # The records runtime requires Linux RENAME_NOREPLACE. Unlike
+                # linking then unlinking, this keeps the published inode single-linked.
+                rename = getattr(ctypes.CDLL(None, use_errno=True), "renameat2", None)
+                if rename is None:
+                    raise OSError(errno.ENOSYS, "no_replace_rename_unavailable")
+                rename.argtypes = [ctypes.c_int, ctypes.c_char_p, ctypes.c_int, ctypes.c_char_p, ctypes.c_uint]
+                rename.restype = ctypes.c_int
+                if rename(target.fd, os.fsencode(pending), target.fd, os.fsencode(receipt_sha), 1):
+                    code = ctypes.get_errno()
+                    if code != errno.EEXIST:
+                        raise OSError(code, os.strerror(code))
+                    existing, _ = target.read(receipt_sha, 16384)
+                    require(existing == body)
+            finally:
+                with suppress(FileNotFoundError):  # Successful rename consumed the temporary name.
+                    os.unlink(pending, dir_fd=target.fd)
+        os.fsync(target.fd)
     return receipt, receipt_sha, str(directory / receipt_sha)
 
 

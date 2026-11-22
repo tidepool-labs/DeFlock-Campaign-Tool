@@ -205,14 +205,20 @@ def _clocks(row, setting, today):
     return out
 
 
-HOLD_ARRIVAL = ("arrived_unrecorded", "unknown")  # answer_arrived.state (DF2307-01): a reply needs recording first
 RECORD_FIRST = "reply arrived; record it first"
 CHECK_REPLY_STATUS = "Reply status unclear; check the source"
 
 
-def _answer_unrecorded(row):
-    arrived = row.get("answer_arrived")
-    return isinstance(arrived, dict) and arrived.get("state") in HOLD_ARRIVAL
+def _arrival_hold_reason(row):
+    if "answer_arrived" not in row:
+        return None  # Legacy registers did not report arrival status.
+    arrived = row["answer_arrived"]
+    state = arrived.get("state") if isinstance(arrived, dict) else None
+    if not isinstance(state, str) or state == "unknown":
+        return CHECK_REPLY_STATUS
+    if state == "arrived_unrecorded":
+        return RECORD_FIRST
+    return None
 
 
 def _plan(register, settings, queue_rows, as_of):
@@ -221,7 +227,7 @@ def _plan(register, settings, queue_rows, as_of):
     counts = {"skipped_off": 0, "skipped_issue": 0, "not_due": 0, "skipped_answer_unrecorded": 0}
     found = []
     for row in register.get("requests", []):
-        if _answer_unrecorded(row):  # One skip per row; already queued drafts are never touched.
+        if _arrival_hold_reason(row):  # One skip per row; already queued drafts are never touched.
             counts["skipped_answer_unrecorded"] += 1
             continue
         setting = _setting(settings, row["agency_key"])
@@ -266,6 +272,7 @@ def reminder_status(register, settings, queue_rows, *, as_of):
     for row in register.get("requests", []):
         setting = _setting(settings, row["agency_key"])
         closed = str(row.get("status", "")).strip().casefold() in CLOSED
+        hold_reason = _arrival_hold_reason(row)
         for kind, clock_date, due in followup_due(dict(row, status="open"), setting):
             source = row.get("deadline" if kind == "determination" else "promised") or {}
             key = (row["agency_key"], row["request_id"], kind, clock_date)
@@ -276,9 +283,8 @@ def reminder_status(register, settings, queue_rows, *, as_of):
             pair = (ident, REMINDERS[0 if kind == "determination" else 1])
             match = queued.get(pair) if pair in candidates else None
             state, reason = None, "No reminder draft queued"
-            if _answer_unrecorded(row):
-                reason = (CHECK_REPLY_STATUS if row["answer_arrived"]["state"] == "unknown"
-                          else RECORD_FIRST)
+            if hold_reason:
+                reason = hold_reason
             elif closed:
                 state, reason = "closed", "Request closed"
             elif setting["autonomy"] != "draft":

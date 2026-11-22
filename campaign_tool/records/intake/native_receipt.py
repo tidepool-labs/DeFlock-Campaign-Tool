@@ -37,7 +37,8 @@ def parse(receipt):
          and type(attachments) is list and type(native) is list
          and len(attachments) + len(native) <= 100, "invalid_receipt_shape")
     size = delta.number(original.get("bytes"), "invalid_eml_bytes", delta.MAX_EML)
-    need(receipt.get("bytes") == size and type(original.get("path")) is str,
+    receipt_size = receipt.get("bytes")
+    need(type(receipt_size) is int and receipt_size == size and type(original.get("path")) is str,
          "receipt_bytes_mismatch")
     items = [dict(part="0", sha=delta.digest(original.get("sha256")), size=size,
                   path=original["path"], kind=original["format"], source=original)]

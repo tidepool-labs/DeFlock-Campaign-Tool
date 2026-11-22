@@ -13,6 +13,7 @@ import csv
 import datetime
 import re
 import sys
+from collections import Counter
 
 REQUIRED = (
     "request_id", "agency", "scope", "submitted_at", "agency received date", "receipt_basis",
@@ -80,6 +81,10 @@ def check_proposal(path, mail_index=None):
         missing = [c for c in REQUIRED if c not in names]
         if missing:
             return [], ["header_missing:" + c for c in missing]
+        # DictReader would silently keep only the last value for a repeated name.
+        duplicates = [c for c, count in Counter(names).items() if count > 1]
+        if duplicates:
+            return [], ["header_duplicate:" + c for c in duplicates]
         rows = list(reader)
     problems, seen = [], set()
     for number, row in enumerate(rows, 2):
