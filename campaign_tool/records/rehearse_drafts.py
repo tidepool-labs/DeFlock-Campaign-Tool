@@ -174,11 +174,13 @@ class _Boundary:
         if not isinstance(path, (str, bytes, os.PathLike)):
             return  # an already-open descriptor
         path = os.fsdecode(path)
-        if not os.path.isabs(path):
-            return  # a dir_fd-relative step below an absolute anchor that was itself checked here
         flags = flags if type(flags) is int else 0
         write = bool(flags & _WRITE_FLAGS) or (isinstance(mode, str) and any(c in mode for c in "wax+"))
-        for candidate in dict.fromkeys((os.path.normpath(path), os.path.realpath(path))):
+        if not os.path.isabs(path):
+            if ".." in path.split(os.sep):
+                self.refuse("open_write" if write else "open_read")
+            path = os.path.join(os.getcwd(), path)  # the guarded window runs with cwd at the sandbox root
+        for candidate in (os.path.realpath(path),):  # the real path alone decides, never the lexical form
             if _inside(candidate, self.sandbox):
                 return
             if write:
@@ -206,11 +208,22 @@ def _guarded(sandbox):
         _HOOKED = True
     if _GUARD is not None:
         raise ValueError("REHEARSAL_ALREADY_RUNNING")
-    guard = _GUARD = _Boundary(sandbox)
+    guard = _Boundary(sandbox)
+    previous = os.getcwd()
+    path_env = os.environ.get("PYTHONPATH")
+    os.chdir(os.path.realpath(sandbox))  # relative opens resolve inside the sandbox, not the host cwd
+    # the replay worker child inherits that cwd, so it must find the engine by path rather than by the old cwd
+    os.environ["PYTHONPATH"] = os.pathsep.join(filter(None, (str(_ENGINE), path_env)))
+    _GUARD = guard
     try:
         yield guard
     finally:
         _GUARD = None
+        os.chdir(previous)
+        if path_env is None:
+            os.environ.pop("PYTHONPATH", None)
+        else:
+            os.environ["PYTHONPATH"] = path_env
 
 
 def _resources_record(sandbox, guard):

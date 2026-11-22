@@ -451,6 +451,49 @@ class DriverContractTests(_Base):
         record = json.loads((self.sandbox / driver.RESOURCES_FILE).read_bytes())
         self.assertIn({"path": PACKAGE_LAW[0], "sha256": _digest(resource)}, record["resources"])
 
+    def test_c3_relative_dotdot_open_is_refused(self):
+        """C3: a relative ../ read or write that would reach a host file is refused and the file is unchanged."""
+        with driver._guarded(self.sandbox) as guard:
+            with self.assertRaises(PermissionError):
+                open("../outside.txt", "rb")
+            with self.assertRaises(PermissionError):
+                open("../outside.txt", "w")
+        self.assertEqual(guard.violations, ["open_read", "open_write"])
+        self.assertEqual(self.outside.read_text(encoding="utf-8"), "not sandbox data\n")
+
+    def test_c3_host_cwd_file_is_unreachable_by_a_relative_open(self):
+        """C3: a file only in the pre-rehearsal host cwd is not read; the cwd is the sandbox and is restored."""
+        host = self.root / "host_cwd"
+        host.mkdir()
+        (host / "only_host.txt").write_text("host", encoding="utf-8")
+        before = os.getcwd()
+        os.chdir(host)
+        try:
+            with driver._guarded(self.sandbox):
+                self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(self.sandbox))
+                with self.assertRaises(FileNotFoundError):
+                    open("only_host.txt", "rb")
+                (self.sandbox / "inside.txt").write_text("ok", encoding="utf-8")
+                with open("inside.txt", "rb") as handle:  # a relative open inside the sandbox still works
+                    self.assertEqual(handle.read(), b"ok")
+            self.assertEqual(os.path.realpath(os.getcwd()), os.path.realpath(host))
+        finally:
+            os.chdir(before)
+
+    def test_c3_symlink_inside_sandbox_to_a_host_file_is_refused(self):
+        """C3: an absolute sandbox path that is a symlink to a host file is refused for read and write."""
+        link = self.sandbox / "link.txt"
+        link.symlink_to(self.outside)
+        with driver._guarded(self.sandbox) as guard:
+            with self.assertRaises(PermissionError):
+                open(str(link), "rb")
+            with self.assertRaises(PermissionError):
+                open(str(link), "w")
+            with self.assertRaises(PermissionError):
+                open("link.txt", "rb")  # and the same link reached by a relative name
+        self.assertEqual(guard.violations, ["open_read", "open_write", "open_read"])
+        self.assertEqual(self.outside.read_text(encoding="utf-8"), "not sandbox data\n")
+
     def test_c3_guard_cannot_nest(self):
         """C3: a second guarded run inside a running one is refused with ValueError."""
         with driver._guarded(self.sandbox):
