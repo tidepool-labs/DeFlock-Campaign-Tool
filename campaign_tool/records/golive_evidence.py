@@ -39,7 +39,7 @@ def _validate(value, schema, where):
             _validate(value[field], schema["properties"][field], path)
         for field in value:
             if field not in schema["properties"]:
-                raise ValueError(f"{where}[{ascii(field)}]: unexpected field")
+                raise ValueError(f"{where}: unexpected field")
     elif schema["type"] == "array":
         if not isinstance(value, list):
             raise ValueError(f"{where}: expected array")

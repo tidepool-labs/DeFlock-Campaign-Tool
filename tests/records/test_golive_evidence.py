@@ -58,8 +58,8 @@ class ValidateTests(EvidenceCase):
             with self.subTest(source_field=field):
                 source = {k: v for k, v in row()["source"].items() if k != field}
                 self.refuses(evidence.validate, f"$.source.{field}: required", row(source=source))
-        self.refuses(evidence.validate, "$['notes']: unexpected field", row(notes="synthetic body"))
-        self.refuses(evidence.validate, "$.source['notes']: unexpected field",
+        self.refuses(evidence.validate, "$: unexpected field", row(notes="synthetic body"))
+        self.refuses(evidence.validate, "$.source: unexpected field",
                      row(source=row()["source"] | {"notes": "synthetic body"}))
 
     def test_c1_scalar_refusals(self):
@@ -293,6 +293,19 @@ class DirectoryTests(EvidenceCase):
         for args, stdout in [((), ""), (("--json",), "[]\n")]:
             process = self.run_cli(*args)
             self.assertEqual((process.returncode, process.stdout, process.stderr), (0, stdout, ""))
+
+    def test_c4_unknown_field_names_are_not_disclosed(self):
+        secret = "synthetic receipt text\nprivate detail"
+        for record, location in [(row(**{secret: "value"}), "$"),
+                                 (row(source=row()["source"] | {secret: "value"}), "$.source")]:
+            with self.subTest(location=location):
+                self.put(record=record)
+                self.refuses(evidence.validate, f"{location}: unexpected field", record)
+                self.bad_file(NAME, f"{location}: unexpected field")
+                for args in [(), ("--json",)]:
+                    process = self.run_cli(*args)
+                    self.assertEqual((process.returncode, process.stdout, process.stderr),
+                                     (2, "", f"golive_evidence: {NAME}: {location}: unexpected field\n"))
 
     def test_c4_refusal(self):
         """C4: a bad file emits only a stderr diagnostic, never an earlier good row."""
