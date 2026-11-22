@@ -1,10 +1,13 @@
-"""Rehearse arrival dispatch without starting a unit, wrapper, or live stage."""
+"""Rehearse arrival dispatch with a sandboxed wrapper and no unit or live stage."""
 
 import argparse
 import hashlib
 import json
 import os
+import shlex
+import shutil
 import stat
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -16,12 +19,63 @@ STAGES = ("3",)
 TITLE = "Mail arrival triggers one records run"
 _KIT = run_report.REPO_ROOT / "deploy" / "records-runtime"
 _SINGLE = "run_20000101T000000Z_00000001"
-_BATCH = "run_20000101T000000Z_00000002"
-_NO_WORK = "run_20000101T000000Z_00000003"
+
+# The wrapper's only Python executable is this allowlist. In particular, no
+# argv can reach a real orchestrator run, container preflight, or notifier.
+_HOST_STUB = '''
+import json
+import re
+import sys
+from pathlib import Path
+
+root = Path(__file__).resolve().parents[1]
+runtime = root / "runtime"
+args = sys.argv[1:]
+match args:
+    case ["-B", "-m", "campaign_tool.records.arrival", *rest]:
+        sys.path.insert(0, ENGINE)
+        from campaign_tool.records import arrival
+        raise SystemExit(arrival.main(rest))
+    case ["-B", "-m", "campaign_tool.records.repository_preflight", "check", *_]:
+        print("not-applicable")
+    case ["-B", "-m", "campaign_tool.records.run_orchestrator", "check" | "notify-fallback", *_]:
+        pass
+    case ["-B", "-m", "campaign_tool.records.run_orchestrator", "run", *flags]:
+        run_id = flags[flags.index("--run-id") + 1]
+        report = flags[flags.index("--report") + 1]
+        expected = runtime / "TEST" / "reports" / (run_id + ".json")
+        if not re.fullmatch(r"run_[0-9]{8}T[0-9]{6}Z_[0-9a-f]{8}", run_id) or report != str(expected):
+            raise SystemExit(70)
+        batch = runtime / "TEST" / "work" / ("arrivals-" + run_id + ".json")
+        trigger = "arrival" if flags.count("--arrival") == 1 and "--scheduled" not in flags else "other"
+        bound = "--arrivals-file" in flags[:-1] and flags[flags.index("--arrivals-file") + 1] == str(batch)
+        with (runtime / "launches.jsonl").open("a", encoding="ascii") as log:
+            print(json.dumps({"run_id": run_id, "trigger": trigger, "batch_bound": bound}), file=log)
+        # Let the wrapper complete and drain; the parent builds the real
+        # synthetic report only after verifying the launcher count.
+        expected.write_text("{}\\n", encoding="ascii")
+    case ["-B", script, *_] if script == str(root / "unused-notify.py"):
+        pass
+    case _:
+        raise SystemExit(70)
+'''
+
+_DOCKER_STUB = '''#!/bin/sh
+case "$*" in
+  'info') ;;
+  'inspect --format {{.State.Running}} synthetic-records') printf '%s\\n' true ;;
+  'inspect --format {{.Image}} synthetic-records') printf '%s\\n' 'sha256:{image}' ;;
+  *) exit 70 ;;
+esac
+'''
 
 
 class _Failed(ValueError):
     """A rehearsal invariant or renderer check failed."""
+
+
+class _NotTriggered(_Failed):
+    """Neither wake reached the launch boundary."""
 
 
 def _require(condition):
@@ -55,6 +109,25 @@ def _render(root, runtime, units, fixture):
     drop.mkdir(mode=0o700)
     fixture.write_text('{"stub_fixture_version": 1}\n', encoding="ascii")
 
+    # No inherited PATH, Python configuration, Docker endpoints, or HOME.
+    # The shell can resolve only these ordinary local tools and the two stubs.
+    bin_dir = root / "bin"
+    bin_dir.mkdir(mode=0o700)
+    for name in ("awk", "cp", "date", "df", "env", "flock", "id", "mkdir", "mv", "od", "sleep", "timeout", "tr"):
+        tool = shutil.which(name, path=os.defpath)
+        _require(tool is not None)
+        (bin_dir / name).symlink_to(tool)
+    engine = run_report.REPO_ROOT
+    stub = bin_dir / "host-stub.py"
+    stub.write_text(f"ENGINE = {str(engine)!r}\n" + _HOST_STUB, encoding="utf-8")
+    host = bin_dir / "host-python"
+    host.write_text(f'#!/bin/sh\nexec {shlex.quote(sys.executable)} -IB {shlex.quote(str(stub))} "$@"\n',
+                    encoding="utf-8")
+    docker = bin_dir / "docker"
+    docker.write_text(_DOCKER_STUB.replace("{image}", "0" * 64), encoding="ascii")
+    for script in (host, docker):
+        script.chmod(0o700)
+
     # render.py adds the checkout to sys.path when loaded; the driver already
     # imports from that checkout. Keep the caller's search path unchanged.
     search_path = sys.path[:]
@@ -67,15 +140,15 @@ def _render(root, runtime, units, fixture):
     wrapper = runtime / "run-records.sh"
     values = {
         "RELEASE_COMMIT": "0" * 40,
-        "ENGINE_DIR": str(root / "unused-engine"),
-        "DOCKER": str(root / "unused-docker"),
-        "TIMEOUT": str(root / "unused-timeout"),
-        "FLOCK": str(root / "unused-flock"),
+        "ENGINE_DIR": str(engine),
+        "DOCKER": str(docker),
+        "TIMEOUT": str(bin_dir / "timeout"),
+        "FLOCK": str(bin_dir / "flock"),
         "CONTAINER": "synthetic-records",
         "EXPECTED_IMAGE": "sha256:" + "0" * 64,
         "RUN_UID": str(os.getuid()),
         "RUNTIME_DIR": str(runtime),
-        "HOST_PYTHON": str(root / "unused-python"),
+        "HOST_PYTHON": str(host),
         "NOTIFY_PY": str(root / "unused-notify.py"),
         "NOTIFY_ENV_FILE": str(root / "unused-notify-env"),
         "NOTIFY_LABEL": "Synthetic",
@@ -105,6 +178,9 @@ def _render(root, runtime, units, fixture):
     service = (units / "records-arrival.service").read_text(encoding="utf-8").splitlines()
     _require([line for line in service if line.startswith("ExecStart=")]
              == [f"ExecStart=/bin/sh {wrapper} --arrival"])
+    wrapper.write_bytes((units / wrapper.name).read_bytes())
+    (runtime / "targets").mkdir(mode=0o700)
+    (runtime / "targets" / "TEST.json").write_bytes((units / "targets" / "TEST.json").read_bytes())
     return [root / run_stages.SANDBOX_MARKER, fixture, *(units / name for name in names)]
 
 
@@ -121,6 +197,13 @@ def _claim(runtime, run_id, stamps):
     if not arrival.has_work(runtime, stamps_only=True):
         return []
     batch = arrival.claim(runtime, run_id)
+    paths = _claimed_paths(runtime, run_id, stamps, batch)
+    batch_file = runtime / f"{run_id}.arrivals.json"
+    run_orchestrator.atomic_write_json(batch_file, batch)
+    return [batch_file, *paths]
+
+
+def _claimed_paths(runtime, run_id, stamps, batch):
     expected = sorted(stamps, key=lambda pair: pair[0].name)
     _require(batch == [stamp for _, stamp in expected] and not arrival.pending(runtime))
     claimed = runtime / "arrival" / "done" / run_id
@@ -128,9 +211,9 @@ def _claim(runtime, run_id, stamps):
     _require([path.name for path in paths] == [path.name for path, _ in expected])
     for moved, (original, stamp) in zip(paths, expected):
         _require(not original.exists() and json.loads(moved.read_bytes()) == stamp)
-    batch_file = runtime / f"{run_id}.arrivals.json"
-    run_orchestrator.atomic_write_json(batch_file, batch)
-    return [batch_file, *paths, claimed.parent / f".{run_id}.claim"]
+    manifest = claimed.parent / f".{run_id}.claim"
+    _require(json.loads(manifest.read_bytes()) == [path.name for path in paths])
+    return [*paths, manifest]
 
 
 def _report(runtime, target, fixture, run_id, batch_file):
@@ -142,7 +225,7 @@ def _report(runtime, target, fixture, run_id, batch_file):
         _require(len(argv) == 9)
         stage = argv[6]
         _require(stage in orch.WORK_STAGES and argv == [
-            str(runtime.parent / "unused-python"), "-B", "-m",
+            str(runtime.parent / "bin" / "host-python"), "-B", "-m",
             "campaign_tool.records.run_orchestrator", "stub-stage", "--stage",
             stage, "--fixture", str(fixture),
         ])
@@ -167,6 +250,33 @@ def _report(runtime, target, fixture, run_id, batch_file):
     _require(rc == 0 and report["overall_status"] == "ok" and report["run_id"] == run_id
              and report["mode"] == report["trigger"] == "arrival" and report["arrivals"] == arrivals)
     return path
+
+
+def _burst_stamps(runtime):
+    return [_mail_stamp(runtime, label) for label in ("burst-one", "burst-two")]
+
+
+def _dispatch_burst(runtime, pair):
+    root = runtime.parent
+    trace = runtime / "launches.jsonl"
+    _require(not trace.exists() and arrival.pending(runtime) == [stamp for _, stamp in sorted(pair)])
+    for _ in range(2):
+        wake = subprocess.run(["/bin/sh", str(runtime / "run-records.sh"), "--arrival"],
+                              cwd=root, env={"PATH": str(root / "bin"), "HOME": str(root),
+                                             "TMPDIR": str(root), "LC_ALL": "C", "ARRIVAL_QUIET_SECONDS": "0"},
+                              stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+        _require(wake.returncode == 0)
+    launches = trace.read_text(encoding="ascii").splitlines() if trace.exists() else []
+    if not launches:
+        raise _NotTriggered
+    _require(len(launches) == 1 and len(pair) == 2)
+    launch = json.loads(launches[0])
+    run_id = launch["run_id"]
+    _require(launch["trigger"] == "arrival" and launch["batch_bound"] is True
+             and arrival.RUN_ID_RE.fullmatch(run_id) is not None)
+    batch_file = runtime / "TEST" / "work" / f"arrivals-{run_id}.json"
+    paths = _claimed_paths(runtime, run_id, pair, json.loads(batch_file.read_bytes()))
+    return run_id, batch_file, [trace, *paths]
 
 
 def run(sandbox):
@@ -197,16 +307,8 @@ def run(sandbox):
         return [_report(runtime, target, fixture, _SINGLE, runtime / f"{_SINGLE}.arrivals.json")]
 
     def batch_two():
-        pair = [_mail_stamp(runtime, label) for label in ("burst-one", "burst-two")]
-        _require(len(arrival.pending(runtime)) == 2)
-        existing_reports = set(runtime.glob("*.report.json"))
-        claim = _claim(runtime, _BATCH, pair)
-        _require(bool(claim))
-        report_path = _report(runtime, target, fixture, _BATCH, claim[0])
-        # A second wake after the burst was consumed has no batch to dispatch.
-        _require(_claim(runtime, _NO_WORK, []) == [])
-        _require(set(runtime.glob("*.report.json")) - existing_reports == {report_path})
-        return [*claim, report_path]
+        run_id, batch_file, paths = _dispatch_burst(runtime, _burst_stamps(runtime))
+        return [batch_file, *paths, _report(runtime, target, fixture, run_id, batch_file)]
 
     def coordination_quiet():
         marker = runtime / arrival.MARKER_NAME
@@ -231,8 +333,8 @@ def run(sandbox):
             outputs = [{"path": path.relative_to(root).as_posix(),
                         "sha256": hashlib.sha256(path.read_bytes()).hexdigest()}
                        for path in sorted(action())]
-        except (OSError, ValueError, arrival.ArrivalError):
-            code = name.upper() + "_FAILED"
+        except (OSError, ValueError, arrival.ArrivalError, subprocess.TimeoutExpired) as exc:
+            code = name.upper() + ("_NOT_TRIGGERED" if isinstance(exc, _NotTriggered) else "_FAILED")
             result["steps"].append({"name": name, "code": code, "outputs": []})
             result["codes"].append(code)
             break

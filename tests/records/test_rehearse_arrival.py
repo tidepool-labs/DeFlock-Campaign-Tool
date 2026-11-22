@@ -15,7 +15,6 @@ from unittest import mock
 from campaign_tool.records import arrival, rehearse_arrival as driver, run_report, run_stages
 
 _SINGLE = "run_20000101T000000Z_00000001"
-_BURST = "run_20000101T000000Z_00000002"
 _STAMP = "20000101T000000.000000Z-mail.json"
 _SECOND = "20000101T000000.000000Z-mail-01.json"
 _CLOCK = datetime(2000, 1, 1, tzinfo=timezone.utc)
@@ -36,9 +35,16 @@ _OUTPUTS = {
     "write_stamp": ["mail-stamp.json", "runtime/arrival.lock"],
     "consume": _files_for_claim(_SINGLE, _STAMP),
     "run_report": [f"runtime/{_SINGLE}.report.json"],
-    "batch_two": [*_files_for_claim(_BURST, _STAMP, _SECOND), f"runtime/{_BURST}.report.json"],
+    "batch_two": None,
     "coordination_quiet": ["runtime/arrival.lock", "runtime/arrival.pending"],
 }
+
+
+def _launch_once_per_stamp(text):
+    start = text.index('"$TIMEOUT" -k "$KILL_AFTER" "$BACKSTOP"')
+    end = text.index("\nrc=$?", start)
+    return (text[:start] + 'for stamp in "$RUNTIME_DIR/arrival/done/$RUN_ID/"*.json; do\n'
+            + text[start:end] + "\ndone" + text[end:])
 
 
 class ArrivalRehearsalTests(unittest.TestCase):
@@ -50,7 +56,7 @@ class ArrivalRehearsalTests(unittest.TestCase):
         self.runtime = self.root / "runtime"
         self.queue = self.runtime / "arrival"
         self.enterContext(mock.patch.object(arrival, "_utc_now", return_value=_CLOCK))
-        self.proc = self.enterContext(mock.patch.object(subprocess, "Popen", side_effect=AssertionError))
+        self.wake = self.enterContext(mock.patch.object(subprocess, "run", wraps=subprocess.run))
         self.socket = self.enterContext(mock.patch.object(socket, "socket", side_effect=AssertionError))
 
     def new_sandbox(self, name):
@@ -58,18 +64,53 @@ class ArrivalRehearsalTests(unittest.TestCase):
         root.mkdir(mode=0o700)
         return root
 
-    def expected_result(self, root, failed=None):
+    def expected_result(self, root, failed=None, burst=None, failure_suffix="FAILED"):
         steps = []
         codes = []
         for name, paths in _OUTPUTS.items():
             if name == failed:
-                codes.append(name.upper() + "_FAILED")
+                codes.append(name.upper() + "_" + failure_suffix)
                 steps.append({"name": name, "code": codes[0], "outputs": []})
                 break
+            if name == "batch_two":
+                paths = [*_files_for_claim(burst, _STAMP, _SECOND)[1:], f"runtime/{burst}.report.json",
+                         f"runtime/TEST/work/arrivals-{burst}.json", "runtime/launches.jsonl"]
             outputs = [{"path": path, "sha256": hashlib.sha256((root / path).read_bytes()).hexdigest()}
                        for path in sorted(paths)]
             steps.append({"name": name, "code": "OK", "outputs": outputs})
         return {"stages": ["3"], "steps": steps, "manual_steps": [], "codes": codes}
+
+    def launches(self, root):
+        trace = root / "runtime" / "launches.jsonl"
+        return [json.loads(row) for row in trace.read_text().splitlines()] if trace.exists() else []
+
+    def burst_id(self, root):
+        [launch] = self.launches(root)
+        self.assertEqual(launch["trigger"], "arrival")
+        self.assertIs(launch["batch_bound"], True)
+        return launch["run_id"]
+
+    def mutate_wrapper(self, edit):
+        original = driver._isolated_module
+
+        def load(name, path):
+            module = original(name, path)
+            if path.name == "render.py":
+                render = module.render
+
+                def modified(values, targets, out):
+                    names = render(values, targets, out)
+                    script = out / "run-records.sh"
+                    before = script.read_text()
+                    after = edit(before)
+                    self.assertNotEqual(before, after)
+                    script.write_text(after)
+                    return names
+
+                vars(module)["render"] = modified
+            return module
+
+        return mock.patch.object(driver, "_isolated_module", side_effect=load)
 
     def test_c1_render_claim_and_one_report_per_wake(self):
         """C1: Watch the real queue; archive one then two stamps in exactly two runs."""
@@ -84,11 +125,13 @@ class ArrivalRehearsalTests(unittest.TestCase):
 
         with mock.patch.object(Path, "touch", autospec=True, side_effect=mark_first) as mark:
             result = driver.run(self.root)
-        self.assertEqual(result, self.expected_result(self.root))
+        burst = self.burst_id(self.root)
+        self.assertEqual(result, self.expected_result(self.root, burst=burst))
         self.assertEqual(driver.STAGES, ("3",))
         self.assertIs(type(driver.TITLE), str)
         mark.assert_called_once_with(self.root / run_stages.SANDBOX_MARKER, mode=0o600, exist_ok=False)
-        self.proc.assert_not_called()
+        self.assertEqual([call.args[0] for call in self.wake.call_args_list],
+                         [["/bin/sh", str(self.runtime / "run-records.sh"), "--arrival"]] * 2)
         self.socket.assert_not_called()
         self.assertEqual({path.name for path in self.parent.iterdir()}, {"sandbox"})
         units = self.root / "units"
@@ -98,23 +141,25 @@ class ArrivalRehearsalTests(unittest.TestCase):
         self.assertIn("Unit=records-arrival.service", path_text.splitlines())
         service = (units / "records-arrival.service").read_text()
         self.assertIn(f"ExecStart=/bin/sh {self.runtime / 'run-records.sh'} --arrival", service.splitlines())
-        self.assertEqual(claim.call_args_list, [mock.call(self.runtime, _SINGLE), mock.call(self.runtime, _BURST)])
+        claim.assert_called_once_with(self.runtime, _SINGLE)  # Burst claim runs in the shell's child.
         self.assertEqual(sorted(path.name for path in self.queue.iterdir()), ["done"])
         self.assertEqual(sorted(path.name for path in (self.queue / "done").iterdir()),
-                         [f".{_SINGLE}.claim", f".{_BURST}.claim", _SINGLE, _BURST])
+                         sorted([f".{_SINGLE}.claim", f".{burst}.claim", _SINGLE, burst]))
         self.assertEqual(sorted(path.name for path in self.runtime.glob("*.report.json")),
-                         [f"{_SINGLE}.report.json", f"{_BURST}.report.json"])
+                         sorted([f"{_SINGLE}.report.json", f"{burst}.report.json"]))
         self.assertEqual((self.root / "mail-stamp.json").read_bytes(),
                          (self.queue / "done" / _SINGLE / _STAMP).read_bytes())
         for run_id, filenames, labels in [(_SINGLE, [_STAMP], ["single"]),
-                                           (_BURST, [_SECOND, _STAMP], ["burst-two", "burst-one"])]:
+                                           (burst, [_SECOND, _STAMP], ["burst-two", "burst-one"])]:
             with self.subTest(run_id=run_id):
                 self.assertEqual(json.loads((self.queue / "done" / f".{run_id}.claim").read_bytes()), filenames)
                 expected = [{"source": "mail", "ref": hashlib.sha256(label.encode("ascii")).hexdigest(),
                              "seen_at": "2000-01-01T00:00:00.000000Z"} for label in labels]
                 for name, item in zip(filenames, expected):
                     self.assertEqual(json.loads((self.queue / "done" / run_id / name).read_bytes()), item)
-                self.assertEqual(json.loads((self.runtime / f"{run_id}.arrivals.json").read_bytes()), expected)
+                batch_file = (self.runtime / f"{_SINGLE}.arrivals.json" if run_id == _SINGLE else
+                              self.runtime / "TEST" / "work" / f"arrivals-{burst}.json")
+                self.assertEqual(json.loads(batch_file.read_bytes()), expected)
                 report = json.loads((self.runtime / f"{run_id}.report.json").read_bytes())
                 self.assertEqual(run_report.validate_run_report(report), report)
                 self.assertEqual((report["run_id"], report["mode"], report["trigger"], report["arrivals"]),
@@ -126,6 +171,24 @@ class ArrivalRehearsalTests(unittest.TestCase):
         self.assertEqual((self.runtime / "arrival.lock").read_bytes(), b"")
         self.assertEqual((self.runtime / "arrival.pending").read_bytes(), b"2000-01-01T00:00:00.000000Z\n")
         self.assertFalse(any(path.name in {"arrival.pending", "arrival.lock"} for path in self.queue.rglob("*")))
+
+    def test_c1_detect_launch_once_per_stamp(self):
+        """Reject two launches even when they overwrite the same report path."""
+        with self.mutate_wrapper(_launch_once_per_stamp):
+            result = driver.run(self.root)
+        first, second = self.launches(self.root)
+        self.assertEqual(first, second)  # Same claimed batch, two launcher calls.
+        self.assertEqual(first["trigger"], "arrival")
+        self.assertEqual(arrival.pending(self.runtime), [])
+        self.assertEqual(result, self.expected_result(self.root, "batch_two"))
+
+    def test_c1_empty_wakes_do_not_trigger_a_run(self):
+        """An idle wake must neither launch nor qualify as a successful burst."""
+        with mock.patch.object(driver, "_burst_stamps", return_value=[]):
+            result = driver.run(self.root)
+        self.assertEqual(self.wake.call_count, 2)
+        self.assertEqual(self.launches(self.root), [])
+        self.assertEqual(result, self.expected_result(self.root, "batch_two", failure_suffix="NOT_TRIGGERED"))
 
     def test_c2_reject_invalid_persisted_report(self):
         """C2: Do not qualify a valid in-memory run whose on-disk report is invalid."""
@@ -148,7 +211,7 @@ class ArrivalRehearsalTests(unittest.TestCase):
             result = driver.run(self.root)
         self.assertEqual(result, self.expected_result(self.root, "run_report"))
         self.assertFalse((self.runtime / "arrival.pending").exists())
-        self.assertFalse((self.queue / "done" / _BURST).exists())
+        self.wake.assert_not_called()
 
     def test_c3_refuse_wrong_watch_directory(self):
         """C3: A miswired render cannot certify a successful downstream stamp."""
@@ -198,15 +261,14 @@ class ArrivalRehearsalTests(unittest.TestCase):
 
     def test_c3_failed_second_claim_stops_before_coordination(self):
         """C3: If a burst stamp vanishes, one valid prior run cannot pass the burst."""
-        real_claim = arrival.claim
+        def lose_one(text):
+            claim = '  if ! arr claim --runtime-dir "$RUNTIME_DIR"'
+            return text.replace(claim, f'  mv "$RUNTIME_DIR/arrival/{_SECOND}" "$RUNTIME_DIR/lost.json"\n' + claim, 1)
 
-        def lose_one(runtime, run_id):
-            if run_id == _BURST:
-                (self.queue / _SECOND).unlink()
-            return real_claim(runtime, run_id)
-
-        with mock.patch.object(arrival, "claim", side_effect=lose_one):
+        with self.mutate_wrapper(lose_one):
             result = driver.run(self.root)
+        self.assertEqual(len(self.launches(self.root)), 1)
+        self.assertTrue((self.runtime / "lost.json").is_file())
         self.assertEqual(result, self.expected_result(self.root, "batch_two"))
         self.assertEqual(list(self.runtime.glob("*.report.json")), [self.runtime / f"{_SINGLE}.report.json"])
         self.assertFalse((self.runtime / "arrival.pending").exists())
@@ -221,7 +283,7 @@ class ArrivalRehearsalTests(unittest.TestCase):
 
         with mock.patch.object(arrival, "mark_pending", side_effect=noisy_mark):
             result = driver.run(self.root)
-        self.assertEqual(result, self.expected_result(self.root, "coordination_quiet"))
+        self.assertEqual(result, self.expected_result(self.root, "coordination_quiet", burst=self.burst_id(self.root)))
 
     def test_c1_cli_creates_absent_sandbox(self):
         """C1: Success prints the whole result and returns 0 for a new directory."""
@@ -229,7 +291,7 @@ class ArrivalRehearsalTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()) as out:
             self.assertEqual(driver.main(["--sandbox", str(root)]), 0)
         self.assertEqual(root.stat().st_mode & 0o777, 0o700)
-        self.assertEqual(json.loads(out.getvalue()), self.expected_result(root))
+        self.assertEqual(json.loads(out.getvalue()), self.expected_result(root, burst=self.burst_id(root)))
 
     def test_c3_cli_refuses_unsafe_sandbox(self):
         """C3: Refuse before marking a nonempty, nonprivate, or redirected root."""
