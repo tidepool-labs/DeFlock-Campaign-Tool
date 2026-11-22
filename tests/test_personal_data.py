@@ -983,6 +983,7 @@ _MODULES = {
     "organizer-maintained public roster content/officials.json (built by the site), no catalog store": "officials_cmd",
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
     "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
+    "append-only 0600 go-live evidence metadata in an explicit directory; no copied receipt bytes or catalog store": "records.golive_record",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -1231,6 +1232,7 @@ MODULE_FUNCTIONS = {
     'social_threads': ('build_thread_social',),
     'source_bundle': ('bundle_bytes',),  # DF0022-11: builds the archive in memory; the caller writes it
     'sources_cmd': ('_batch_write', '_rewrite', '_write_atomic', 'add_source',),
+    'records.golive_record': ('append',),
 }
 
 
