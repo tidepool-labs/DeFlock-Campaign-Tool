@@ -971,6 +971,7 @@ _MODULES = {
     "synthetic stage 19 rehearsal files only, under the caller's private sandbox; no live records or catalog writes": "records.rehearse_backup",
     "synthetic rehearsal inputs and evidence written only in the caller's private sandbox; no personal-data store": "records.rehearse_monitoring",
     "synthetic stage-15 rehearsal files only under an empty private sandbox; no live records or sends": "records.rehearse_followup_engine",
+    "synthetic stage-16 analysis-lane rehearsal files only under an empty private sandbox; no live records, approvals or publication": "records.rehearse_findings",
     "opt-in private health alerts with fixed failure codes only; no record bytes or catalog store": "records.console_check",
     "synthetic console fixtures and HTTP digests only, under a caller-owned private sandbox": "records.rehearse_console",
     "A6 phone enrolment: public passkey records (no secret material) in the operator's enrolment dir and page response bytes; no catalog store": "records.console_phone_enrol records.phone_enrol",
@@ -1199,6 +1200,7 @@ MODULE_FUNCTIONS = {
     'records.rehearse_backup': ('_capture_units', '_mark_sandbox', '_seed_project', '_write', 'run.verify'),  # synthetic sandbox only
     'records.rehearse_monitoring': ('_add_report', '_observe', '_write_json',),
     'records.rehearse_followup_engine': ('_init_project', '_seed_inputs', '_write_json',),
+    'records.rehearse_findings': ('_csv_bytes', '_packet_import', '_put', '_seed',),  # sandbox marker, synthetic inputs, outbox move; _csv_bytes builds bytes in memory
     'records.review_bundle': ('_locked', '_new',),
     'records.review_retirement': ('arm', 'finish', 'start',),
     'records.run': (
