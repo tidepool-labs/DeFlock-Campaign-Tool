@@ -127,25 +127,36 @@ class ExportFaultTests(unittest.TestCase):
             self.assertEqual(value, self.snapshot()[path])
 
     def test_receipt_directory_fsync_retry_cannot_skip_durability(self):
-        for uid, failure_boundary in ((1, 6), (2, 2)):
+        for uid in (1, 2):
             with self.subTest(uid=uid):
                 self.root = Path(self.temp.name).resolve() / f'durability-{uid}'
                 if uid == 2:
                     self.run_export()
                 original = os.fsync
-                calls = 0
+                original_link = os.link
+                published = None
+
+                def track_receipt_link(source, target):
+                    nonlocal published
+                    original_link(source, target)
+                    target = Path(target)
+                    if target.name == 'receipt.json' or target.name.startswith('receipt-'):
+                        published = target
 
                 def interrupt(fd):
-                    nonlocal calls
-                    calls += 1
-                    if calls == failure_boundary:
+                    # Ignore syncs for the original and parts before receipt publication.
+                    if published is not None and os.path.samestat(
+                        os.fstat(fd), published.parent.stat()
+                    ):
                         raise OSError('synthetic receipt directory failure')
                     return original(fd)
 
-                with patch.object(export.os, 'fsync', interrupt):
-                    with self.assertRaises(OSError):
+                with patch.object(export.os, 'link', track_receipt_link), \
+                        patch.object(export.os, 'fsync', interrupt):
+                    with self.assertRaisesRegex(OSError, 'synthetic receipt directory failure'):
                         self.run_export(uid=uid)
                 accepted = self.snapshot()
+                self.assertIn(published, accepted)
                 # Repeated failure must remain a failure, even with a valid receipt.
                 with patch.object(export.os, 'fsync', side_effect=OSError('still failing')):
                     with self.assertRaises(OSError):

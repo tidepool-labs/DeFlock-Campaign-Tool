@@ -268,7 +268,8 @@ def consume(runtime_dir, run_id):
             except ValueError:
                 raise ArrivalError("ARRIVAL_STATE_UNSAFE") from None
             if (not isinstance(names, list) or len(names) > MAX_STAMPS
-                    or not all(isinstance(n, str) and STAMP_NAME_RE.match(n) for n in names)):
+                    or not all(isinstance(n, str) and STAMP_NAME_RE.match(n) for n in names)
+                    or len(set(names)) != len(names)):
                 raise ArrivalError("ARRIVAL_STATE_UNSAFE")
         else:
             names = _stamp_files(arrival)

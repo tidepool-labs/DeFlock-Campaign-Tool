@@ -34,7 +34,10 @@ def _day(value):
         except ValueError:
             stamp = None
         if stamp is not None and stamp.tzinfo is not None:
-            return stamp.astimezone(PACIFIC).date()
+            try:
+                return stamp.astimezone(PACIFIC).date()
+            except OverflowError:
+                return None  # No representable Pacific day for this event.
     return _tl._day(text)
 
 
