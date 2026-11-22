@@ -166,6 +166,18 @@ class GateEvidenceTests(GateFixture):
         self.row(source_schema=E2E)
         self.assert_check(CHECK, "unknown", "EVIDENCE_MISSING")
 
+    def test_c1a_sandbox_gate_is_not_evidence_but_remains_prior_gate(self):
+        """Descriptive gate rows cannot satisfy evidence checks, but prior_gate is unchanged."""
+        self.row(kind="gate", source_schema=E2E)
+        self.assert_check(dict(CHECK, kind="gate"), "unknown", "EVIDENCE_MISSING")
+        self.assert_check(PRIOR, "pass", "EVIDENCE_MATCH")
+
+    def test_c1a_sandbox_gate_cannot_mask_qualified_failure(self):
+        """Filter descriptive gate rows before choosing the latest qualified row."""
+        self.row(kind="gate", source_schema=E2E, age=timedelta(hours=1))
+        self.row(kind="gate", outcome="fail")
+        self.assert_check(dict(CHECK, kind="gate"), "fail", "EVIDENCE_FAILED")
+
     def test_c1a_sandbox_pass_cannot_mask_qualified_failure(self):
         """C1a: filtering must happen before latest selection so failures remain visible."""
         self.row(source_schema=E2E, age=timedelta(hours=1))

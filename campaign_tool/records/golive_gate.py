@@ -244,9 +244,7 @@ def _evidence(check, get_input, now):
         return EVIDENCE_MISSING
     if ledger.records is None:
         return EVIDENCE_UNREADABLE
-    records = ledger.records
-    if check["kind"] == "rehearsal":
-        records = (row for row in records if row["source"]["schema"] != "records-e2e-proof-v1")
+    records = (row for row in ledger.records if row["source"]["schema"] != "records-e2e-proof-v1")
     record = golive_evidence.latest(records, check["stage"], check["kind"])
     if record is None:
         return EVIDENCE_MISSING
