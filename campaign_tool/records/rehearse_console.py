@@ -27,7 +27,9 @@ _PAGES = (
     ("/decisions", "Decisions"),
     ("/health", "System health"),
     ("/stages", "Go-live stages"),
+    ("/golive", "Go-live"),
 )
+_GOLIVE_NOTICE = b"Go-live evidence is not configured on this console."
 
 
 def _build_export(sandbox):
@@ -85,8 +87,13 @@ def _get(sandbox, port, route, heading=None):
         code = "OK" if status == 404 else "SEND_NOT_DISABLED"
     elif status != 200:
         code = "PAGE_STATUS_UNEXPECTED"
+    elif f"<h1>{heading}</h1>".encode() not in body:
+        code = "PAGE_HEADING_MISSING"
+    elif route == "/golive" and _GOLIVE_NOTICE not in body:
+        # This sandbox has no ledger inputs; only certify the unconfigured route.
+        code = "GOLIVE_NOTICE_MISSING"
     else:
-        code = "OK" if f"<h1>{heading}</h1>".encode() in body else "PAGE_HEADING_MISSING"
+        code = "OK"
     return code, output
 
 
