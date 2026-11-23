@@ -240,7 +240,10 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(path, self.root / NAME)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         before = path.read_bytes()
-        self.assertEqual(rr.read(path), receipt)
+        loaded = rr.read(path)
+        self.assertEqual(loaded, receipt)
+        self.assertEqual(loaded["stages"], ["3", "A5"])
+        self.assertEqual(rr.qualify(loaded, now=NOW, target_engine=ENGINE), (True, []))
         different = dict(receipt, codes=["SYNTHETIC_ALTERNATE"])
         self.assert_refused(FileExistsError, rr.write, different, self.root)
         self.assertEqual((path.read_bytes(), sorted(p.name for p in self.root.iterdir())),
@@ -301,6 +304,16 @@ class ReceiptTests(unittest.TestCase):
                 path.write_text(json.dumps(candidate), encoding="utf-8")
                 self.assert_refused(ValueError, rr.read, path)
 
+        # A list-of-strings check alone lets an OK rehearsal qualify without
+        # a ledger target, or claim the same stage more than once.
+        for stages in ([], [""], [" \t"], ["3", " \t"], ["3", "A5", "3"]):
+            with self.subTest(stages=stages, boundary="build"):
+                self.driver["stages"] = stages
+                self.assert_refused(ValueError, self.build)
+            with self.subTest(stages=stages, boundary="read"):
+                path.write_text(json.dumps(dict(valid, stages=stages)), encoding="utf-8")
+                self.assert_refused(ValueError, rr.read, path)
+
     def tampered(self, **changes):
         """A shape-valid receipt whose recorded verdict contradicts its own facts."""
         return dict(self.build(), **changes)
@@ -359,9 +372,12 @@ class ReceiptTests(unittest.TestCase):
                                  (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())
                 self.assertEqual(rr.read(path), receipt)
         self.marker.touch(mode=0o600)
+        self.driver["stages"].reverse()  # Preserve driver order, not sorted order.
         receipt = self.build()
         self.assertTrue(receipt["qualified"])
-        self.assertEqual(rr.read(rr.write(receipt, self.root)), receipt)
+        loaded = rr.read(rr.write(receipt, self.root))
+        self.assertEqual(loaded, receipt)
+        self.assertEqual(loaded["stages"], ["A5", "3"])
 
 
 class IdentityTests(unittest.TestCase):
