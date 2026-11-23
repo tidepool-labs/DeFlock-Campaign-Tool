@@ -46,6 +46,46 @@ class Packets(Base):
         self.assertEqual(pp.status(self.project)['packets'][0]['status'], 'approved')
         self.assertFalse((Path(self.project) / pp.OUT).exists())
 
+    def test_empty_queue_is_not_an_evidence_failure(self):
+        pp.decide(self.project, self.ident, 'cancelled', 'operator')
+        status, page, _ = self.request('GET', '/packets')
+        self.assertEqual(status, 200)
+        self.assertIn('No packets pending.', page)
+        self.assertNotIn('could not be read', page)
+
+    def test_unavailable_evidence_hides_the_entire_queue(self):
+        # A generic 503 hides why the queue is unavailable. A late payload
+        # failure must also discard earlier rows, payloads and decision forms.
+        later = pp.propose(self.project, doc(source='doc-2', title='Second policy'), now=self.now)['id']
+        source = self.server.options['source']
+        exact_payload = pp.payload(self.project, self.ident)
+        project = Path(self.project)
+
+        def files():
+            return {p.relative_to(project): p.read_bytes() for p in project.rglob('*') if p.is_file()}
+
+        before = files()
+        for reader, failure in (
+            ('packets_pending', pp.PacketError('fixture-journal-error')),
+            ('packets_status', OSError('fixture-switch-error')),
+            ('packet_payload', [exact_payload, pp.PacketError('fixture-payload-error')]),
+        ):
+            with self.subTest(reader=reader):
+                with mock.patch.object(source, reader, side_effect=failure) as read:
+                    status, page, _ = self.request('GET', '/packets')
+                self.assertEqual(status, 503)
+                if reader == 'packet_payload':
+                    self.assertEqual(read.call_args_list, [mock.call(self.ident), mock.call(later)])
+                self.assertEqual(files(), before)
+                self.assertFalse((project / pp.OUT).exists())
+                for hidden in ('fixture-', self.ident, later, 'Policy released', 'Second policy',
+                               'Exact signature payload', html.escape(exact_payload.decode()),
+                               '<form', 'No packets pending.', self.server.csrf_token):
+                    self.assertNotIn(hidden, page)
+                self.assertIn('Pending packet evidence could not be read. This does not mean the queue is empty.', page)
+                self.assertIn('<h1>Update packets</h1>', page)
+                self.assertIn('<main id="content"', page)
+
     def test_refused_signatures_stale_cancelled_expired_leave_journal_unchanged(self):
         raw = self.journal.read_bytes()
         self.assertEqual(self.request('POST', '/packets/approve', self.fields | {'signature': self.sign(b'other')})[0], 403)
