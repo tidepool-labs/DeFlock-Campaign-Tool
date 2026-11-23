@@ -89,7 +89,9 @@ def from_gate(path, now):
     if (not isinstance(stamp, str)
             or not re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,6})?(?:Z|\+00:00)", stamp)):
         raise ValueError("invalid gate timestamp")
-    datetime.fromisoformat(stamp)
+    evaluated_at = datetime.fromisoformat(stamp)
+    if evaluated_at > rehearsal_receipt._utc(now):
+        raise ValueError("gate timestamp is in the future")
     for key, pin in receipt["inputs"].items():
         if not key.strip() or "=" in key or not isinstance(pin, str) or not re.fullmatch(r"[0-9a-f]{64}", pin):
             raise ValueError("invalid gate input digest")
@@ -109,7 +111,7 @@ def from_gate(path, now):
     codes = list(dict.fromkeys(failed_codes))
     if len(codes) > 20:
         codes = codes[:19] + ["CODES_TRUNCATED"]
-    return [_record(stage, "gate", passed, now, None, golive_gate.RECEIPT_SCHEMA,
+    return [_record(stage, "gate", passed, evaluated_at, None, golive_gate.RECEIPT_SCHEMA,
                     digest, name, "operator", codes.copy())
             for stage in dict.fromkeys(receipt["stages"])]
 
