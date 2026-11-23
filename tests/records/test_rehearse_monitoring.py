@@ -22,6 +22,7 @@ UNITS = ["mail-arrival-stamp.sh", "records-arrival.path", "records-arrival.servi
          "records-run.service", "records-run.timer", "run-records.sh", "targets/TEST.json"]
 STALE = "health-last_run-no_recent_run"
 OUTPUTS = "health-outputs-outputs_degraded"
+MAIL = "health-mail_poll-mail_poll_stale"
 FAILURE_CODE = "OUTPUTS_SYNTHETIC_FAILURE"
 
 
@@ -96,16 +97,25 @@ class RehearseMonitoringTests(unittest.TestCase):
                                 f"failed_outputs/{OUTPUTS}.json"]),
             ("recovered", ["recovered/health.json", f"recovered/{STALE}.cleared.json",
                            f"recovered/{OUTPUTS}.cleared.json"]),
+            ("mail_poll_stale", ["mail_poll_stale/health.json", f"mail_poll_stale/{STALE}.cleared.json",
+                                 f"mail_poll_stale/{MAIL}.json", f"mail_poll_stale/{OUTPUTS}.cleared.json"]),
+            ("mail_poll_recovered", ["mail_poll_recovered/health.json", f"mail_poll_recovered/{STALE}.cleared.json",
+                                     f"mail_poll_recovered/{MAIL}.cleared.json",
+                                     f"mail_poll_recovered/{OUTPUTS}.cleared.json"]),
         ]
+        # Regression: refreshing the poll on every observation never exercises mail loss or clearance.
+        self.assertEqual([entry["name"] for entry in actual["steps"]], [name for name, _ in groups])
         self.assertEqual(actual, result([step(name, [self.artifact(path) for path in paths]) for name, paths in groups]))
         for unit, expected in (("health", "hourly"), ("backup-check", "*-*-* 06:10")):
             lines = (self.sandbox / f"units/records-{unit}.timer").read_text().splitlines()
             self.assertEqual([line for line in lines if line.startswith(("OnCalendar=", "Persistent=", "Unit="))],
                              [f"OnCalendar={expected}", "Persistent=true", f"Unit=records-{unit}.service"])
 
-        healthy, stale, failed, recovered = (self.read(f"{name}/health.json") for name, _ in groups[1:])
-        self.assertEqual([(h["schema"], h["state"], h["exit_code"]) for h in (healthy, stale, failed, recovered)],
+        health = [self.read(f"{name}/health.json") for name, _ in groups[1:]]
+        healthy, stale, failed, recovered, mail_stale, mail_recovered = health
+        self.assertEqual([(h["schema"], h["state"], h["exit_code"]) for h in health],
                          [("records-health-v1", "ok", 0), ("records-health-v1", "stop", 3),
+                          ("records-health-v1", "warn", 1), ("records-health-v1", "ok", 0),
                           ("records-health-v1", "warn", 1), ("records-health-v1", "ok", 0)])
         self.assertEqual(healthy["last_run_finished_at"], stale["last_run_finished_at"])
         self.assertGreater(datetime.fromisoformat(stale["now"]) - datetime.fromisoformat(stale["last_run_finished_at"]),
@@ -117,17 +127,45 @@ class RehearseMonitoringTests(unittest.TestCase):
                         "count": 1, "code": FAILURE_CODE, "streak": pipeline_health.LIMITS["outputs_streak"]}
         self.assertEqual(self.read(f"stale_run/{STALE}.json"), stale_alert)
         self.assertEqual(self.read(f"failed_outputs/{OUTPUTS}.json"), failed_alert)
+        for observation, state, reason, poll_at in (
+            (mail_stale, "warn", "mail_poll_stale", recovered["now"]),
+            (mail_recovered, "ok", "mail_poll_recent", mail_recovered["now"]),
+        ):
+            checks = {check["check"]: check for check in observation["checks"]}
+            self.assertEqual(checks.pop("mail_poll"), {"check": "mail_poll", "state": state,
+                                                       "reason_code": reason, "since": poll_at})
+            self.assertEqual({name: (check["state"], check["reason_code"]) for name, check in checks.items()},
+                             {check["check"]: (check["state"], check["reason_code"])
+                              for check in recovered["checks"] if check["check"] != "mail_poll"})
+        poll_age = datetime.fromisoformat(mail_stale["now"]) - datetime.fromisoformat(recovered["now"])
+        self.assertGreater(poll_age, timedelta(hours=pipeline_health.LIMITS["mail_poll_warn_hours"]))
+        self.assertLessEqual(poll_age, timedelta(hours=pipeline_health.LIMITS["mail_poll_stop_hours"]))
+        self.assertGreater(datetime.fromisoformat(mail_recovered["now"]), datetime.fromisoformat(mail_stale["now"]))
+        mail_alert = {"schema": "records-health-alert-v1", "check": "mail_poll", "state": "warn",
+                      "reason_code": "mail_poll_stale", "first_seen": mail_stale["now"],
+                      "last_seen": mail_stale["now"], "count": 1}
+        mail_cleared = dict(mail_alert, state="cleared", cleared_at=mail_recovered["now"])
+        self.assertEqual(self.read(f"mail_poll_stale/{MAIL}.json"), mail_alert)
+        self.assertEqual(self.read(f"mail_poll_recovered/{MAIL}.cleared.json"), mail_cleared)
+        for name in (STALE, OUTPUTS):
+            retained = f"{name}.cleared.json"
+            before = self.artifact(f"recovered/{retained}")["sha256"]
+            for observation in ("mail_poll_stale", "mail_poll_recovered"):
+                self.assertEqual(self.artifact(f"{observation}/{retained}")["sha256"], before)
         alerts = self.sandbox / "runtime/TEST/alerts"
         self.assertEqual({p.name: json.loads(p.read_bytes()) for p in alerts.iterdir()},
                          {STALE + ".cleared.json": dict(stale_alert, state="cleared", cleared_at=failed["now"]),
-                          OUTPUTS + ".cleared.json": dict(failed_alert, state="cleared", cleared_at=recovered["now"])})
+                          OUTPUTS + ".cleared.json": dict(failed_alert, state="cleared", cleared_at=recovered["now"]),
+                          MAIL + ".cleared.json": mail_cleared})
         reports = [run_report.validate_run_report(json.loads(p.read_bytes()))
                    for p in sorted((self.sandbox / "runtime/TEST/reports").glob("*.json"))]
         streak = pipeline_health.LIMITS["outputs_streak"]
         self.assertEqual([(r["overall_status"], r["stages"][-2]["error_code"], r["stages"][-1]["status"]) for r in reports],
                          [("ok", None, "skipped")] * streak + [("warn", FAILURE_CODE, "skipped")] * streak
-                         + [("ok", None, "skipped")])
-        self.assertEqual(recovered["last_run_finished_at"], reports[-1]["finished_at"])
+                         + [("ok", None, "skipped")] * 2)
+        self.assertEqual(recovered["last_run_finished_at"], reports[-2]["finished_at"])
+        self.assertEqual(mail_stale["last_run_finished_at"], reports[-1]["finished_at"])
+        self.assertEqual(mail_recovered["last_run_finished_at"], mail_stale["last_run_finished_at"])
 
     def artifact(self, name):
         return {"path": name, "sha256": hashlib.sha256((self.sandbox / name).read_bytes()).hexdigest()}
@@ -165,6 +203,32 @@ class RehearseMonitoringTests(unittest.TestCase):
         self.assertEqual(writer.call_count, 2)
         self.assertEqual({p.name for p in self.sandbox.iterdir()},
                          {run_stages.SANDBOX_MARKER, "units", "runtime", "records", "healthy", "stale_run"})
+
+    def test_missing_mail_poll_alert_stops_before_recovery(self):
+        """C1: A real mail warning must not pass if its open alert was not persisted."""
+        self.sandbox.mkdir(mode=0o700)
+        put = pipeline_health._put
+        suppressed = []
+
+        def drop_mail_alert(directory, name, data):
+            if name == MAIL + ".json":
+                suppressed.append(data)
+            else:
+                put(directory, name, data)
+
+        with patch.object(pipeline_health, "_put", side_effect=drop_mail_alert):
+            actual = driver.run(self.sandbox)
+
+        self.assertEqual([(entry["name"], entry["code"]) for entry in actual["steps"]],
+                         [(name, "OK") for name in ("render_units", "healthy", "stale_run", "failed_outputs", "recovered")]
+                         + [("mail_poll_stale", "MAIL_POLL_STALE_FAILED")])
+        self.assertEqual(actual["codes"], ["MAIL_POLL_STALE_FAILED"])
+        self.assertEqual([(data["check"], data["state"], data["reason_code"]) for data in suppressed],
+                         [("mail_poll", "warn", "mail_poll_stale")])
+        self.assertEqual(self.read("mail_poll_stale/health.json")["state"], "warn")
+        self.assertEqual(actual["steps"][-1]["outputs"], [self.artifact(f"mail_poll_stale/{path}") for path in
+                         ("health.json", f"{STALE}.cleared.json", f"{OUTPUTS}.cleared.json")])
+        self.assertFalse((self.sandbox / "mail_poll_recovered").exists())
 
     def test_run_refuses_invalid_sandboxes(self):
         """C3: Direct run cannot start in a missing, non-private, nonempty, or linked root."""

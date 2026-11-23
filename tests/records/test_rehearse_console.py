@@ -23,7 +23,9 @@ from campaign_tool.records import admin_panel, console_access, console_check, co
 PAGES = {
     "/runs": b"Run history", "/documents": b"Documents and findings", "/findings": b"All findings",
     "/drafts": b"Draft history", "/decisions": b"Decisions", "/health": b"System health", "/stages": b"Go-live stages",
+    "/golive": b"Go-live",
 }
+GOLIVE_NOTICE = b"Go-live evidence is not configured on this console."
 
 
 class RehearseConsoleTests(unittest.TestCase):
@@ -145,6 +147,8 @@ class RehearseConsoleTests(unittest.TestCase):
                 self.assertEqual(status, 200 if route in PAGES else 404)
                 if route in PAGES:
                     self.assertIn(b"<h1>" + PAGES[route] + b"</h1>", body)
+                if route == "/golive":
+                    self.assertIn(GOLIVE_NOTICE, body)
                 self.assertEqual(json.loads(self.receipt(route).read_bytes()), {
                     "route": route, "status": status, "body_sha256": hashlib.sha256(body).hexdigest(),
                 })
@@ -158,18 +162,26 @@ class RehearseConsoleTests(unittest.TestCase):
     def test_c2_page_failures_close_server(self):
         """C2: A failed page probe hashes any body received, stops probing, and closes its real listener."""
         get = admin_panel._Handler.do_GET
-        for status, code in ((503, "PAGE_STATUS_UNEXPECTED"), (200, "PAGE_HEADING_MISSING"),
-                             (None, "PAGE_PROBE_FAILED")):
-            with self.subTest(code=code), tempfile.TemporaryDirectory(dir=self.sandbox) as tmp:
+        error = b"Synthetic error body"
+        # A dropped route or a fabricated live count must not certify the ledger page.
+        for route, status, body, code in (
+            ("/documents", 503, error, "PAGE_STATUS_UNEXPECTED"),
+            ("/documents", 200, error, "PAGE_HEADING_MISSING"),
+            ("/documents", None, b"", "PAGE_PROBE_FAILED"),
+            ("/golive", 404, error, "PAGE_STATUS_UNEXPECTED"),
+            ("/golive", 200, b"<h1>Go-live stages</h1><p>" + GOLIVE_NOTICE + b"</p>", "PAGE_HEADING_MISSING"),
+            ("/golive", 200, b"<h1>Go-live</h1><p>0 of 22 live</p>", "GOLIVE_NOTICE_MISSING"),
+        ):
+            with self.subTest(route=route, code=code), tempfile.TemporaryDirectory(dir=self.sandbox) as tmp:
                 original = self.sandbox
                 self.sandbox = Path(tmp)
                 seen = []
 
                 def respond(handler):
                     seen.append(handler.path)
-                    if handler.path == "/documents":
+                    if handler.path == route:
                         if status is not None:
-                            handler._send(status, "Synthetic error body")
+                            handler._send(status, body.decode())
                     else:
                         get(handler)
 
@@ -177,14 +189,16 @@ class RehearseConsoleTests(unittest.TestCase):
                     with self.listen(), patch.object(admin_panel._Handler, "do_GET", respond):
                         result = rehearse_console.run(self.sandbox)
                     self.assert_stopped()
-                    self.assertEqual(seen, ["/runs", "/documents"])
-                    outputs = [self.output(self.receipt("/runs"))]
+                    self.assertEqual(result["codes"], [code])
+                    prior = list(PAGES)[:list(PAGES).index(route)]
+                    self.assertEqual(seen, [*prior, route])
+                    outputs = [self.output(self.receipt(page)) for page in prior]
                     if status is not None:
-                        self.assertEqual(json.loads(self.receipt("/documents").read_bytes()), {
-                            "route": "/documents", "status": status,
-                            "body_sha256": hashlib.sha256(b"Synthetic error body").hexdigest(),
+                        self.assertEqual(json.loads(self.receipt(route).read_bytes()), {
+                            "route": route, "status": status,
+                            "body_sha256": hashlib.sha256(body).hexdigest(),
                         })
-                        outputs.append(self.output(self.receipt("/documents")))
+                        outputs.append(self.output(self.receipt(route)))
                     self.assertEqual(result, self.expected(self.export_step(), ("start_console", "OK", []),
                                                            ("pages", code, outputs)))
                 finally:

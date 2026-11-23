@@ -201,6 +201,7 @@ def _page_ok(row):
             and all(row[k] is None or type(row[k]) is str for k in ("agency", "received_at"))
             and row["route"] in ROUTES and row["confidence_band"] in BANDS and row["review_state"] in REVIEWS
             and (row["route"] == "ocr") == (row["review_state"] != "not_applicable")
+            and (row["route"] == "native") == (row["confidence_band"] == "not_applicable")
             and len(text) <= MAX_PAGE_BYTES and hashlib.sha256(text).hexdigest() == row["text_sha256"]
             and type(row["citations"]) is list and row["citations"]
             and all(type(c) is dict and set(c) == {"kind", "id", "label"} and c["kind"] in KINDS
