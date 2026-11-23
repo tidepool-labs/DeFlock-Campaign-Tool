@@ -76,6 +76,30 @@ class RehearsalTests(unittest.TestCase):
         self.assertEqual((event["event"], event["id"], event["revision"]), ("draft", draft["id"], 0))
         # Folded rows alone could hide an extra journal mutation on the second pass.
         self.assertEqual(report["steps"][2]["outputs"], report["steps"][4]["outputs"])
+        evidence = draft["evidence"]
+        self.assertEqual((evidence["asks_for"], evidence["pattern"], evidence["vehicle"],
+                          evidence["planned_send_date"], evidence["source"]),
+                         ([1], "closed_new_request", "new_request", "2026-11-06", "followup_engine"))
+
+        # Regression: a valid pending draft with the right IDs and one event can still
+        # evidence the wrong ask. Change only that field before the real queue readback.
+        self.sandbox = self.root / "wrong-ask"
+        self.sandbox.mkdir(mode=0o700)
+        journal = self.sandbox / JOURNAL
+
+        def replace_ask_after_draft(*args, **kwargs):
+            summary = real_engine(*args, **kwargs)
+            if summary["queued"]:
+                event, = map(json.loads, journal.read_bytes().splitlines())
+                event["snapshot"]["evidence"]["asks_for"] = [2]
+                journal.write_text(json.dumps(event) + "\n", encoding="utf-8")
+            return summary
+
+        with mock.patch.object(driver.followup_engine, "run", side_effect=replace_ask_after_draft) as engine:
+            report = driver.run(self.sandbox)
+        self.assertEqual(report["codes"], ["FOLLOWUP_DRAFT_EVIDENCE_MISMATCH"])
+        self.assertEqual(report, self.expected("queue_check", "FOLLOWUP_DRAFT_EVIDENCE_MISMATCH"))
+        engine.assert_called_once_with(self.sandbox / "project", "stage-15", apply=True)
 
     def test_c2_remove_due_case(self):
         """C2: removing the due case must fail draft, even with valid waiting inputs."""
