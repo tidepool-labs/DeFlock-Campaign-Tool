@@ -169,21 +169,25 @@ class C1Steps(Base):
 
     def test_c1_console_lists_the_packet_and_the_source_finding(self):
         """C1: /packets lists the one pending packet read-only; /findings lists the source finding, not the packet."""
-        self.run_driver()
+        claim = CLAIM + " <sample> &lt;"  # catches both missing and repeated HTML unescaping
+        with mock.patch.object(driver, "_CLAIM", claim):
+            report = self.run_driver()
+        self.assertEqual(report, self.expected())
         handler = driver._Handler("/packets", str(self.project), os.path.realpath(self.sandbox / "analysis"))
         self.assertTrue(console_packets.serve(handler))
         ((status, page),) = handler.sent
         self.assertEqual((status, page.count("<section>"), page.count("<form")), (200, 1, 0))
         for want in ("Packets switch: OFF.", "<dd>%s</dd>" % PACKET_ID, "<dt>status</dt><dd>proposed</dd>", "Exact signature payload"):
             self.assertIn(want, page)
-        finding = {"finding_id": FINDING, "topic": TOPIC, "claim": CLAIM, "fact_ids": FACT_ID, "rule_ids": ""}
+        self.assertIn("&lt;sample&gt; &amp;lt;", page)
+        finding = {"finding_id": FINDING, "topic": TOPIC, "claim": claim, "fact_ids": FACT_ID, "rule_ids": ""}
         root = os.path.realpath(self.sandbox / "analysis")
         with rehearsal_trust.sandbox_anchor(self.sandbox, self.sandbox / "rehearsal.allowed_signers"), \
                 mock.patch.dict(os.environ, HOME=str(self.sandbox)):  # the signed review verifies only against the sandbox anchor
             model = console_findings.load_all(root)
         self.assertEqual(model, {"state": "ok", "broken": 0, "rows": [{
             "agency": SLUG, "finding_id": FINDING, "review_state": "approved", "reason": None, "hold_code": None,
-            "f4_verdict": "unavailable", "topic": TOPIC, "claim": CLAIM, "fact_ids": FACT_ID, "rule_ids": "",
+            "f4_verdict": "unavailable", "topic": TOPIC, "claim": claim, "fact_ids": FACT_ID, "rule_ids": "",
             "finding_sha256": finding_review.finding_hash(finding), "payload": finding_review.finding_payload(SLUG, finding),
             "facts": [{"fact_id": FACT_ID, "source_sha256": DIGEST, "page": "2", "quote": PAGES[1]}]}]})
 
@@ -255,6 +259,30 @@ class C1Steps(Base):
         """C1: /packets that cannot be rendered fails console_findings with FINDINGS_PACKETS_PAGE."""
         with mock.patch.object(console_packets, "render", side_effect=public_packets.PacketError("journal_invalid")):
             self.failed("console_findings", "FINDINGS_PACKETS_PAGE")
+
+    def test_c1_wrong_packet_payload_fails_console_findings(self):
+        """C1: the right row metadata must not qualify anything but one exact visible payload."""
+        real = console_packets.serve
+
+        def changed(handler):
+            served = real(handler)
+            ((status, page),) = handler.sent
+            start, end = page.index("<pre>"), page.index("</pre>") + len("</pre>")
+            block = page[start:end]
+            self.assertEqual(block.count(CLAIM), 1)
+            handler.sent[0] = status, page[:start] + mutate(block) + page[end:]
+            return served
+
+        for name, mutate in (
+            ("changed-claim", lambda block: block.replace(CLAIM, "Different synthetic claim.")),
+            ("trailing-space", lambda block: block.replace("</pre>", " </pre>")),
+            ("hidden-in-comment", lambda block: "<!--" + block + "-->"),
+            ("duplicate", lambda block: block + block),
+        ):
+            with self.subTest(name=name), mock.patch.object(console_packets, "serve", side_effect=changed):
+                self.sandbox = self.root / name
+                self.project = self.sandbox / "project"
+                self.failed("console_findings", "FINDINGS_PACKETS_PAGE")
 
     def test_c1_an_unreadable_findings_view_fails_console_findings(self):
         """C1: /findings that cannot read the agency fails console_findings with FINDINGS_FINDINGS_PAGE."""

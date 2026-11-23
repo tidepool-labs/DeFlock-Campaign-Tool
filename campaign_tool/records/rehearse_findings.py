@@ -16,6 +16,7 @@ import argparse
 from contextlib import contextmanager, redirect_stderr, redirect_stdout
 import csv
 import hashlib
+from html.parser import HTMLParser
 from io import StringIO
 import json
 import os
@@ -348,17 +349,50 @@ def _tree(sandbox):
     return {str(path.relative_to(sandbox)): path.read_bytes() for path in sorted(sandbox.rglob("*")) if path.is_file()}
 
 
+class _PacketPayload(HTMLParser):
+    """The /packets renderer uses one plain-text <pre> per proposed packet."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.blocks = []
+        self.text = None
+
+    def handle_starttag(self, tag, attrs):
+        if self.text is not None:
+            raise _StepFailed("FINDINGS_PACKETS_PAGE")
+        if tag == "pre":
+            self.text = []
+
+    def handle_data(self, data):
+        if self.text is not None:
+            self.text.append(data)
+
+    def handle_endtag(self, tag):
+        if self.text is not None:
+            if tag != "pre":
+                raise _StepFailed("FINDINGS_PACKETS_PAGE")
+            self.blocks.append("".join(self.text))
+            self.text = None
+
+
 def _console_findings(p):
-    """(a) /packets lists the one pending packet, switch OFF, no form; (b) /findings lists the source finding, not the packet."""
+    """/packets shows the exact pending payload, switch OFF, no form; /findings shows the source finding, not the packet."""
     before = _tree(p.sandbox)
     project, root = str(p.project), os.path.realpath(p.analysis)
     (row,) = public_packets.pending(project, read_only=True)
     packets = _Handler("/packets", project, root)
-    if not console_packets.serve(packets) or len(packets.sent) != 1:
-        raise _StepFailed("FINDINGS_PACKETS_PAGE")
+    with _trusted(p):
+        expected = public_packets.payload(project, row["id"], read_only=True).decode("utf-8")
+        if not console_packets.serve(packets) or len(packets.sent) != 1:
+            raise _StepFailed("FINDINGS_PACKETS_PAGE")
     status, page = packets.sent[0]
     if (status != 200 or page.count("<section>") != 1 or "Packets switch: OFF." not in page or "<form" in page
             or "<dd>%s</dd>" % row["id"] not in page or "<dt>status</dt><dd>proposed</dd>" not in page):
+        raise _StepFailed("FINDINGS_PACKETS_PAGE")
+    payload = _PacketPayload()
+    payload.feed(page)
+    payload.close()
+    if payload.text is not None or payload.blocks != [expected]:
         raise _StepFailed("FINDINGS_PACKETS_PAGE")
     with _trusted(p):  # the review's signature is re-verified against the sandbox anchor
         model = console_findings.load_all(root)
