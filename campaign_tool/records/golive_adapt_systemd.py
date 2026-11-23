@@ -78,7 +78,7 @@ def _capture_units(value, now):
             raise ValueError("invalid or duplicate unit name")
         if not isinstance(unit["enabled"], bool) or not isinstance(unit["active"], bool):
             raise ValueError("unit states must be booleans")
-        units[name] = unit["enabled"] and unit["active"]
+        units[name] = (unit["enabled"], unit["active"])
     return units
 
 
@@ -89,10 +89,15 @@ def _rows(raw, value, name, now):
             continue
         codes = []
         for unit in required:
-            if not units.get(unit):
-                state = "NOT_ACTIVE" if unit in units else "MISSING"
-                suffix = unit.upper().replace("-", "_").replace(".", "_")
-                codes.append(f"UNIT_{state}_{suffix}")
+            suffix = unit.upper().replace("-", "_").replace(".", "_")
+            if unit not in units:
+                codes.append(f"UNIT_MISSING_{suffix}")
+                continue
+            enabled, active = units[unit]
+            if not enabled:
+                codes.append(f"UNIT_NOT_ENABLED_{suffix}")
+            if not active:
+                codes.append(f"UNIT_NOT_ACTIVE_{suffix}")
         row = {
             "schema": "records-golive-evidence-v1", "stage": stage, "kind": "live",
             "result": "fail" if codes else "pass", "recorded_at": value["observed_at"],
