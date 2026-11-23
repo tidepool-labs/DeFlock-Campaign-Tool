@@ -65,8 +65,8 @@ def _gaps(stage):
                 esc(sentence(r["code"])), r["count"], "accepted" if r["accepted"] else "blocking") for r in rows))
 
 
-def _stage(number, stage, report):
-    body = ["<h2>%d. %s: %s</h2>" % (number, esc(stage["name"]), esc(stage["status"]))]
+def _stage(anchor, label, stage, report):
+    body = ["<h2>%s</h2>" % label]
     body.append("<p>%s</p>" % (esc(sentence(stage["error_code"])) if stage["error_code"] else "No problem reported."))
     body.append("<p>Counts: %s.</p>" % ", ".join("%s %d" % (key, stage["counts"][key]) for key in COUNTS))
     items = [i for i in report["needs_g"] if i["stage"] == stage["name"]]
@@ -77,7 +77,7 @@ def _stage(number, stage, report):
         body.append(_gaps(stage))
     if stage["name"] == "notify":
         body.append('<p role="status">%s</p>' % esc(_notify(stage)))
-    return "<section>%s</section>" % "".join(body)
+    return '<section id="%s">%s</section>' % (anchor, "".join(body))
 
 
 def _link(label, report):
@@ -93,7 +93,16 @@ def render(reports, index):
             "<p>Run %s. Started %s, finished %s (Pacific time). Trigger: %s. Overall: %s. Items to review: %d.</p>" % (
                 esc(report["run_id"]), esc(_pacific(report["started_at"])), esc(_pacific(report["finished_at"])),
                 esc(trigger), esc(report["overall_status"]), report["review_required_count"])]
-    body += [_stage(n, s, report) for n, s in enumerate(report["stages"], 1)]
+    shortcuts, details = [], []
+    for number, stage in enumerate(report["stages"], 1):
+        anchor = "stage-%d" % number
+        label = "%d. %s: %s" % (number, esc(stage["name"]), esc(stage["status"]))
+        if stage["status"] in ("warn", "fail"):
+            shortcuts.append('<a href="#%s">%s</a>' % (anchor, label))
+        details.append(_stage(anchor, label, stage, report))
+    if shortcuts:
+        body.append('<nav aria-label="Affected stages">Jump to: %s</nav>' % " · ".join(shortcuts))
+    body += details
     body.append("<p>New data this run: %s.</p>" % ", ".join(
         "%s %d" % (k.replace("_", " "), report["new_data"][k]) for k in NEW_DATA))
     older = reports[index + 1] if index + 1 < len(reports) else None

@@ -33,8 +33,11 @@ def _mark(new, old):
 def _row(report, now, older):
     started = datetime.strptime(report["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(runs.ZONE)
     mode = esc(now["mode"]) + (" <strong>%s</strong>" % STUB if now["stub"] else "")
+    if older is not None and (now["stub"] or older["stub"] or now["mode"] != older["mode"]):
+        mode += " <small>Not comparable to previous run</small>"
+        older = None
     cells = [esc(started.strftime("%Y-%m-%d %H:%M %Z")), mode]
-    cells += [_show(now[key]) + (_mark(now[key], older[key]) if older else "") for key, _, _ in COUNTS]
+    cells += [_show(now[key]) + (_mark(now[key], older[key]) if older is not None else "") for key, _, _ in COUNTS]
     cells.append('<a href="/run?id=%s">Details</a>' % esc(urllib.parse.quote(report["run_id"])))
     return "<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells)
 

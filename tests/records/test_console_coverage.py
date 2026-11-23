@@ -16,9 +16,11 @@ from tests.records.test_pipeline_health import NOW
 REJECTED = "run_20261101T000000Z_deadbeef.json"  # filename and report id disagree: never valid
 
 
-def cover(i, out=0, skipped=0, gap=0, ocr=0, portal=0, kind="ok", stub=False):
+def cover(i, out=0, skipped=0, gap=0, ocr=0, portal=0, kind="ok", stub=False, mode="scheduled"):
     """A valid report whose coverage inputs are the arguments; kind warn/fail marks the adoption stage."""
     data = make(i)
+    if mode == "arrival":
+        data.update(mode="arrival", trigger="arrival")
     adoption = next(s for s in data["stages"] if s["name"] == "adoption")
     adoption["counts"].update(output=out, skipped=skipped)
     if kind != "ok":
@@ -103,6 +105,26 @@ class CoveragePage(unittest.TestCase):
         for f in self.reports.glob("run_*"):
             f.unlink()
         self.assertNotIn("Stub run", self.show(cover(2, out=1)))  # no stub item, no label
+
+    def test_trend_marks_require_comparable_adjacent_runs(self):
+        # The oldest arrival run could be (wrongly) reused when the next arrival run follows scheduled runs.
+        # The stub pairs catch a check of only one endpoint, or a check that allows two stubs to compare.
+        html = self.show(cover(0, out=1, mode="arrival"), cover(1, out=2), cover(2, out=3),
+                         cover(3, out=4, mode="arrival"), cover(4, out=5, mode="arrival", stub=True),
+                         cover(5, out=6, mode="arrival", stub=True), cover(6, out=7, mode="arrival"))
+        table = rows(html)
+        self.assertEqual(len(table), 7)  # incomparable runs still occupy their own rows
+        for i, mode, adopted in (
+            (0, "arrival Not comparable to previous run", "7"),  # older stub
+            (1, "arrival Stub run Not comparable to previous run", "6"),  # both stub
+            (2, "arrival Stub run Not comparable to previous run", "5"),  # newer stub
+            (3, "arrival Not comparable to previous run", "4"),  # different real modes
+        ):
+            with self.subTest(row=i):
+                self.assertEqual(table[i][2:7], [adopted, adopted, "0", "0", "0"])  # no up/down/same marks
+                self.assertEqual(table[i][1], mode)
+        self.assertEqual(table[4][1:7], ["scheduled", "3 ↑ up", "3 ↑ up", "0 = same", "0 = same", "0 = same"])
+        self.assertEqual(table[-1][1:7], ["arrival", "1", "1", "0", "0", "0"])  # no older run, no warning
 
     # Fails if the cap counts rejected files, the 31st run is displayed, its role as baseline is lost, a change mark
     # is wrong, or a lone run gets a mark.

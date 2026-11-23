@@ -58,13 +58,15 @@ def records(export_root, run_report, now):
     if latest is not None and health._future(latest, now):
         latest = None  # assess() does not present future reports to the check
     raw, manifest = _manifest(export_root)
-    check = health._console_export(export_root, latest, now, health.LIMITS)
-    reason = check["reason_code"] if latest is not None else "console_export_no_run"
+    if latest is None:
+        reason = "console_export_no_run"
+    elif raw is None:
+        reason = "console_export_not_configured" if export_root is None else "console_export_unreadable"
+    else:
+        # Compare the same generation whose manifest bytes supply the receipt.
+        check = health._console_export(None, latest, now, health.LIMITS, pinned_run_id=manifest["run_id"])
+        reason = check["reason_code"]
     a2_ok = reason == "console_export_current"
-    if a2_ok and (raw is None or latest is None or manifest["run_id"] != latest["run_id"]):
-        # No pass if the check cannot be tied to a verified manifest (including
-        # a current switch between the pin and the health read).
-        reason, a2_ok = "console_export_unreadable", False
 
     if raw is not None:
         source = {"schema": ce.SCHEMA, "sha256": hashlib.sha256(raw).hexdigest(), "name": ce.MANIFEST}
