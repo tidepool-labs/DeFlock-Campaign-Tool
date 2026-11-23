@@ -3,6 +3,7 @@ import re
 import threading
 import unittest
 from html import unescape
+from urllib.parse import urlencode
 
 from campaign_tool.records import admin_panel as ap, approval_queue as aq, console_page_drafts as drafts, draft_templates
 from campaign_tool.records.console_home import PLAIN_KINDS
@@ -113,6 +114,40 @@ class DraftHistory(unittest.TestCase):
         for bad in ("agency=", "kind="):
             self.assertEqual(get(blank, "/drafts?" + bad)[0], 400)
 
+    def test_filter_links_preserve_the_other_selections(self):
+        # Follow the rendered URLs, not hand-built follow-up queries: dropping any filter admits a near miss.
+        rows = synthetic()
+        reply = next(r for r in rows if r["kind"] == "fee-reply")
+        agency = "alpha & beta"
+        rows.extend({**reply, "id": "%064x" % n, "request_id": request, "status": state, "agency_id": office, "kind": kind}
+                    for n, (request, state, office, kind) in enumerate((
+                        ("fee-pending", "pending", agency, "fee-reply"),
+                        ("fee-approved", "approved", agency, "fee-reply"),
+                        ("other-agency-pending", "pending", "beta-sheriff", "fee-reply"),
+                        ("other-agency-approved", "approved", "beta-sheriff", "fee-reply"),
+                        ("first-pending", "pending", agency, "first-request"),
+                        ("first-approved", "approved", agency, "first-request")), start=len(rows)))
+        source = Source(rows)
+
+        def links(page):
+            return {label: unescape(href) for href, label in re.findall(r'<a href="(/drafts[^"]*)">([^<]+)</a>', page)}
+
+        _, page = get(source)
+        # Labels distinguish draft purposes; without a selection, links must not emit blank query parameters.
+        self.assertIn("Filter by kind:", page)
+        self.assertEqual(links(page)["Reply about fees"], "/drafts?kind=fee-reply")
+        self.assertEqual(links(page)["First request"], "/drafts?kind=first-request")
+
+        _, page = get(source, "/drafts?" + urlencode({"agency": agency, "state": "approved", "kind": "first-request"}))
+        status, page = get(source, links(page)["Reply about fees"])
+        self.assertEqual((status, [r[3] for r in table(page)]), (200, ["fee-approved"]))
+        pending_count = sum(r["status"] == "pending" for r in rows)
+        status, page = get(source, links(page)[f"pending {pending_count}"])
+        self.assertEqual((status, [r[3] for r in table(page)]), (200, ["fee-pending"]))
+        # Reset must clear all three dimensions rather than returning another filtered view.
+        status, reset = get(source, links(page)["Show all"])
+        self.assertEqual((status, table(reset)), (200, table(get(source)[1])))
+
     def test_unavailable_queue_is_said_never_shown_as_no_drafts(self):
         # Contract: a reader or shape fault shows the existing unavailable sentence; only a good empty fold says none.
         for source, code in ((Source(error=aq.ApprovalQueueError("DRAFTQ")), "queue_invalid"),
@@ -124,11 +159,20 @@ class DraftHistory(unittest.TestCase):
                 self.assertEqual(status, 200)
                 self.assertIn("Drafts: unavailable.", page)
                 self.assertIn(drafts.esc(drafts.console_layout.reason(code)), page)
-                for text in ("No drafts", "<table", "All "):
+                for text in ("No drafts", "<table", "All ", 'href="/drafts?'):
                     self.assertNotIn(text, page)
         self.assertEqual(get(Source(error=aq.ApprovalQueueError("DRAFTQ")), "/drafts?agency=x")[0], 200)
         self.assertEqual(get(Source(error=OSError("x")), "/drafts?state=bogus")[0], 400)
-        self.assertIn("No drafts in the approval queue.", get(Source([]))[1])
+        empty = Source([])
+        _, page = get(empty)
+        # A known kind with zero rows still gives the genuine empty-queue result, not a refusal.
+        link = re.search(r'href="([^"]+)">Reply about fees</a>', page)
+        if link is None:
+            self.fail("The empty queue lost its fee-reply filter link")
+        status, filtered = get(empty, unescape(link[1]))
+        self.assertEqual(status, 200)
+        for page in (page, filtered):
+            self.assertIn("No drafts in the approval queue.", page)
 
 
 class DraftHistoryServed(Panel):

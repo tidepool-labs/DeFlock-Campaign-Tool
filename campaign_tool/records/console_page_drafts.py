@@ -80,6 +80,8 @@ def _link(**query):
 
 
 def render(rows, code, found):
+    from .console_home import PLAIN_KINDS
+
     out = ["<h1>Draft history</h1>", '<section id="drafts">']
     if rows is None:
         out.append('<p role="status">%s</p>' % esc(console_layout.unavailable_note("Drafts", code)))
@@ -88,7 +90,13 @@ def render(rows, code, found):
     for row in rows:
         seen[row["state"]] = seen.get(row["state"], 0) + 1
     counts = [(s, seen.get(s, 0)) for s in STATES] + sorted((s, n) for s, n in seen.items() if s not in STATES)
-    out.append("<p>All %d: %s</p>" % (len(rows), " · ".join('<a href="%s">%s %d</a>' % (_link(state=s), esc(s), n) for s, n in counts)))
+    state_filters = {k: found[k] for k in ("agency", "kind") if k in found}
+    out.append("<p>All %d: %s</p>" % (len(rows), " · ".join(
+        '<a href="%s">%s %d</a>' % (_link(state=s, **state_filters), esc(s), n) for s, n in counts)))
+    kind_filters = {k: found[k] for k in ("agency", "state") if k in found}
+    kinds = KINDS | {r["kind"] for r in rows if r["kind"]}
+    out.append("<p>Filter by kind: %s</p>" % " · ".join(
+        '<a href="%s">%s</a>' % (_link(kind=k, **kind_filters), esc(PLAIN_KINDS.get(k, k))) for k in sorted(kinds)))
     shown = [r for r in rows if all(r[k] == found[k] for k in ("state", "agency", "kind") if k in found)]
     if found:
         out.append('<p>Showing %d matching %s. <a href="/drafts">Show all</a></p>' % (
