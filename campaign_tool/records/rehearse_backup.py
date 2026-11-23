@@ -111,6 +111,12 @@ def _tree_hashes(root):
 
 
 def _compare(project, declared, manifest, source, restored):
+    # Reuse the verifier's metadata-only walk, including the restored root.
+    # Hash only files from that inventory, not entries from a second walk.
+    try:
+        inventory = backup_v2._inventory(restored)
+    except (backup_v2.RecoveryError, OSError):
+        raise _Refused("RESTORE_MISMATCH") from None
     rows = json.loads(manifest.read_bytes())["files"]
     live_paths = {row["source"] for row in rows}
     if len(rows) != len(declared) or live_paths != {str(project / rel) for rel in declared}:
@@ -121,7 +127,9 @@ def _compare(project, declared, manifest, source, restored):
         expected[row["path"]] = declared[rel]
         if _sha(project / rel) != declared[rel]:
             raise _Refused("RESTORE_MISMATCH")
-    if _tree_hashes(source) != expected or _tree_hashes(restored) != expected:
+    restored_hashes = {Path(path).relative_to(restored).as_posix(): None if kind == "directory" else _sha(Path(path))
+                       for path, (kind, _) in inventory.items() if path != str(restored)}
+    if _tree_hashes(source) != expected or restored_hashes != expected:
         raise _Refused("RESTORE_MISMATCH")
 
 
@@ -187,7 +195,10 @@ def run(sandbox):
         for name, action in (("seed_project", seed), ("quiescence", quiescence), ("backup", backup),
                              ("backup_verify", verify), ("restore", restore), ("compare", compare)):
             try:
-                outputs = [{"path": path.relative_to(sandbox).as_posix(), "sha256": _sha(path)} for path in action()]
+                # restore_v2 already checked the restored manifest against trusted.
+                # Don't reread restored content until compare has checked its metadata.
+                outputs = [{"path": path.relative_to(sandbox).as_posix(),
+                            "sha256": trusted if name == "restore" else _sha(path)} for path in action()]
                 code = "OK"
             except _Refused as error:
                 code, outputs = str(error), []

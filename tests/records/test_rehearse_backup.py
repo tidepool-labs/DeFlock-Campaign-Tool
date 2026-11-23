@@ -3,6 +3,7 @@
 import hashlib
 import io
 import json
+import os
 import stat
 import tempfile
 import unittest
@@ -173,6 +174,49 @@ class RehearseBackupTests(unittest.TestCase):
 
             with self.subTest(index=index), patch.object(driver.backup_v2, "restore_v2", side_effect=restore_then_change):
                 self.assertEqual(driver.run(self.sandbox), self._expected("compare", "RESTORE_MISMATCH"))
+
+    def test_C1_compare_checks_restored_types_and_modes(self):
+        """C1: Byte equality cannot qualify a restore with unsafe metadata."""
+        root = self.sandbox
+        restore, sha = driver.backup_v2.restore_v2, driver._sha
+        for case in ("read-only file", "group-readable file", "executable file", "root mode",
+                     "payload directory mode", "manifest symlink", "payload FIFO"):
+            with self.subTest(case=case):
+                self.sandbox = root / case
+                self.sandbox.mkdir(mode=0o700)
+                def restore_then_change(source, destination, **options):
+                    result = restore(source, destination, **options)
+                    target = Path(destination)
+                    payload = target / "payload"
+                    member = next(payload.iterdir())
+                    if case == "root mode":
+                        target.chmod(0o750)
+                    elif case == "payload directory mode":
+                        payload.chmod(0o750)
+                    elif case == "manifest symlink":
+                        manifest = target / "manifest.json"
+                        manifest.unlink()
+                        manifest.symlink_to(Path(source) / "manifest.json")
+                    elif case == "payload FIFO":
+                        member.unlink()
+                        os.mkfifo(member, 0o600)
+                    else:
+                        member.chmod({"read-only file": 0o400, "group-readable file": 0o640,
+                                      "executable file": 0o700}[case])
+                    return result
+
+                def check_sha(path):
+                    if case in ("manifest symlink", "payload FIFO"):
+                        self.assertNotIn(self.sandbox / "restored", path.parents,
+                                         "must refuse the tree before hashing restored content")
+                    return sha(path)
+
+                with patch.object(driver.backup_v2, "restore_v2", side_effect=restore_then_change), patch.object(
+                        driver, "_sha", side_effect=check_sha):
+                    result = driver.run(self.sandbox)
+                expected = self._expected() if case == "read-only file" else self._expected(
+                    "compare", "RESTORE_MISMATCH")
+                self.assertEqual(result, expected)
 
     def test_C3_cli_refuses_bad_sandbox_without_emitting_record_content(self):
         """C3: Invalid destinations exit 2 before entering the rehearsal or printing a JSON receipt."""
