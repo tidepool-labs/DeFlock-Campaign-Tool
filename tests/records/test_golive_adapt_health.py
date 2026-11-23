@@ -110,6 +110,13 @@ class HealthEvidenceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, "invalid pipeline-health summary"):
                     adapter.records(value, NOW)
 
+    def test_stale_mail_claiming_ok_is_refused(self):
+        """DFZ-01 C1: Changing only the mail reason must not mint a clean pass."""
+        value = report()
+        value["checks"][1].update(reason_code="mail_poll_stale")
+        with self.assertRaises(ValueError):
+            adapter.records(value, NOW)
+
     def test_c2_warn_and_stop(self):
         """C2: Health warnings and stops are observations, not liveness failures."""
         value = report()
@@ -134,15 +141,26 @@ class HealthCLITests(unittest.TestCase):
 
     def test_c3_modes_and_source(self):
         """C3: JSON binds saved bytes and basename; text is the sibling summary."""
-        value = report()
-        raw = (json.dumps(value, indent=2) + "\n").encode()
         with tempfile.TemporaryDirectory(dir=".") as tmp:
             path = Path(tmp) / "capture.json"
-            path.write_bytes(raw)
-            status, out, err = self.invoke(path, "--json")
-            self.assertEqual((status, json.loads(out), err), (0, [expected(value, name="capture.json", raw=raw)], ""))
-            self.assertEqual(self.invoke(path), (0, f"18\tlive\tpass\t{OBSERVED}\trecords-health-v1\t\n", ""))
-            self.assertEqual(path.read_bytes(), raw)
+            for state, exit_code, reason, codes in (
+                ("ok", 0, "mail_poll_recent", []),
+                ("warn", 1, "mail_poll_stale", ["MAIL_POLL"]),
+                ("stop", 3, "mail_poll_stale", ["MAIL_POLL"]),
+            ):
+                with self.subTest(state=state):
+                    value = report()
+                    value.update(state=state, exit_code=exit_code)
+                    value["checks"][1].update(state=state, reason_code=reason)
+                    self.assertEqual(adapter.records(value, NOW), expected(value, codes=codes))
+                    raw = (json.dumps(value, indent=2) + "\n").encode()
+                    path.write_bytes(raw)
+                    status, out, err = self.invoke(path, "--json")
+                    self.assertEqual((status, json.loads(out), err),
+                                     (0, [expected(value, codes=codes, name="capture.json", raw=raw)], ""))
+                    text = f"18\tlive\tpass\t{OBSERVED}\trecords-health-v1\t{','.join(codes)}\n"
+                    self.assertEqual(self.invoke(path), (0, text, ""))
+                    self.assertEqual(path.read_bytes(), raw)
 
     def test_c3_negative_evidence(self):
         """C3: A negative result is still printed, unlike malformed input."""
@@ -165,6 +183,11 @@ class HealthCLITests(unittest.TestCase):
             inconsistent.update(state="unknown", exit_code=2)
             path.write_text(json.dumps(inconsistent))
             self.assertEqual(self.invoke(path, "--json"), refused)
+            contradictory_mail = report()
+            contradictory_mail["checks"][1].update(reason_code="mail_poll_stale")
+            path.write_text(json.dumps(contradictory_mail))
+            with self.subTest(case="stale_mail_claiming_ok"):
+                self.assertEqual(self.invoke(path, "--json"), refused)
             path.unlink()
             self.assertEqual(self.invoke(path, "--json"), refused)
             self.assertEqual(self.invoke(tmp, "--json"), refused)
