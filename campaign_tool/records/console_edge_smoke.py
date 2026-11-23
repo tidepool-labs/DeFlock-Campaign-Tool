@@ -13,6 +13,8 @@ import re
 import sys
 from urllib.parse import urlsplit
 
+from . import console_pages
+
 CONSOLE_CSP = "base-uri 'none'; frame-ancestors 'none'"
 FINGERPRINT_SERVER = "RecordsPanel"
 FENCE_HEADER = "x-deflock-write-fence"
@@ -40,7 +42,9 @@ def _connect(scheme, host, timeout):
 
 
 def _probes():
-    base = [("GET", p, None) for p in GET_PATHS] + [("HEAD", "/", None), ("OPTIONS", "/", None)]
+    # Keep the fixed inventory separate: the registry reserves those paths.
+    get_paths = dict.fromkeys((*GET_PATHS, *sorted(console_pages._ROUTES)))
+    base = [("GET", p, None) for p in get_paths] + [("HEAD", "/", None), ("OPTIONS", "/", None)]
     base += [("POST", p, "a=b") for p in POST_PATHS]
     plain = [("https", m, p, b, {}) for m, p, b in base]
     junk = [("https", m, p, b, dict(JUNK)) for m, p, b in base]
