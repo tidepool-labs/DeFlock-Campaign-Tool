@@ -50,7 +50,10 @@ def serve(handler):
     try:
         page = render(handler.options['project'], handler.csrf_token(), handler.options['source'])
     except (pp.PacketError, OSError, ValueError, KeyError, TypeError):
-        handler._fail(503)
+        handler._send(503, console_layout.shell(
+            'Update packets', '<h1>Update packets</h1>'
+            '<p class="diag" role="status">Pending packet evidence could not be read. '
+            'This does not mean the queue is empty.</p>', active='Packets'))
     else:
         handler._send(200, page)
     return True
