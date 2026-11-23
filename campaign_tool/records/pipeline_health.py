@@ -361,8 +361,12 @@ def _console_export(export_root, latest, now, limits, *, pinned_run_id=None):
             if not Path(export_root).is_absolute():
                 raise ValueError("export root")
             manifest = _read_json(Path(export_root) / "current" / "EXPORT.json")
-            exported = None if manifest is None else manifest["run_id"]
-        except (ValueError, KeyError, OSError):
+            if manifest is not None:
+                exported = manifest.get("run_id")
+                # Arrival batches use the same engine run ID as the run-report schema.
+                if not isinstance(exported, str) or not arrival.RUN_ID_RE.fullmatch(exported):
+                    raise ValueError("export run id")
+        except (ValueError, OSError):
             return _check("console_export", "unknown", "console_export_unreadable")
     if exported == latest["run_id"]:
         return _check("console_export", "ok", "console_export_current")

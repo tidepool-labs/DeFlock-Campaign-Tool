@@ -826,16 +826,35 @@ class AnalysisExportTests(Base):
         self.assertEqual(os.listdir(alerts), ["health-analysis-analysis_error.cleared.json"])
 
     def test_export_matching_pending_and_behind(self):
-        self.assertEqual(self.item("console_export"), ("stop", "console_export_stale"))  # no export at all
+        within_grace = NOW - timedelta(minutes=46)
+        current = ("ok", "console_export_current")
+        pending = ("ok", "console_export_pending")
+        stale = ("stop", "console_export_stale")
+        unreadable = ("unknown", "console_export_unreadable")
+        older_run = "run_20261103T000000Z_00000000"
+
+        self.assertEqual(self.item("console_export"), stale)  # no export at all
+        self.assertEqual(self.item("console_export", now=within_grace), pending)
         self.exported(self.run_id)
-        self.assertEqual(self.item("console_export"), ("ok", "console_export_current"))
-        self.exported("run_20261103T000000Z_00000000")
-        self.assertEqual(self.item("console_export"), ("stop", "console_export_stale"))
-        self.assertEqual(self.item("console_export", now=NOW - timedelta(minutes=46)), ("ok", "console_export_pending"))
-        (self.export / "current").unlink()
-        (self.export / "current").mkdir()
-        (self.export / "current" / "EXPORT.json").write_text("[]")
-        self.assertEqual(self.item("console_export"), ("unknown", "console_export_unreadable"))
+        self.assertEqual(self.item("console_export"), current)
+        self.assertEqual(self.item("console_export", now=within_grace), current)
+        self.assertEqual(self.item("console_export", now=within_grace, pinned_export_run_id=older_run), pending)
+        self.exported(older_run)
+        self.assertEqual(self.item("console_export"), stale)
+        self.assertEqual(self.item("console_export", now=within_grace), pending)
+
+        # A present but malformed identity is not an older run waiting for refresh.
+        manifest = self.export / "current" / "EXPORT.json"
+        data = json.loads(manifest.read_text())
+        for run_id in (23, {}, None, "not-an-engine-id", older_run + "\n"):
+            with self.subTest(run_id=run_id):
+                manifest.write_text(json.dumps(dict(data, run_id=run_id)))
+                self.assertEqual(self.item("console_export", now=within_grace), unreadable)
+        self.assertEqual(self.item("console_export", now=within_grace, pinned_export_run_id=self.run_id), current)
+        manifest.write_text(json.dumps({"schema": data["schema"]}))
+        self.assertEqual(self.item("console_export", now=within_grace), unreadable)
+        manifest.write_text("[]")
+        self.assertEqual(self.item("console_export"), unreadable)
 
     def test_alerts_and_cli(self):
         self.seed_history()
