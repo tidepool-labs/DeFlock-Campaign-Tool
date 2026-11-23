@@ -80,6 +80,11 @@ class FindingConsole(Apply):
 
 
 class FindingPage(FindingConsole):
+    def add_unreadable_agency(self):
+        config = self.ar / "agencies" / "unreadable-agency" / "review-config.json"
+        config.parent.mkdir()
+        config.write_text("{broken")
+
     def test_the_page_lists_the_waiting_finding_with_facts_f4_and_the_exact_payload(self):
         self.up_findings()
         row = self.frow()
@@ -92,6 +97,38 @@ class FindingPage(FindingConsole):
         self.assertEqual(self.forms()["/findings/review/approve"]["finding_sha256"], row["finding_sha256"])
         self.assertIn('href="/findings/review"', self.get("/"))  # the secondary navigation and the connected home note
         self.assertIn("connected (CON-FIND-1)", self.get("/"))
+
+        # A failed agency must not make the readable count look like the whole queue, or hide valid rows/forms.
+        forms = self.forms()
+        self.add_unreadable_agency()
+        partial = self.get("/findings/review")
+        self.assertIn("1 agency review could not be read", partial)
+        self.assertIn("Queue incomplete. Readable agencies only: 1 finding listed for human review.", partial)
+        self.assertNotIn("1 finding waiting", partial)
+        self.assertEqual(re.findall(r'<section class="draft">.*?</section>', partial, re.S),
+                         re.findall(r'<section class="draft">.*?</section>', page, re.S))
+        self.assertEqual(self.forms(), forms)
+        self.assertEqual(self.decide("/findings/review/approve", agency="unreadable-agency", finding_id="N1",
+                                     finding_sha256=row["finding_sha256"], signature="not a signature")[0], 409)
+        self.assertEqual(self.lines(), [])
+
+    def test_zero_readable_findings_after_a_read_failure_is_not_a_definite_empty_queue(self):
+        public_ok = self.findings.with_name("PUBLIC-OK.csv")
+        public_ok.write_text(public_ok.read_text().splitlines()[0] + "\n")  # a readable run with no findings
+        self.up_findings()
+        empty = self.get("/findings/review")
+        self.assertIn("0 findings waiting for a human review.", empty)
+        self.assertIn("No finding is waiting for a human review.", empty)
+        self.assertNotIn("Queue incomplete", empty)
+        self.assertNotIn("<form", empty)
+
+        self.add_unreadable_agency()
+        partial = self.get("/findings/review")
+        self.assertIn("1 agency review could not be read", partial)
+        self.assertNotIn("No finding is waiting", partial)
+        self.assertNotIn("0 findings waiting", partial)
+        self.assertIn("Queue incomplete. Readable agencies only: 0 findings listed for human review.", partial)
+        self.assertNotIn("<form", partial)
 
     def test_without_an_analysis_root_the_page_says_configuration_is_needed_and_posts_are_refused(self):
         self.make_export()
@@ -111,8 +148,11 @@ class FindingPage(FindingConsole):
         good = config.read_bytes()
         config.write_text("{broken")
         page = self.get("/findings/review")
-        self.assertIn("finding_inputs_unavailable", page)
+        self.assertIn("Finding review: unavailable (finding_inputs_unavailable). Nothing is listed; this is not an empty list.", page)
         self.assertNotIn("No finding is waiting", page)
+        self.assertNotIn("Queue incomplete", page)
+        self.assertNotIn("0 findings waiting", page)
+        self.assertNotIn("<form", page)
         config.write_bytes(good)
         journal = self.ar / ".analysis" / "finding-reviews.jsonl"  # a corrupt review journal defers; it is never read as empty
         journal.write_text("not json\n")
