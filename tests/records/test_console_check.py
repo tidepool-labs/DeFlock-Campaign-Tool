@@ -17,7 +17,7 @@ from unittest import mock
 from campaign_tool.records import cli, pipeline_health
 
 
-PAGES = ("/", "/board", "/documents", "/calendar", "/settings", "/next-steps")
+PAGES = ("/", "/board", "/documents", "/calendar", "/settings", "/next-steps", "/golive")
 REQUESTS = [("GET", path) for path in (*PAGES, "/send")] + [("POST", "/approvals/reject")]
 CHECKS = [f"{method} {path}" for method, path in REQUESTS] + ["export"]
 CSP = ("default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; "
@@ -100,6 +100,8 @@ class ConsoleCheckTests(unittest.TestCase):
         self.assertEqual(set(k.lower() for k in headers), {"host", "content-length", "accept-encoding"})
         cases = [
             (("GET", "/board"), (404, CSP), "HTTP_404"),
+            # A healthy home page must not mask a missing go-live ledger.
+            (("GET", "/golive"), (404, CSP), "HTTP_404"),
             (("GET", "/documents"), (200, None), "FINGERPRINT_MISSING"),
             (("GET", "/calendar"), (200, "wrong policy"), "FINGERPRINT_MISSING"),
             (("GET", "/send"), (200, CSP), "SEND_EXPOSED"),
