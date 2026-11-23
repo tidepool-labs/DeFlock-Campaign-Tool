@@ -385,9 +385,12 @@ class _PacketPayload(HTMLParser):
                 raise _StepFailed("FINDINGS_PACKETS_PAGE")
             self.blocks.append("".join(self.text))
             self.text = None
-        elif any(t == tag for t, _ in self.open):  # a stray end tag must not drop an open ancestor
-            while self.open.pop()[0] != tag:
-                pass
+        elif not self.open or self.open[-1][0] != tag:
+            # The renderer's markup is well nested. A stray or mismatched end tag is where this stack and a
+            # browser's end-tag recovery can disagree about which ancestors (e.g. a hidden one) are still open.
+            raise _StepFailed("FINDINGS_PACKETS_PAGE")
+        else:
+            self.open.pop()
 
 
 def _console_findings(p):

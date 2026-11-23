@@ -285,6 +285,11 @@ class C1Steps(Base):
             ("aria-hidden-pre", lambda block: block.replace("<pre>", '<pre aria-hidden="true">')),
             ("hidden-wrapper", lambda block: "<div hidden>" + block + "</div>"),
             ("styled-wrapper", lambda block: '<span style="display:none">' + block + "</span>"),
+            # Contract: ancestors are judged as a browser sees them. Bug caught: a mismatched end tag
+            # (</body>) popped the hidden <section> from the stack model while HTML5 recovery ignores it
+            # and leaves the <pre> hidden.
+            ("hidden-section-mismatched-end", lambda block: "<section hidden></body>" + block + "</section>"),
+            ("stray-end-tag", lambda block: "</div>" + block),
         ):
             with self.subTest(name=name), mock.patch.object(console_packets, "serve", side_effect=changed):
                 self.sandbox = self.root / name
