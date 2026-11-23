@@ -278,6 +278,13 @@ class C1Steps(Base):
             ("trailing-space", lambda block: block.replace("</pre>", " </pre>")),
             ("hidden-in-comment", lambda block: "<!--" + block + "-->"),
             ("duplicate", lambda block: block + block),
+            # Contract: the payload is compared as VISIBLE review text. Bug caught: a <pre hidden> (or any
+            # attribute / hidden wrapper) carrying the exact payload still passing the text comparison.
+            ("hidden-pre", lambda block: block.replace("<pre>", "<pre hidden>")),
+            ("styled-pre", lambda block: block.replace("<pre>", '<pre style="display:none">')),
+            ("aria-hidden-pre", lambda block: block.replace("<pre>", '<pre aria-hidden="true">')),
+            ("hidden-wrapper", lambda block: "<div hidden>" + block + "</div>"),
+            ("styled-wrapper", lambda block: '<span style="display:none">' + block + "</span>"),
         ):
             with self.subTest(name=name), mock.patch.object(console_packets, "serve", side_effect=changed):
                 self.sandbox = self.root / name

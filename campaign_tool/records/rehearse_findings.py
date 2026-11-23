@@ -349,19 +349,31 @@ def _tree(sandbox):
     return {str(path.relative_to(sandbox)): path.read_bytes() for path in sorted(sandbox.rglob("*")) if path.is_file()}
 
 
+# What the /packets renderer may wrap around a payload <pre>: only these ancestors, with only these
+# attributes (none of them can hide, move or restyle the block).
+_VOID = frozenset(("area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"))
+_SHOWN_IN = {"html": {"lang"}, "body": set(), "main": {"id", "tabindex"}, "section": set()}
+
+
 class _PacketPayload(HTMLParser):
-    """The /packets renderer uses one plain-text <pre> per proposed packet."""
+    """The /packets renderer uses one attribute-free plain-text <pre> per proposed packet, visibly placed."""
 
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.blocks = []
         self.text = None
+        self.open = []
 
     def handle_starttag(self, tag, attrs):
         if self.text is not None:
             raise _StepFailed("FINDINGS_PACKETS_PAGE")
         if tag == "pre":
+            # A hidden/styled/classed <pre> or a hidden/unknown ancestor is not a payload shown for review.
+            if attrs or any(t not in _SHOWN_IN or {k for k, _ in a} - _SHOWN_IN[t] for t, a in self.open):
+                raise _StepFailed("FINDINGS_PACKETS_PAGE")
             self.text = []
+        elif tag not in _VOID:
+            self.open.append((tag, attrs))
 
     def handle_data(self, data):
         if self.text is not None:
@@ -373,6 +385,9 @@ class _PacketPayload(HTMLParser):
                 raise _StepFailed("FINDINGS_PACKETS_PAGE")
             self.blocks.append("".join(self.text))
             self.text = None
+        elif any(t == tag for t, _ in self.open):  # a stray end tag must not drop an open ancestor
+            while self.open.pop()[0] != tag:
+                pass
 
 
 def _console_findings(p):
