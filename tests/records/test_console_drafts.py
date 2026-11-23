@@ -148,6 +148,18 @@ class DraftHistory(unittest.TestCase):
         status, reset = get(source, links(page)["Show all"])
         self.assertEqual((status, table(reset)), (200, table(get(source)[1])))
 
+    def test_kind_filter_links_have_distinct_labels(self):
+        # Contract: a phone user picks a kind by its visible words, so no two kind links may share a label.
+        # Bug caught: appeal-denial and followup-playbook both read "Reply to a refusal" via PLAIN_KINDS.
+        _, page = get(Source(synthetic()))
+        block = page.split("Filter by kind:")[1].split("</p>")[0]
+        found = [(unescape(label), unescape(href)) for href, label in re.findall(r'<a href="([^"]+)">([^<]+)</a>', block)]
+        labels = [label for label, _ in found]
+        self.assertEqual(len(labels), len(set(labels)), labels)
+        by_label = dict(found)
+        self.assertEqual(by_label["Reply to a refusal (appeal)"], "/drafts?kind=appeal-denial")
+        self.assertEqual(by_label["Reply to a refusal (automatic follow-up)"], "/drafts?kind=followup-playbook")
+
     def test_unavailable_queue_is_said_never_shown_as_no_drafts(self):
         # Contract: a reader or shape fault shows the existing unavailable sentence; only a good empty fold says none.
         for source, code in ((Source(error=aq.ApprovalQueueError("DRAFTQ")), "queue_invalid"),

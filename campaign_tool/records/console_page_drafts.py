@@ -15,6 +15,8 @@ NAV = ("Draft history", 30)
 STATES = ("pending", "approved", "rejected", "superseded", "sent")  # the last two: reserved, shown only when supplied
 KINDS = frozenset(draft_templates.KINDS) | {draft_templates.MESSAGE_LINK}
 _TEXT = ("id", "status", "kind", "agency_id", "request_id")
+# Home shows both refusal replies as "Reply to a refusal"; the kind links need distinct words to pick between.
+_KIND_LINK = {"appeal-denial": "Reply to a refusal (appeal)", "followup-playbook": "Reply to a refusal (automatic follow-up)"}
 
 
 # console_oversight and console_home build the nav at import, which loads this registry: import them lazily.
@@ -96,7 +98,7 @@ def render(rows, code, found):
     kind_filters = {k: found[k] for k in ("agency", "state") if k in found}
     kinds = KINDS | {r["kind"] for r in rows if r["kind"]}
     out.append("<p>Filter by kind: %s</p>" % " · ".join(
-        '<a href="%s">%s</a>' % (_link(kind=k, **kind_filters), esc(PLAIN_KINDS.get(k, k))) for k in sorted(kinds)))
+        '<a href="%s">%s</a>' % (_link(kind=k, **kind_filters), esc(_KIND_LINK.get(k) or PLAIN_KINDS.get(k, k))) for k in sorted(kinds)))
     shown = [r for r in rows if all(r[k] == found[k] for k in ("state", "agency", "kind") if k in found)]
     if found:
         out.append('<p>Showing %d matching %s. <a href="/drafts">Show all</a></p>' % (
