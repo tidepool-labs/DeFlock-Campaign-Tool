@@ -71,6 +71,9 @@ def build(reports, evidence, now):
     cutoff = now.astimezone(timezone.utc) - _REHEARSAL_AGE
     proofs = _report_proofs(reports)
     evidence = tuple(evidence)
+    # Descriptive sandbox proof does not qualify a rehearsal, even if newer.
+    rehearsals = tuple(row for row in evidence if row["kind"] == "rehearsal"
+                       and row["source"]["schema"] != "records-e2e-proof-v1")
     live_records = {stage: golive_evidence.latest(evidence, stage, "live")
                     for stage in golive_catalog.STAGES}
     # Match the evidence reader's timestamp/filename ordering across stages.
@@ -79,7 +82,7 @@ def build(reports, evidence, now):
                                           record["source"]["sha256"][:8]), default=None)
     rows = []
     for stage, rule in golive_catalog.STAGES.items():
-        rehearsed = _check(rule.needs_rehearsal, golive_evidence.latest(evidence, stage, "rehearsal"),
+        rehearsed = _check(rule.needs_rehearsal, golive_evidence.latest(rehearsals, stage, "rehearsal"),
                            newest_live, cutoff)
         gate = _check(rule.needs_gate, golive_evidence.latest(evidence, stage, "gate"), newest_live)
         record = live_records[stage]

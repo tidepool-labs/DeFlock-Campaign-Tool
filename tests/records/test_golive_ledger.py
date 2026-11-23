@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
+from unittest.mock import patch
 
 from campaign_tool.records import golive_catalog, golive_evidence, golive_ledger, golive_stages
 
@@ -30,10 +31,10 @@ AGGREGATE = dict(status="missing", reason="AGGREGATE_ONLY")
 NOT_POSITIVE = dict(status="missing", reason="NOT_POSITIVE")
 
 
-def record(stage, kind, result="pass", stamp=STAMP, engine=ENGINE):
+def record(stage, kind, result="pass", stamp=STAMP, engine=ENGINE, *, source_schema="synthetic-v1"):
     return dict(schema="records-golive-evidence-v1", stage=stage, kind=kind, result=result,
                 recorded_at=stamp, engine=engine, actor="operator", codes=[],
-                source=dict(schema="synthetic-v1", sha256="c" * 64, name="synthetic.json"))
+                source=dict(schema=source_schema, sha256="c" * 64, name="synthetic.json"))
 
 
 def row(stage, label, *, pipeline=True, rehearsed=MISSING, gate=UNNEEDED,
@@ -163,11 +164,32 @@ class GoLiveLedgerTests(unittest.TestCase):
         """C3: Count only LIVE pipeline rows, including A2 but not a live console-only row."""
         self.write_record(record("A1", "live"))
         self.write_record(record("A2", "live"))
+        # A descriptive pass alone must not qualify. Selecting it before filtering
+        # would also lose the older pass or mask the older failure.
+        rehearsals = {
+            "2": (MISSING, "BUILT", "rehearsal"),
+            "5": (PASS, "REHEARSED", "live"),
+            "8": (FAIL, "BLOCKED", "rehearsal"),
+        }
+        self.write_record(record("5", "rehearsal"))
+        self.write_record(record("8", "rehearsal", "fail", LATER))
+        for stage in rehearsals:
+            self.write_record(record(stage, "rehearsal", stamp="2026-01-04T00:00:00Z",
+                                     source_schema="records-e2e-proof-v1"))
         expected = list(self.loaded().values())
         self.assertEqual(golive_ledger.live_count(expected), 1)
-        code, out, err = self.invoke(*self.args, "--json")
-        self.assertEqual((code, json.loads(out), err),
-                         (0, dict(rows=expected, live_count=1, summary="1 of 22 pipeline stages live"), ""))
+        with patch.object(golive_ledger, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            code, out, err = self.invoke(*self.args, "--json")
+        self.assertEqual((code, err), (0, ""))
+        payload = json.loads(out)
+        for boundary, rows in (("build", expected), ("CLI JSON", payload["rows"])):
+            by_stage = {item["stage"]: item for item in rows}
+            for stage, want in rehearsals.items():
+                with self.subTest(boundary=boundary, stage=stage):
+                    item = by_stage[stage]
+                    self.assertEqual((item["rehearsed"], item["state"], item["next"]), want)
+        self.assertEqual(payload, dict(rows=expected, live_count=1, summary="1 of 22 pipeline stages live"))
         code, out, err = self.invoke()
         self.assertEqual((code, err, out.splitlines()[-1]), (0, "", "1 of 22 pipeline stages live"))
         self.assertIn(f"A1 | Console on the box | no | missing | not needed | evidence {STAMP} | LIVE | rehearsal",
