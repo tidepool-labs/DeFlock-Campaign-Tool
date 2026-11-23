@@ -43,7 +43,9 @@ def _query(path):
 
 def _render(prefix, page, row, omitted):
     esc = console_layout.esc
-    out = [f"<h1>{BANNER}</h1>", f"<h2>Document {prefix}, page {page}</h2>", '<p><a href="/documents">Back to documents</a></p>']
+    out = [f"<h1>{BANNER}</h1>", f"<h2>Document {prefix}, page {page}</h2>",
+           f'<p><a href="/document?id={prefix}">Back to this document</a> '
+           '<a href="/documents">Back to documents</a></p>']
     if row is None:
         out.append(f"<p>This page's text is not in the console export: {REASONS[omitted]}.</p>")
     else:
