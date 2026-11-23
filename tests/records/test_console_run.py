@@ -62,15 +62,18 @@ def gapped(data, partitions):
             data.update(overall_status="warn", review_required_count=1)
 
 
+SHORTCUTS = re.compile(r'<nav aria-label="Affected stages">(.*?)</nav>', re.S)
+
+
 def lines(html):
     """One text line per block of the page body (heading and intro, each stage, new data, links); parts are joined with ' | '.
 
     A gap table reads as 'Adoption gaps | Gap | Messages | Disposition ; <row cells joined by |> ; ...' (rows end with ' ;').
     """
-    body = html[html.index("<h1>"):html.index("</main>")]
+    body = SHORTCUTS.sub("", html[html.index("<h1>"):html.index("</main>")])
     body = re.sub(r"</(?:h1|h2|p|li|caption)>", " | ", body.replace("\n", " "))
     body = re.sub(r"</t[hd]><t[hd]>", " | ", body).replace("</tr>", " ; ")
-    body = re.sub(r"</?section>|<nav[^>]*>", "\n", body)
+    body = re.sub(r"</?section\b[^>]*>|<nav[^>]*>", "\n", body)
     return [re.sub(r"\s+", " ", unescape(re.sub(r"<[^>]+>", "", row))).strip(" |;") for row in body.split("\n") if row.strip()]
 
 
@@ -138,23 +141,27 @@ class RunDetail(unittest.TestCase):
         self.assertTrue(page.serve(handler))
         return handler.sent
 
-    def lines(self, i):
+    def detail(self, i):
         status, html = self.get("?id=" + IDS[i])
         self.assertEqual(status, 200)
-        return lines(html)
+        return html
+
+    def lines(self, i):
+        return lines(self.detail(i))
 
     # Owner: the stage-by-stage contract. Fails if a stage is omitted or reordered, a code shows without its
     # sentence, counts/needs-G/new-data/notify are lost, an unmapped code is hidden, or adjacent links are swapped.
     def test_run_detail_projects_clean_warn_fail_and_unknown(self):
         self.put("clean", "warn", "fail")
+        clean_html, warn_html, fail_html = (self.detail(i) for i in range(3))
         clean = golden(0)
         clean[-1] = "Previous (older) run: none Next (newer) run All runs"
-        self.assertEqual(self.lines(0), clean)
+        self.assertEqual(lines(clean_html), clean)
         warn = golden(1, "warn", 1)  # extract warned with two needs-G items; new data counted
         warn[5] = WARN_EXTRACT % ("Some documents were put off to a later run. (EXTRACT_BACKLOG_DEFERRED)",
                                   "A scanned document is waiting for text recognition (OCR). (AWAITING_OCR)")
         warn[9] = "New data this run: documents 2, pages 7, extracted units 0, portal releases 0, request status changes 0."
-        self.assertEqual(self.lines(1), warn)
+        self.assertEqual(lines(warn_html), warn)
         fail = golden(2, "fail")
         fail[1] = "1. sync: fail | Syncing the mail export failed. (SYNC_FAILED) | " + ZERO
         for n in range(2, 9):
@@ -163,10 +170,25 @@ class RunDetail(unittest.TestCase):
         fail[3] += " | " + MISSING
         fail[8] += " | Not sent: An earlier stage failed, so this stage was skipped. (UPSTREAM_FAILED)"
         fail[-1] = "Previous (older) run Next (newer) run: none All runs"
-        self.assertEqual(self.lines(2), fail)
+        self.assertEqual(lines(fail_html), fail)
         self.assertNotIn("was sent", fail[8])
-        html = self.get("?id=" + IDS[1])[1]  # adjacent links: older is run 0, newer is run 2
-        self.assertEqual(re.findall(r'<a href="/run\?id=(run_\w+)">(Previous|Next)', html), [(IDS[0], "Previous"), (IDS[2], "Next")])
+        # Adjacent links: older is run 0, newer is run 2.
+        self.assertEqual(re.findall(r'<a href="/run\?id=(run_\w+)">(Previous|Next)', warn_html), [(IDS[0], "Previous"), (IDS[2], "Next")])
+
+        self.assertIsNone(SHORTCUTS.search(clean_html))  # no empty navigation on a clean run
+        for html, fragment, label, explanation in (
+            (warn_html, "stage-5", "5. extract: warn", warn[5]),
+            (fail_html, "stage-1", "1. sync: fail", fail[1]),
+        ):
+            with self.subTest(stage=label):
+                nav = list(SHORTCUTS.finditer(html))
+                self.assertEqual(len(nav), 1)  # missing or duplicate navigation
+                self.assertLess(nav[0].end(), html.index("<section"))  # no scrolling past the details to reach shortcuts
+                self.assertEqual(re.findall(r'<a href="([^"]*)">([^<]*)</a>', nav[0][1]),
+                                 [("#" + fragment, label)])  # catches wrong numbers/status and links to OK/skipped stages
+                self.assertEqual(html.count(f' id="{fragment}"'), 1)  # broken or ambiguous fragment
+                target = re.findall(rf'<section id="{fragment}"><h2>([^<]*)</h2><p>([^<]*)</p>', html)
+                self.assertEqual(target, [(label, explanation.split(" | ")[1])])  # jumped to the wrong explanation
 
     # Owner: unmapped codes. Fails if a code missing from the table is dropped, echoed as a bare code, or an unsafe token is echoed.
     def test_unmapped_code_is_shown_with_no_description_yet(self):
@@ -249,7 +271,9 @@ class RunDetail(unittest.TestCase):
     # Owner: notify wording. Fails if a pending or skipped notification is described as sent.
     def test_pending_notification_is_not_called_sent(self):
         self.put("pending")
-        notify = self.lines(0)[8]
+        html = self.detail(0)
+        self.assertIsNone(SHORTCUTS.search(html))  # a skipped stage with a code must not enable shortcuts
+        notify = lines(html)[8]
         self.assertIn("Not sent yet: The summary notification had not been sent when this report was written. (NOTIFY_PENDING)", notify)
         self.assertNotIn("was sent.", notify)
 
