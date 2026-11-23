@@ -69,13 +69,20 @@ def _path(value):
 
 def load_list(path):
     """No-symlink, regular-file, bounded read of the extract list; schema checked."""
+    def unique_fields(pairs):
+        fields = {}
+        for name, value in pairs:
+            _need(name not in fields, "textstate_duplicate_field")
+            fields[name] = value
+        return fields
+
     path = _path(path)
     fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC)
     with os.fdopen(fd, "rb") as handle:
         _need(stat.S_ISREG(os.fstat(handle.fileno()).st_mode), "textstate_list_not_regular")
         raw = handle.read(MAX_LIST_BYTES + 1)
     _need(len(raw) <= MAX_LIST_BYTES, "textstate_list_too_large")
-    data = json.loads(raw)
+    data = json.loads(raw, object_pairs_hook=unique_fields)
     _need(isinstance(data, dict) and data.get("schema") == LIST_SCHEMA, "textstate_list_schema")
     documents = data.get("documents")
     _need(isinstance(documents, list) and all(isinstance(d, dict) for d in documents), "textstate_list_documents")
