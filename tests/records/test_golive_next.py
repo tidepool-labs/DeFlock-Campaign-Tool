@@ -110,10 +110,39 @@ class CliTests(unittest.TestCase):
         path = self.evidence / "20260119T000000Z-1-live-cccccccc.json"
         path.touch(mode=0o600)
         path.write_text(json.dumps(receipt("1", "live")), encoding="utf-8")
+        # With no filters the CLI must still emit the entire ordered plan, not
+        # limit it to a default stage or change the row shape or order.
+        code, out, err = self.invoke("--json")
+        expected = golive_next.plan(golive_ledger.build([], [receipt("1", "live")], NOW))
+        self.assertEqual((code, json.loads(out), err), (0, expected, ""))
         code, out, err = self.invoke("--json", "--owner", "G")
         self.assertEqual((code, json.loads(out), err), (0, [
             dict(stage="A4", action="rehearse", owner="G", reason="REHEARSAL_MISSING"),
         ], ""))
+
+        # A known LIVE stage must not reappear when explicitly requested.
+        self.assertEqual(self.invoke("--stage", "1", "--json"), (0, "[]\n", ""))
+        self.assertEqual(self.invoke("--stage", "1"), (0, "No pending step for stage 1.\n", ""))
+
+    def test_stage_filter_keeps_exact_ids_and_intersects_owner(self):
+        for stage, owner, action, reason, text in (
+            ("17b", "operator", "go live", "LIVE_MISSING",
+             "Record live proof for stage 17b (Public site) — live proof is missing."),
+            ("A2", "pipeline", "rehearse", "REHEARSAL_MISSING",
+             "Rehearse offline for stage A2 (Console export) — a qualified rehearsal is missing."),
+        ):
+            with self.subTest(stage=stage):
+                # Catch numeric coercion, lost suffixes and filtering only JSON.
+                self.assertEqual(self.invoke("--stage", stage), (0, f"1. {owner}: {text}\n", ""))
+                # Matching owner alone would return other stages owned by it.
+                code, out, err = self.invoke("--stage", stage, "--owner", owner, "--json")
+                self.assertEqual((code, json.loads(out), err), (0, [
+                    dict(stage=stage, action=action, owner=owner, reason=reason),
+                ], ""))
+        # Catch OR semantics or ignoring --owner in the presence of --stage.
+        self.assertEqual(self.invoke("--stage", "A2", "--owner", "operator", "--json"), (0, "[]\n", ""))
+        self.assertEqual(self.invoke("--stage", "A2", "--owner", "operator"),
+                         (0, "No pending step for stage A2.\n", ""))
 
     def test_c2_refuses_invalid_input_in_either_directory(self):
         """C2: An invalid report or receipt cannot produce a partial action list."""
@@ -121,3 +150,13 @@ class CliTests(unittest.TestCase):
         self.assertEqual(self.invoke("--json"), (2, "", "golive_next: bad.json: invalid evidence filename\n"))
         (self.reports / "bad.json").write_text("{}", encoding="utf-8")
         self.assertEqual(self.invoke(), (2, "", "golive_next: 'bad.json': invalid report\n"))
+        # Even a valid stage cannot bypass full input validation.
+        self.assertEqual(self.invoke("--stage", "A2"), (2, "", "golive_next: 'bad.json': invalid report\n"))
+        for invalid in ("a2", "99"):
+            with self.subTest(invalid=invalid):
+                # Catch normalization, unknown-as-empty and loading bad paths
+                # before recognizing a usage error.
+                code, out, err = self.invoke("--stage", invalid)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("usage:", err)
+                self.assertIn(f"argument --stage: invalid choice: {invalid!r}", err)
