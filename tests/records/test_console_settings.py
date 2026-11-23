@@ -6,8 +6,9 @@ from contextlib import closing
 from datetime import datetime, timezone
 from unittest import mock
 
-from campaign_tool.records import console_settings as cs, public_updates as pu, public_packets as pp
+from campaign_tool.records import console_settings as cs, console_snapshot, public_updates as pu, public_packets as pp
 from tests.records.test_admin_panel import Base, Http, RUN, ap
+from tests.records.test_console_snapshot import Panel, tree_state
 from tests.approval_signing import Signer
 
 
@@ -16,9 +17,9 @@ class SettingsTests(Base):
         return {str(p.relative_to(self.project)): p.read_bytes()
                 for p in self.project.rglob('*') if p.is_file()}
 
-    def render(self, config=None, drafts=None):
+    def render(self, config=None, drafts=None, source=None):
         before = self.snapshot()
-        html = cs.render(self.project, config, drafts)
+        html = cs.render(self.project, config, drafts, source=source)
         self.assertEqual(self.snapshot(), before)
         self.assertNotIn('<form', html)
         return html
@@ -117,14 +118,15 @@ class SettingsTests(Base):
 
     def test_reminder_overrides_and_invalid_duplicate_settings(self):
         path = self.project / 'followup-settings.json'
-        self.assertIn('<td>off</td><td>0</td><td>10</td>', self.render())
+        source = console_snapshot.LiveSource(self.project)
+        self.assertIn('<td>off</td><td>0</td><td>10</td>', self.render(source=source))
         self.write(path, dict(schema=cs.followup_clock.SETTINGS_SCHEMA,
                              default=dict(notice_after_days=12),
                              agencies={'alpha-pd': dict(autonomy='draft', silence_after_days=3)}))
-        self.assertIn('<td>alpha-pd</td><td>draft</td><td>3</td><td>12</td>', self.render())
+        self.assertIn('<td>alpha-pd</td><td>draft</td><td>3</td><td>12</td>', self.render(source=source))
         for raw in ('invalid', '{"schema":"records-followup-settings-v1","default":{},"default":{}}'):
             self.write(path, raw)
-            self.assertIn('settings file invalid: all reminders off', self.render())
+            self.assertIn('settings file invalid: all reminders off', self.render(source=source))
 
     def test_public_switches_signed_on_stale_and_killed_are_read_only(self):
         signer = Signer()
@@ -163,3 +165,23 @@ class SettingsTests(Base):
             server.shutdown()
             thread.join(5)
             server.server_close()
+
+
+class PinnedSettingsTests(Panel):
+    def test_pinned_reminders_are_unobserved_without_reading_local_settings(self):
+        # C1: a pinned export has no sealed reminder settings model. Reading the
+        # project view would substitute local defaults for an operator's settings.
+        self.make_export()
+        pin = console_snapshot.Pinner(str(self.root)).pin()
+        source = console_snapshot.SnapshotSource(pin)
+        before = tree_state(self.root)
+        with mock.patch.object(cs.followup_clock, 'load_settings',
+                               side_effect=AssertionError('Pinned reminders invoked the local settings reader')) as reader:
+            html = cs.render(pin.path, source=source)
+        reader.assert_not_called()
+        self.assertEqual(tree_state(self.root), before)
+        reminders = html.split('<h2>Reminders</h2>', 1)[1].split('<h2>', 1)[0]
+        self.assertIn('Reminder settings were not observed in this export.', reminders)
+        self.assertNotIn('<table', reminders)
+        self.assertNotIn('followup-settings.json', reminders)
+        self.assertNotIn('settings file invalid', reminders)

@@ -130,8 +130,11 @@ class ArrivalRehearsalTests(unittest.TestCase):
         self.assertEqual(driver.STAGES, ("3",))
         self.assertIs(type(driver.TITLE), str)
         mark.assert_called_once_with(self.root / run_stages.SANDBOX_MARKER, mode=0o600, exist_ok=False)
+        # Two burst wakes plus one marker-only wake, through the same fence.
         self.assertEqual([call.args[0] for call in self.wake.call_args_list],
-                         [["/bin/sh", str(self.runtime / "run-records.sh"), "--arrival"]] * 2)
+                         [["/bin/sh", str(self.runtime / "run-records.sh"), "--arrival"]] * 3)
+        first_wake, _, marker_wake = self.wake.call_args_list
+        self.assertEqual(marker_wake.kwargs, first_wake.kwargs)
         self.socket.assert_not_called()
         self.assertEqual({path.name for path in self.parent.iterdir()}, {"sandbox"})
         units = self.root / "units"
@@ -181,6 +184,33 @@ class ArrivalRehearsalTests(unittest.TestCase):
         self.assertEqual(first["trigger"], "arrival")
         self.assertEqual(arrival.pending(self.runtime), [])
         self.assertEqual(result, self.expected_result(self.root, "batch_two"))
+
+    def test_c1_detect_launch_on_marker_only_wake(self):
+        """Refuse qualification if a marker-only wake reaches the engine launcher."""
+        # Model a premature launch before the empty-stamp exit. Keep real burst
+        # dispatch intact and use the rendered host stub, not a fake receipt.
+        def launch_on_marker(text):
+            idle_exit = '  [ "$hw" -eq 0 ] || exit 0'
+            return text.replace(idle_exit, '''  if [ "$hw" -eq 1 ] && [ -f "$RUNTIME_DIR/arrival.pending" ]; then
+    "$HOST_PYTHON" -B -m campaign_tool.records.run_orchestrator run \\
+      --run-id "$RUN_ID" --report "$REPORT" --arrival
+  fi
+''' + idle_exit, 1)
+
+        with self.mutate_wrapper(launch_on_marker), contextlib.redirect_stdout(io.StringIO()) as out:
+            self.assertEqual(driver.main(["--sandbox", str(self.root)]), 1,
+                             "marker-only launcher regression qualified")
+        result = json.loads(out.getvalue())
+        self.assertEqual(result["codes"], ["COORDINATION_QUIET_FAILED"])
+        self.assertEqual(result["steps"][-1], {"name": "coordination_quiet",
+                                              "code": "COORDINATION_QUIET_FAILED", "outputs": []})
+        self.assertTrue(all(step["code"] == "OK" for step in result["steps"][:-1]))
+        burst, extra = self.launches(self.root)
+        self.assertIs(burst["batch_bound"], True)
+        self.assertEqual(extra["trigger"], "arrival")
+        self.assertIs(extra["batch_bound"], False)
+        self.assertEqual(list((self.runtime / "TEST" / "work").glob("arrivals-*.json")),
+                         [self.runtime / "TEST" / "work" / f"arrivals-{burst['run_id']}.json"])
 
     def test_c1_empty_wakes_do_not_trigger_a_run(self):
         """An idle wake must neither launch nor qualify as a successful burst."""
