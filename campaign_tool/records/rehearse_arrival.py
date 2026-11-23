@@ -256,16 +256,20 @@ def _burst_stamps(runtime):
     return [_mail_stamp(runtime, label) for label in ("burst-one", "burst-two")]
 
 
-def _dispatch_burst(runtime, pair):
+def _wake_wrapper(runtime):
     root = runtime.parent
+    wake = subprocess.run(["/bin/sh", str(runtime / "run-records.sh"), "--arrival"],
+                          cwd=root, env={"PATH": str(root / "bin"), "HOME": str(root),
+                                         "TMPDIR": str(root), "LC_ALL": "C", "ARRIVAL_QUIET_SECONDS": "0"},
+                          stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+    _require(wake.returncode == 0)
+
+
+def _dispatch_burst(runtime, pair):
     trace = runtime / "launches.jsonl"
     _require(not trace.exists() and arrival.pending(runtime) == [stamp for _, stamp in sorted(pair)])
     for _ in range(2):
-        wake = subprocess.run(["/bin/sh", str(runtime / "run-records.sh"), "--arrival"],
-                              cwd=root, env={"PATH": str(root / "bin"), "HOME": str(root),
-                                             "TMPDIR": str(root), "LC_ALL": "C", "ARRIVAL_QUIET_SECONDS": "0"},
-                              stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
-        _require(wake.returncode == 0)
+        _wake_wrapper(runtime)
     launches = trace.read_text(encoding="ascii").splitlines() if trace.exists() else []
     if not launches:
         raise _NotTriggered
@@ -312,14 +316,36 @@ def run(sandbox):
 
     def coordination_quiet():
         marker = runtime / arrival.MARKER_NAME
+        trace = runtime / "launches.jsonl"
+
+        def stamp_state():
+            return queue.stat().st_mtime_ns, {
+                path: None if path.is_dir() else path.read_bytes() for path in queue.rglob("*")
+            }
+
+        def batch_reports():
+            # Include the wrapper's stub reports as well as the rehearsal's
+            # validated reports and both forms of persisted batch.
+            return {path: path.read_bytes()
+                    for pattern in ("*.arrivals.json", "*.report.json", "TEST/work/arrivals-*.json",
+                                    "TEST/reports/*.json")
+                    for path in runtime.glob(pattern)}
+
         _require(not marker.exists())
-        before = queue.stat().st_mtime_ns, set(queue.rglob("*"))
+        before = stamp_state()
         inode = lock.stat().st_ino
         arrival.mark_pending(runtime)
         _require(lock.stat().st_ino == inode and arrival.has_work(runtime)
                  and not arrival.has_work(runtime, stamps_only=True)
-                 and before == (queue.stat().st_mtime_ns, set(queue.rglob("*"))))
-        arrival.parse_seen_at(marker.read_text(encoding="ascii").strip())
+                 and before == stamp_state())
+        marker_bytes = marker.read_bytes()
+        arrival.parse_seen_at(marker_bytes.decode("ascii").strip())
+        launch_bytes, outputs = trace.read_bytes(), batch_reports()
+        _wake_wrapper(runtime)
+        _require(trace.read_bytes() == launch_bytes and batch_reports() == outputs
+                 and stamp_state() == before and lock.stat().st_ino == inode
+                 and not arrival.has_work(runtime, stamps_only=True)
+                 and marker.read_bytes() == marker_bytes)
         return [lock, marker]
 
     stamps = []
