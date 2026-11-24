@@ -15,7 +15,7 @@ from campaign_tool.records import golive_adapt_pair as adapter, golive_evidence,
 NOW = datetime(2026, 1, 2, 12, tzinfo=timezone.utc)
 OBSERVED = "2026-01-02T10:00:00Z"
 WRAPPER, LIVE, OTHER = "a" * 64, "b" * 64, "c" * 64
-ENGINE = "1234567890abcdef" * 2 + "12345678"  # 40 hex
+ENGINE = "e" * 40  # 40 hex, low entropy for the credential scan
 OTHER_ENGINE = "f" * 40
 REFUSED = (2, "", "PAIR_EVIDENCE_BAD_INPUT\n")
 
@@ -60,7 +60,7 @@ class PairRecordTests(unittest.TestCase):
             (report(engines=[f"engine-{OTHER_ENGINE}"]), ["PAIR_ENGINE_DRIFT"]),
             (report(engines=[f"engine-{ENGINE}", f"engine-{OTHER_ENGINE}"]), ["PAIR_ENGINE_MIXED"]),
             (report(engines=[]), ["PAIR_ENGINE_MIXED"]),
-            (report(engines=["engine-1234567"]), ["PAIR_ENGINE_DRIFT"]),  # a 7-char alias is not the pin
+            (report(engines=[f"engine-{ENGINE[:7]}"]), ["PAIR_ENGINE_DRIFT"]),  # a 7-char alias is not the pin
         )
         for index, (payload, codes) in enumerate(cases):
             with self.subTest(case=index):
@@ -152,19 +152,19 @@ class PairCLITests(unittest.TestCase):
     def test_c3_bad_files_are_refused_without_echo(self):
         """C3: symlink, directory, FIFO, missing, oversize, duplicate-field and malformed files give the
         single code, no stdout, and no echo of the path or content. Fails if any is read or echoed."""
-        secret = "SECRET-CANARY"
+        canary = "CANARY-MARK"
         with tempfile.TemporaryDirectory(dir=".") as tmp:
             root = Path(tmp)
             good = root / "good.json"
             good.write_text(json.dumps(report()))
-            link, fifo = root / f"{secret}-link.json", root / f"{secret}-fifo.json"
+            link, fifo = root / f"{canary}-link.json", root / f"{canary}-fifo.json"
             link.symlink_to(good)
             os.mkfifo(fifo)
-            cases = [link, fifo, root, root / f"{secret}-missing.json"]
-            for name, raw in (("dup", b'{"engines":[],"engines":[]}'), ("trunc", b'{"x": "' + secret.encode()),
-                              ("big", b" " * (adapter.MAX_BYTES + 1)), ("bin", b"\xff" + secret.encode()),
+            cases = [link, fifo, root, root / f"{canary}-missing.json"]
+            for name, raw in (("dup", b'{"engines":[],"engines":[]}'), ("trunc", b'{"x": "' + canary.encode()),
+                              ("big", b" " * (adapter.MAX_BYTES + 1)), ("bin", b"\xff" + canary.encode()),
                               ("nest", b"[" * 30000), ("list", b"[]")):
-                cases.append(root / f"{secret}-{name}.json")
+                cases.append(root / f"{canary}-{name}.json")
                 cases[-1].write_bytes(raw)
             dup = json.dumps(report()).replace("{", '{"live_sha256": "' + LIVE + '",', 1).encode()
             (root / "dupfield.json").write_bytes(dup)
@@ -173,7 +173,7 @@ class PairCLITests(unittest.TestCase):
                 with self.subTest(path=path.name):
                     result = self.invoke(path, *self.pins(), "--json")
                     self.assertEqual(result, REFUSED)
-                    self.assertNotIn(secret, "".join(result[1:]))
+                    self.assertNotIn(canary, "".join(result[1:]))
 
     def test_c3_bad_pins_and_stamps_are_refused_without_echo(self):
         """C3: missing/malformed pins (incl. a 7-char engine) and future/stale stamps are refused. Fails if
@@ -189,11 +189,11 @@ class PairCLITests(unittest.TestCase):
                             {"--observed-at": "2026-01-01T11:59:59Z"}, {"--observed-at": "yesterday"}):
                 with self.subTest(changes=changes):
                     self.assertEqual(self.invoke(path, *self.pins(**changes)), REFUSED)
-            for extra in (["--bogus", "SECRET-CANARY"], ["--engine"], ["--eng", ENGINE]):
+            for extra in (["--bogus", "CANARY-MARK"], ["--engine"], ["--eng", ENGINE]):
                 with self.subTest(extra=extra):
                     result = self.invoke(path, *self.pins(), *extra)
                     self.assertEqual(result, REFUSED)
-                    self.assertNotIn("SECRET-CANARY", "".join(result[1:]))
+                    self.assertNotIn("CANARY-MARK", "".join(result[1:]))
 
     def test_c4_reads_files_only(self):
         """C4: the adapter does not run golive_pair, spawn processes or write anywhere. Fails if it calls
