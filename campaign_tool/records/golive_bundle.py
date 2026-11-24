@@ -75,7 +75,7 @@ def _ledger_lines(rows, stages):
         cell = row.get("rehearsed")
         if (stage in lines or not _text(row.get("label")) or not isinstance(cell, dict)
                 or cell.get("status") not in ("pass", "fail", "missing", "not needed")
-                or cell.get("reason") not in (None, "STALE", "ENGINE_CHANGED")):
+                or cell.get("reason") not in (None, "STALE", "ENGINE_CHANGED", "FUTURE_DATED")):
             raise ValueError("invalid or duplicate stage row")
         status = cell["status"]
         if cell.get("reason"):
