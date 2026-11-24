@@ -92,7 +92,7 @@ def records(journal, observed_at):
             "source": {"schema": public_packets.SCHEMA, "sha256": hashlib.sha256(raw).hexdigest(), "name": path.name},
         }
         golive_evidence.validate(row)
-    except (OSError, ValueError, TypeError, KeyError, RecursionError, public_packets.PacketError):
+    except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError, public_packets.PacketError):
         raise ValueError(_CODE) from None  # paths and journal text may be private
     return [row]
 

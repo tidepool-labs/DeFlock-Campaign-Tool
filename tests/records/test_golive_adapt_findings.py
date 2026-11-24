@@ -68,7 +68,7 @@ class FindingsAdapterTests(unittest.TestCase):
 
     def refused(self, journal, at=T0 + 60):
         with self.assertRaises(ValueError) as caught:
-            adapter.records(journal, utc(at))
+            adapter.records(journal, utc(at) if isinstance(at, int) else at)
         self.assertIs(type(caught.exception), ValueError)
         self.assertEqual(str(caught.exception), BAD)
 
@@ -133,6 +133,9 @@ class FindingsAdapterTests(unittest.TestCase):
                 path.write_bytes(data)
                 self.refused(path)
         path.write_bytes(good)
+        for stamp in ("0001-01-01T00:00:00+05:00", "9999-12-31T23:59:59-05:00", "not a time", "", None):  # no traceback
+            with self.subTest(stamp):
+                self.refused(path, at=stamp)
         link = self.copy / "link.jsonl"
         link.symlink_to(path)
         self.refused(link)
@@ -152,7 +155,8 @@ class FindingsAdapterTests(unittest.TestCase):
             self.assertEqual([r["stage"] for r in shown], ["16"])
         future = (datetime.now(timezone.utc) + timedelta(days=1)).strftime("%Y-%m-%dT%H:%M:%SZ")
         bad = [[str(path), "--observed-at", future], [str(path), "--observed-at", "2026-01-01T00:00:00"],
-               [str(self.copy / "missing.jsonl")]]
+               [str(path), "--observed-at", "0001-01-01T00:00:00+05:00"],
+               [str(path), "--observed-at", "9999-12-31T23:59:59-05:00"], [str(self.copy / "missing.jsonl")]]
         for args in bad:
             self.assertEqual(self.run_cli(args), (2, "", BAD + "\n"))
         self.fresh()  # the same copy name now holds a journal with no finding
