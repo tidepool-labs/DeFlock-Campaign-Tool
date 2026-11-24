@@ -22,7 +22,10 @@ ANONYMOUS_ONLY = "ACCESS_SWEEP_ANONYMOUS_ONLY"
 FAILED = "ACCESS_SWEEP_FAILED"
 _ACCESS_HEADER = "ACCESS CHECK"
 _ISOLATION_HEADER = "ISOLATION CHECK (not an Access check)"
-_PROBE = re.compile(r"(GET|HEAD|OPTIONS|POST) ([!-~]+) (?:[0-9]{3}|ERR:[A-Za-z0-9_]+) (?:[A-Za-z0-9._-]+|\?) (ok|FAIL)")
+# The location-host column is `urlsplit(Location).hostname` verbatim (`-` when absent, `?` when malformed), so a
+# recorded failure may print an IPv6 literal such as `::1` or any other host text; only control characters are
+# refused. The adapter never fetches or follows that value, and the row carries codes only.
+_PROBE = re.compile(r"(GET|HEAD|OPTIONS|POST) ([!-~]+) (?:[0-9]{3}|ERR:[A-Za-z0-9_]+) [^\x00-\x1f\x7f]+? (ok|FAIL)")
 _FOOTER_FAIL = re.compile(r"FAIL ([1-9][0-9]*) probes")
 
 

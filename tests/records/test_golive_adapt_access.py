@@ -85,6 +85,21 @@ class AccessSweepEvidenceTests(unittest.TestCase):
                 a4 = next(i for i in golive_ledger.build([], [row], NOW) if i["stage"] == "A4")
                 self.assertNotEqual(a4["live"]["status"], "evidence")
 
+    def test_c1_recorded_failure_with_any_location_host_is_a_fail_row(self):
+        """C1: A redirect the real sweep records as FAIL (IPv6 literal or odd host) is a fail row, not BAD_TRANSCRIPT."""
+        for target in ("https://[::1]/login", "https://[2001:db8::1]:8443/x", "https://127.0.0.1/", "https://exa_mple.test/"):
+            def redirect(scheme, host, method, path, body, extra, timeout, target=target):
+                if scheme == "https" and method == "GET" and path == "/" and not extra:
+                    return 302, [("location", target)]
+                return healthy(scheme, host, method, path, body, extra, timeout)
+
+            with self.subTest(target=target):
+                text = sweep(redirect)
+                self.assertRegex(lines_of(text)[1], r"^GET / 302 \S+ FAIL$")
+                self.assertRegex(lines_of(text)[-1], r"^FAIL [1-9][0-9]* probes$")
+                raw = blob(text)
+                self.assertEqual(adapter.records(raw, OBSERVED, NOW), expected(raw, "fail", ["ACCESS_SWEEP_FAILED"]))
+
     def test_c2_truncated_transcript_with_pass_footer_is_refused(self):
         """C2: Any probe line dropped, or one extra, under a pasted `PASS` footer is a count refusal."""
         lines = lines_of(sweep())
