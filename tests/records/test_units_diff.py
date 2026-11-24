@@ -60,13 +60,19 @@ class UnitsDiffTests(unittest.TestCase):
         self.both(MAIL, "[Service]\nEnvironment=A=1\n", "[Service]\nEnvironment=A=1\n")
         self.put(self.rendered, "run-records.sh", "ignored")
         self.put(self.installed, "other.service", "ignored")
-        self.put(self.installed, "deflock-console-old.service", "not an EXTRA: only records-* units are")
         code, lines = self.run_diff()
         self.assertEqual(code, 0)
         self.assertEqual(lines, ["MATCH deflock-console-panel.service enabled=enabled",
                                  f"MATCH {MAIL} enabled=enabled", "MATCH records-run.service enabled=enabled"])
         self.assertEqual(sorted(self.calls), ["deflock-console-panel.service", "deflockslo-daily-mail.service",
                                               "records-run.service"])
+
+        # Selecting installed-only names by the records- prefix hid a stale console service from S10.
+        extra = "deflock-console-old.service"
+        self.put(self.installed, extra, SERVICE)
+        self.assertEqual(self.run_diff(), (1, [f"EXTRA {extra} enabled=enabled", *lines]))
+        (self.installed / extra).unlink()
+
         self.put(self.installed, "records-run.service", OTHER)
         self.put(self.installed, "records-old.timer", "[Timer]\nOnCalendar=daily\n")
         self.put(self.rendered, "records-new.timer", "[Timer]\nOnCalendar=hourly\n")
