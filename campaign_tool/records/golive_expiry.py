@@ -25,6 +25,13 @@ def _utc(stamp):
     return datetime.strptime(stamp, _STAMP).replace(tzinfo=timezone.utc)
 
 
+def _stamp(moment):
+    # Fixed-width UTC: platform strftime("%Y") drops the leading zeros of years < 1000
+    # on glibc, which breaks the four-digit format and the string sort by expiry.
+    return (f"{moment.year:04d}-{moment.month:02d}-{moment.day:02d}"
+            f"T{moment.hour:02d}:{moment.minute:02d}:{moment.second:02d}Z")
+
+
 def _expiry(recorded):
     try:
         return min(recorded + _REHEARSAL_AGE, _LAST)  # a year-9999 stamp must not crash
@@ -68,7 +75,7 @@ def runway(evidence, now, within_days):
             continue
         rows.append(dict(stage=stage, status=_status(record, now, within_days),
                          recorded_at=record["recorded_at"],
-                         expires_at=_expiry(_utc(record["recorded_at"])).strftime(_STAMP)))
+                         expires_at=_stamp(_expiry(_utc(record["recorded_at"])))))
     return rows
 
 

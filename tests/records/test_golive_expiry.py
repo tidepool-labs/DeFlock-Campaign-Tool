@@ -242,6 +242,22 @@ class CliTests(unittest.TestCase):
         self.assertEqual(data["counts"]["MISSING"], len(NEEDED) - 1)
         self.assertEqual(data["rows"][0], row("2", "EXPIRES_SOON", rec["recorded_at"], z(NOW + timedelta(days=5))))
 
+    def test_c3_mixed_year_expiries_are_fixed_width_and_sort_by_year(self):
+        """C3: a year < 1000 stamp must keep four digits (strftime %Y drops them on glibc), so the string sort puts
+        0002 before 1000 before 2026; an unpadded "2-01-15..." would sort last and break the contract format."""
+        early, mid, late = "0002-01-01T00:00:00Z", "1000-01-01T00:00:00Z", "2026-11-20T12:00:00Z"
+        for stage, stamp, digit in (("2", late, "a"), ("3", early, "b"), ("5", mid, "c")):
+            self.write(record(stage, stamp=stamp, digit=digit))
+        code, out, _ = self.invoke("--json")
+        rows = {r["stage"]: r for r in json.loads(out)["rows"]}
+        self.assertEqual(rows["3"], row("3", "EXPIRED", early, "0002-01-15T00:00:00Z"))
+        self.assertEqual(rows["5"], row("5", "EXPIRED", mid, "1000-01-15T00:00:00Z"))
+        self.assertEqual(rows["2"], row("2", "OK", late, "2026-12-04T12:00:00Z"))
+        self.assertEqual([r["stage"] for r in json.loads(out)["rows"]][:3], ["3", "5", "2"])
+        self.assertEqual(code, 1)
+        text = self.invoke()[1]
+        self.assertIn("\n3 | EXPIRED | 0002-01-01T00:00:00Z | 0002-01-15T00:00:00Z\n", text)
+
     def test_c3_exit_two_on_unreadable_directory_or_bad_records_or_bad_window(self):
         """C3: an unreadable directory, a corrupt record or an out-of-range window is exit 2, never a partial report."""
         self.evidence.joinpath("20261101T000000Z-2-rehearsal-cccccccc.json").write_text("{", encoding="utf-8")
