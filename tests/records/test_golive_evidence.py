@@ -284,21 +284,38 @@ class DirectoryTests(EvidenceCase):
                               cwd=Path(__file__).resolve().parents[2], timeout=10)
 
     def test_c4_text_and_json_output(self):
-        """C4: text projects only the six fields; JSON returns the exact list."""
-        record = row(source=row()["source"] | {"schema": "synthetic\nv1"})
+        """C4: opt-in text distinguishes receipts without changing default or JSON output."""
+        source = row()["source"] | {"schema": "synthetic\nv1"}
+        record = row(source=source)
+        other = row(source=source | {"sha256": "fedcba9876543210" * 4})
+        later = row(recorded_at="2026-11-21T19:00:01Z", codes=[])
+        self.put("20261121T190000Z-17b-gate-fedcba98.json", other)
         self.put(record=record)
-        self.put("20261121T190001Z-17b-gate-01234567.json", row(recorded_at="2026-11-21T19:00:01Z", codes=[]))
+        self.put("20261121T190001Z-17b-gate-01234567.json", later)
+        common = '17b\tgate\tpass\t2026-11-21T19:00:00Z\t"synthetic\\nv1"\tREVIEW_OK,CHECK_2'
+        empty_codes = '17b\tgate\tpass\t2026-11-21T19:00:01Z\t"synthetic-v1"\t'
         process = self.run_cli()
         self.assertEqual((process.returncode, process.stdout, process.stderr),
-                         (0, '17b\tgate\tpass\t2026-11-21T19:00:00Z\t"synthetic\\nv1"\tREVIEW_OK,CHECK_2\n'
-                             '17b\tgate\tpass\t2026-11-21T19:00:01Z\t"synthetic-v1"\t\n', ""))
+                         (0, f"{common}\n{common}\n{empty_codes}\n", ""))
         process = self.run_cli("--json")
-        self.assertEqual((process.returncode, json.loads(process.stdout), process.stderr),
-                         (0, [record, row(recorded_at="2026-11-21T19:00:01Z", codes=[])], ""))
+        self.assertEqual((process.returncode, process.stdout, process.stderr),
+                         (0, json.dumps([record, other, later]) + "\n", ""))
+        # The filename has only eight hex characters; reusing it or emitting the
+        # receipt name instead of the stored digest would print the wrong identity.
+        process = self.run_cli("--source-prefix")
+        self.assertEqual((process.returncode, process.stdout, process.stderr),
+                         (0, f"{common}\t0123456789ab\n{common}\tfedcba987654\n"
+                             f"{empty_codes}\t0123456789ab\n", ""))
+        for flags in [("--json", "--source-prefix"), ("--source-prefix", "--json")]:
+            with self.subTest(flags=flags):
+                process = self.run_cli(*flags)
+                self.assertEqual((process.returncode, process.stdout), (2, ""))
+                self.assertTrue(process.stderr.startswith("usage: golive_evidence "))
+                self.assertIn(f"argument {flags[1]}: not allowed with argument {flags[0]}", process.stderr)
 
     def test_c4_success_when_empty(self):
         """C4: an empty store emits no text lines, or exactly an empty JSON list."""
-        for args, stdout in [((), ""), (("--json",), "[]\n")]:
+        for args, stdout in [((), ""), (("--source-prefix",), ""), (("--json",), "[]\n")]:
             process = self.run_cli(*args)
             self.assertEqual((process.returncode, process.stdout, process.stderr), (0, stdout, ""))
 
@@ -319,7 +336,7 @@ class DirectoryTests(EvidenceCase):
         """C4: a bad file emits only a stderr diagnostic, never an earlier good row."""
         self.put()
         self.put("wrong.json", raw=b"synthetic body")
-        for args in [(), ("--json",)]:
+        for args in [(), ("--source-prefix",), ("--json",)]:
             process = self.run_cli(*args)
             self.assertEqual((process.returncode, process.stdout, process.stderr),
                              (2, "", "golive_evidence: wrong.json: invalid evidence filename\n"))
