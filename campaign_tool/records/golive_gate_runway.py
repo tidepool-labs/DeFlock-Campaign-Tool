@@ -22,6 +22,7 @@ from . import golive_evidence, golive_gate, golive_gate_order
 NOTE = ("not a booking, a receipt or an authorization: this report performs and schedules nothing; "
         "ages are pack defaults and engine pairing is not checked")
 MAX_AHEAD = timedelta(days=30)
+DATETIME_MAX = datetime.max.replace(tzinfo=timezone.utc)
 E2E_PROOF = "records-e2e-proof-v1"
 OK, EXPIRES, STALE, MISSING, FAILED = "OK", "EXPIRES_BEFORE_WINDOW", "STALE_NOW", "MISSING", "FAILED"
 
@@ -30,7 +31,10 @@ def _expiry(record, max_age_days):
     """Last instant `_fresh` accepts: recorded_at + max_age_days, to the microsecond."""
     recorded = datetime.strptime(record["recorded_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
     limit = Fraction(str(max_age_days)) if isinstance(max_age_days, float) else Fraction(max_age_days)
-    return recorded + timedelta(microseconds=int(limit * 86_400_000_000 // 1))
+    try:
+        return recorded + timedelta(microseconds=int(limit * 86_400_000_000 // 1))
+    except OverflowError:  # the true expiry is past year 9999: report the latest representable instant
+        return DATETIME_MAX
 
 
 def _select(check, records):

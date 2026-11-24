@@ -87,6 +87,21 @@ class StatusTests(Fixture):
         self.assertEqual([self.row(half, rehearsal(recorded), at=edge + d)["status"]
                           for d in (timedelta(0), timedelta(microseconds=1))], [mod.OK, mod.EXPIRES])
 
+    def test_c2_expiry_past_year_9999_does_not_crash(self):
+        # C2/(d): a schema-valid pass dated 9999-12-31 plus a 7-day limit overflows datetime; the
+        # report must still say STALE_NOW (the evaluator's answer for a future record) and name
+        # the latest representable instant, not raise OverflowError. A limit too large for
+        # timedelta on a fresh record clamps the same way and stays OK.
+        last = datetime.max.strftime(STAMP[:-1] + ".%fZ")
+        far = rehearsal(datetime(9999, 12, 31, 23, 59, 59))
+        row = self.row(REHEARSAL, far)
+        self.assertFalse(golive_gate._fresh(far, NOW, 7))
+        self.assertEqual((row["status"], row["last_fresh"]), (mod.STALE, last))
+        recent = rehearsal(NOW - timedelta(hours=1))
+        row = self.row({**REHEARSAL, "max_age_days": 10 ** 12}, recent)
+        self.assertTrue(golive_gate._fresh(recent, NOW, 10 ** 12))
+        self.assertEqual((row["status"], row["last_fresh"]), (mod.OK, last))
+
     def test_c2_missing_failed_stale(self):
         # C2/(c): each unusable state needs its own label; folding failed/missing into stale (or
         # letting an old fail hide behind a newer pass) misleads the operator.
