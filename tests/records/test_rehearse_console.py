@@ -17,7 +17,9 @@ from threading import current_thread
 from unittest.mock import patch
 
 from campaign_tool import approval
-from campaign_tool.records import admin_panel, console_access, console_check, console_export, rehearse_console, run_stages
+from campaign_tool.records import (
+    admin_panel, console_access, console_check, console_export, console_pages, rehearse_console, run_stages,
+)
 
 
 PAGES = {
@@ -25,6 +27,8 @@ PAGES = {
     "/drafts": b"Draft history", "/decisions": b"Decisions", "/health": b"System health", "/stages": b"Go-live stages",
     "/golive": b"Go-live",
     "/comparison": b"Policy comparison",
+    # Navigation pages (DFS1123-2312-15): the <h1> differs from the nav label for /changes.
+    "/coverage": b"Coverage", "/facts": b"Agency fact sheets", "/changes": b"What changed",
 }
 GOLIVE_NOTICE = b"Go-live evidence is not configured on this console."
 COMPARISON_NOTICE = b"Policy comparison: unavailable: missing. The comparison has not been written for this run yet."
@@ -169,6 +173,8 @@ class RehearseConsoleTests(unittest.TestCase):
         error = b"Synthetic error body"
         # A dropped route or a fabricated live count must not certify the ledger page.
         for route, status, body, code in (
+            ("/coverage", 503, error, "PAGE_STATUS_UNEXPECTED"),
+            ("/changes", 200, error, "PAGE_HEADING_MISSING"),
             ("/documents", 503, error, "PAGE_STATUS_UNEXPECTED"),
             ("/documents", 200, error, "PAGE_HEADING_MISSING"),
             ("/documents", None, b"", "PAGE_PROBE_FAILED"),
@@ -210,6 +216,61 @@ class RehearseConsoleTests(unittest.TestCase):
                                                            ("pages", code, outputs)))
                 finally:
                     self.sandbox = original
+
+    def test_nav_c1_every_nav_route_is_requested_after_the_fixed_nine(self):
+        """DFS1123-2312-15 C1: the page list is the fixed nine plus each nav route once, in a stable order.
+
+        Fails if the driver goes back to the fixed list (/coverage, /facts, /changes never requested), if a nav
+        route that is also fixed is requested twice, or if a pinned <h1> drifts from the page itself.
+        """
+        nav = [path for _, path in console_pages.nav_links()]
+        self.assertTrue({"/coverage", "/facts", "/changes"} <= set(nav))
+        pages = rehearse_console._pages()
+        self.assertEqual(pages[:len(rehearse_console._PAGES)], list(rehearse_console._PAGES))
+        routes = [route for route, _ in pages]
+        self.assertEqual(len(routes), len(set(routes)))
+        self.assertTrue(set(nav) <= set(routes))
+        self.assertEqual(routes, [*list(PAGES)])
+        self.assertEqual({route: heading.encode() for route, heading in pages}, PAGES)
+        self.assertEqual(rehearse_console._pages(), pages)
+        # The healthy control: the real wire requests all of them, in this order (see the real-HTTP test).
+        seen = []
+        get = admin_panel._Handler.do_GET
+
+        def record(handler):
+            seen.append(handler.path)
+            get(handler)
+
+        with self.listen(), patch.object(admin_panel._Handler, "do_GET", record):
+            result = rehearse_console.run(self.sandbox)
+        self.assertEqual(result["codes"], [])
+        self.assertEqual(seen, [*PAGES, "/send"])
+        self.assertTrue({"/coverage", "/facts", "/changes"} <= set(seen))
+
+    def test_nav_c3_nav_page_without_heading_entry_cannot_be_skipped(self):
+        """DFS1123-2312-15 C3: a nav-registered page with no heading entry fails the rehearsal, never skips.
+
+        Fails if the driver ignores or silently drops a nav route it has no heading for, or requests it as a
+        /send-style probe (which would call a missing page OK on a 404).
+        """
+        seen = []
+        get = admin_panel._Handler.do_GET
+
+        def record(handler):
+            seen.append(handler.path)
+            get(handler)
+
+        nav = (*console_pages.nav_links(), ("Stub page", "/stub-nav-page"))
+        with self.listen(), patch.object(admin_panel._Handler, "do_GET", record), \
+                patch.object(console_pages, "nav_links", return_value=nav):
+            result = rehearse_console.run(self.sandbox)
+        self.assert_stopped()
+        self.assertEqual(result["codes"], ["PAGE_HEADING_MISSING"])
+        self.assertEqual(seen, list(PAGES))
+        self.assertEqual(result, self.expected(
+            self.export_step(), ("start_console", "OK", []),
+            ("pages", "PAGE_HEADING_MISSING", [self.output(self.receipt(route)) for route in PAGES]),
+        ))
 
     def test_c2_send_failures_close_server(self):
         """C2: Send exposure or a dropped send probe cannot pass or leave the console running."""

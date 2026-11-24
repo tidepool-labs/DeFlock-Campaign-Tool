@@ -13,7 +13,7 @@ from pathlib import Path
 from threading import Event, Lock, Thread
 from unittest.mock import patch
 
-from . import admin_panel, console_check, console_export, run_stages
+from . import admin_panel, console_check, console_export, console_pages, run_stages
 
 STAGES = ("A3",)
 TITLE = "New console on loopback"
@@ -30,8 +30,26 @@ _PAGES = (
     ("/golive", "Go-live"),
     ("/comparison", "Policy comparison"),
 )
+# Headings of navigation pages not in _PAGES, keyed by route. A nav label can differ from the page's <h1>
+# (/changes shows "What changed"), so a registered page needs an entry here, pinned by a test against the wire.
+_NAV_HEADINGS = {
+    "/coverage": "Coverage",
+    "/facts": "Agency fact sheets",
+    "/changes": "What changed",
+}
 _GOLIVE_NOTICE = b"Go-live evidence is not configured on this console."
 _COMPARISON_NOTICE = b"Policy comparison: unavailable: missing. The comparison has not been written for this run yet."
+
+
+def _pages():
+    """The fixed routes plus every navigation route, de-duplicated; a nav route without a heading gets None."""
+    pages = list(_PAGES)
+    seen = {route for route, _ in pages}
+    for _label, route in console_pages.nav_links():
+        if route not in seen:
+            seen.add(route)
+            pages.append((route, _NAV_HEADINGS.get(route)))
+    return pages
 
 
 def _build_export(sandbox):
@@ -162,7 +180,10 @@ def run(sandbox):
                 return step("start_console", "CONSOLE_START_FAILED")
             step("start_console")
             outputs = []
-            for route, heading in _PAGES:
+            for route, heading in _pages():
+                if heading is None:
+                    # Never request an unpinned page as a send probe, and never skip it silently.
+                    return step("pages", "PAGE_HEADING_MISSING", outputs)
                 try:
                     code, output = _get(sandbox, port, route, heading)
                 except (OSError, http.client.HTTPException):
