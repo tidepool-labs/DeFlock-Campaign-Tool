@@ -212,7 +212,10 @@ class CliTests(Fixture):
         path = self.ledger()
         iso = lambda delta: (NOW + delta).isoformat()
         for bad in (iso(timedelta(microseconds=-1)), iso(timedelta(days=-3)), iso(timedelta(days=30, microseconds=1)),
-                    (NOW + timedelta(days=1)).replace(tzinfo=None).isoformat(), "tomorrow", ""):
+                    (NOW + timedelta(days=1)).replace(tzinfo=None).isoformat(), "tomorrow", "",
+                    # a valid offset-bearing time whose UTC instant falls outside datetime's range must exit 2,
+                    # not escape as an OverflowError traceback (exit 1)
+                    "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"):
             with self.subTest(at=bad):
                 code, out, err = run("--evidence", path, "--at", bad)
                 self.assertEqual((code, out), (2, ""))

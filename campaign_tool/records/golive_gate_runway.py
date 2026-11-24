@@ -93,7 +93,10 @@ def _aware_time(text):
         raise ValueError("--at must be an ISO 8601 time with a UTC offset") from None
     if value.utcoffset() is None:
         raise ValueError("--at must carry a UTC offset (naive times are refused)")
-    return value.astimezone(timezone.utc)
+    try:
+        return value.astimezone(timezone.utc)
+    except OverflowError:
+        raise ValueError("--at is outside the supported UTC time range") from None
 
 
 def main(argv=None, now=None):
