@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from campaign_tool.records import golive_record
 from campaign_tool.records import rehearsal_receipt as rr
 from campaign_tool.records.run_stages import SANDBOX_MARKER
 
@@ -235,6 +236,10 @@ class ReceiptTests(unittest.TestCase):
 
     def test_c3_round_trip_and_refuse_replacement(self):
         """C3: Commit exact data at the derived owner-only path; never clobber it."""
+        # Literal identities: neither case nor surrounding whitespace is normalized.
+        self.driver["steps"].extend(
+            {"name": name, "code": "OK", "outputs": []} for name in ("Invented step", " invented step ")
+        )
         receipt = self.build()
         path = rr.write(receipt, self.root)
         self.assertEqual(path, self.root / NAME)
@@ -244,6 +249,7 @@ class ReceiptTests(unittest.TestCase):
         self.assertEqual(loaded, receipt)
         self.assertEqual(loaded["stages"], ["3", "A5"])
         self.assertEqual(rr.qualify(loaded, now=NOW, target_engine=ENGINE), (True, []))
+        self.assertEqual(golive_record.from_rehearsal(path, "3", NOW)["result"], "pass")
         different = dict(receipt, codes=["SYNTHETIC_ALTERNATE"])
         self.assert_refused(FileExistsError, rr.write, different, self.root)
         self.assertEqual((path.read_bytes(), sorted(p.name for p in self.root.iterdir())),
@@ -313,6 +319,20 @@ class ReceiptTests(unittest.TestCase):
             with self.subTest(stages=stages, boundary="read"):
                 path.write_text(json.dumps(dict(valid, stages=stages)), encoding="utf-8")
                 self.assert_refused(ValueError, rr.read, path)
+
+        # A repeated OK name can masquerade as a distinct completed checkpoint.
+        # The go-live recorder must also refuse a previously saved malformed receipt.
+        self.driver["stages"] = valid["stages"]
+        for name in (step["name"], "", " \t\n"):
+            steps = [step, {"name": name, "code": "OK", "outputs": []}]
+            with self.subTest(name=name, boundary="build"):
+                self.driver["steps"] = steps
+                self.assert_refused(ValueError, self.build)
+            path.write_text(json.dumps(dict(valid, steps=steps)), encoding="utf-8")
+            with self.subTest(name=name, boundary="read"):
+                self.assert_refused(ValueError, rr.read, path)
+            with self.subTest(name=name, boundary="go-live recorder"):
+                self.assert_refused(ValueError, golive_record.from_rehearsal, path, "3", NOW)
 
     def tampered(self, **changes):
         """A shape-valid receipt whose recorded verdict contradicts its own facts."""
