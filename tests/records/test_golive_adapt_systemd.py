@@ -65,9 +65,9 @@ class AdapterTests(unittest.TestCase):
             "codes": list(codes),
         }
 
-    def assertInvalid(self, path):
+    def assertInvalid(self, *paths):
         with self.assertRaises(ValueError) as caught:
-            adapter.records([path], NOW)
+            adapter.records(paths, NOW)
         self.assertIs(type(caught.exception), ValueError)
         self.assertEqual(str(caught.exception), ERROR)
 
@@ -132,6 +132,32 @@ class AdapterTests(unittest.TestCase):
         """C1: An empty inventory cannot imply that any monitored family was evaluated."""
         self.assertEqual(adapter.records([self.receipt(capture())], NOW), [])
         self.assertEqual(adapter.records([], NOW), [])
+
+    def test_c2_same_instant_conflicting_unit_states(self):
+        """C2: Per-file validation alone lets one unit have two states at one instant."""
+        for name, first, second in (
+            (ARRIVAL, (True, True), (False, True)),
+            (CONSOLE, (False, True), (False, False)),
+        ):
+            a = self.receipt(capture(unit(name, *first)), "a.json")
+            b = self.receipt(capture(unit(name, *second)), "b.json")
+            for paths in ((a, b), (b, a)):
+                with self.subTest(unit=name, first=paths[0].name):
+                    self.assertInvalid(*paths)
+
+    def test_c1_compatible_captures_keep_individual_evidence(self):
+        """C1: Agreement does not deduplicate rows, and only tracked units at the same second join."""
+        a = self.receipt(capture(unit(ARRIVAL), unit("other.path")), "a.json")
+        b = self.receipt(capture(unit(ARRIVAL), unit("other.path", False)), "b.json", canonical=True)
+        timers = self.receipt(capture(unit(HEALTH), unit(BACKUP), unit(CONSOLE)), "timers.json")
+        earlier = "2026-01-02T03:04:04Z"
+        old = self.receipt(capture(unit(ARRIVAL, active=False), observed_at=earlier), "old.json")
+        self.assertEqual(adapter.records([a, b, timers, old], NOW), [
+            self.evidence(a, "3", "pass"),
+            self.evidence(b, "3", "pass"),
+            self.evidence(timers, "18", "pass"),
+            self.evidence(old, "3", "fail", ["UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"], earlier),
+        ])
 
     def test_c2_capture_shape(self):
         """C2: Reject extra, absent, malformed or repeated fields instead of guessing."""
@@ -227,4 +253,9 @@ class AdapterTests(unittest.TestCase):
         """C3: A later bad input exits 2 without emitting earlier evidence or private text."""
         good = self.receipt(capture(unit(ARRIVAL)), "good.json")
         bad = self.receipt(b"not JSON", "bad.json")
-        self.assertEqual(self.cli(str(good), str(bad), "--json"), (2, "", f"golive_adapt_systemd: {ERROR}\n"))
+        expected = (2, "", f"golive_adapt_systemd: {ERROR}\n")
+        self.assertEqual(self.cli(str(good), str(bad), "--json"), expected)
+        conflict = self.receipt(capture(unit(ARRIVAL, active=False)), "conflict.json")
+        for flags in ((), ("--json",)):
+            with self.subTest(flags=flags):
+                self.assertEqual(self.cli(str(good), str(conflict), *flags), expected)

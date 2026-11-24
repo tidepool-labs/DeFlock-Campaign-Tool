@@ -91,6 +91,24 @@ def _seed_inputs(project):
     return list(inputs)
 
 
+def _journal_bytes(journal):
+    try:
+        return _sandbox_path(journal).read_bytes()
+    except FileNotFoundError:
+        return None  # Distinguish an absent journal from an empty one.
+
+
+def _preview(project):
+    journal = project / _JOURNAL
+    before = _journal_bytes(journal)
+    result = followup_engine.run(project, _RUN, apply=False)
+    if _journal_bytes(journal) != before:
+        raise _StepFailed("FOLLOWUP_PREVIEW_QUEUE_CHANGED")
+    if (result["would_queue"], result["queued"]) != (1, 0):
+        raise _StepFailed("FOLLOWUP_PREVIEW_COUNT")
+    return []
+
+
 def _draft(project):
     result = followup_engine.run(project, _RUN, apply=True)
     if result["queued"] == 0:
@@ -137,6 +155,7 @@ def run(sandbox):
     for name, action, args in (
         ("init_project", _init_project, (sandbox, project)),
         ("seed_inputs", _seed_inputs, (project,)),
+        ("preview", _preview, (project,)),
         ("draft", _draft, (project,)),
         ("queue_check", _queue_check, (project,)),
         ("rerun_idempotent", _rerun, (project,)),

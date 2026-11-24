@@ -40,6 +40,9 @@ class RehearseBackupTests(unittest.TestCase):
                 break
             if name == "backup":
                 self.assertEqual(len(paths), 2)
+            if name == "compare":
+                manifest = json.loads((self.sandbox / "restored/manifest.json").read_bytes())
+                paths = sorted("restored/" + row["path"] for row in manifest["files"])
             steps.append({"name": name, "code": "OK", "outputs": [self._output(path) for path in paths]})
         return {"stages": ["19"], "steps": steps, "manual_steps": [], "codes": [code] if stopped else []}
 
@@ -73,6 +76,7 @@ class RehearseBackupTests(unittest.TestCase):
         seed = driver._seed_project
         with patch.object(driver, "_seed_project", side_effect=first_write_check):
             status, receipt, printed = self._cli()
+        # A successful comparison with empty outputs leaves Sitting 5 no payload proof.
         self.assertEqual((status, receipt), (0, self._expected()))
         audit = json.loads((self.sandbox / "quiescence.json").read_bytes())
         self.assertEqual((audit["all_writers_stopped"], audit["checks"]["codes"]), (True, []))
