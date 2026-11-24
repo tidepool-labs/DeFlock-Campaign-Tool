@@ -1,4 +1,8 @@
-"""Offline acceptance for the rehearsal runway (contract items C1-C4), synthetic evidence only."""
+"""Offline acceptance for the rehearsal runway (contract items C1-C4), synthetic evidence only.
+
+The ``test_engine_c*`` tests pin the engine-switch contract (ENGINE-C1 new ENGINE_CHANGED status taken from the
+ledger, ENGINE-C2 precedence, ENGINE-C3 counts/summary/exit code); that numbering is separate from C1-C4 above.
+"""
 
 import inspect
 import io
@@ -16,15 +20,17 @@ NOW = datetime(2026, 11, 23, 12, 0, 0, tzinfo=timezone.utc)
 AGE = timedelta(days=14)
 SEC = timedelta(seconds=1)
 NEEDED = [stage for stage, rule in golive_catalog.STAGES.items() if rule.needs_rehearsal]
+ENGINE_A, ENGINE_B = "a" * 40, "b" * 40  # engine ids are 40-hex digests in the evidence schema
+DAY = timedelta(days=1)
 
 
 def z(moment):
     return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
-def record(stage, result="pass", stamp=None, *, kind="rehearsal", schema="synthetic-v1", digit="c"):
+def record(stage, result="pass", stamp=None, *, kind="rehearsal", schema="synthetic-v1", digit="c", engine=None):
     return dict(schema="records-golive-evidence-v1", stage=stage, kind=kind, result=result,
-                recorded_at=stamp or z(NOW), engine=None, actor="operator", codes=[],
+                recorded_at=stamp or z(NOW), engine=engine, actor="operator", codes=[],
                 source=dict(schema=schema, sha256=digit * 64, name="synthetic.json"))
 
 
@@ -43,6 +49,10 @@ def one(records, within_days=3, stage="2", now=NOW):
 
 def ledger_cell(records, stage="2"):
     return next(r for r in golive_ledger.build([], records, NOW) if r["stage"] == stage)["rehearsed"]
+
+
+def live(stamp, engine=ENGINE_B, stage="A2", result="pass", digit="d"):
+    return record(stage, result, stamp, kind="live", digit=digit, engine=engine)
 
 
 class RunwayTests(unittest.TestCase):
@@ -157,6 +167,86 @@ class RunwayTests(unittest.TestCase):
         self.assertEqual(one(newest_future)["status"], "FUTURE_DATED")  # newest record decides, not the older good one
         self.assertEqual(one([record("2", "fail", stamp)])["status"], "FAILED")  # a future fail stays a failure
 
+    def test_engine_c1_probe_rehearsal_on_old_engine_is_engine_changed_not_ok(self):
+        """ENGINE-C1: stage 19 rehearsed on engine A, then an A2 live record on engine B -> ENGINE_CHANGED.
+        Bug it catches: runway ignoring engines prints OK while the ledger says missing/ENGINE_CHANGED.
+        The healthy control (rehearsal on the live engine) stays OK, so the status is not blanket."""
+        stamp = z(NOW - 2 * DAY)
+        expires = z(NOW - 2 * DAY + AGE)
+        old = [record("19", stamp=stamp, engine=ENGINE_A), live(z(NOW - DAY))]
+        self.assertEqual(ledger_cell(old, "19"), dict(status="missing", recorded_at=stamp, reason="ENGINE_CHANGED"))
+        self.assertEqual(one(old, stage="19"), row("19", "ENGINE_CHANGED", stamp, expires))
+        control = [record("19", stamp=stamp, engine=ENGINE_B), live(z(NOW - DAY))]
+        self.assertEqual(ledger_cell(control, "19"), dict(status="pass", recorded_at=stamp))
+        self.assertEqual(one(control, stage="19"), row("19", "OK", stamp, expires))
+        self.assertIn("ENGINE_CHANGED", golive_expiry.STATUSES)
+
+    def test_engine_c1_runway_accepts_a_one_shot_iterable(self):
+        """ENGINE-C1: evidence is read twice (filter, then ledger); a generator must not leave the ledger empty
+        and silently turn every old-engine row back into OK."""
+        old = [record("19", stamp=z(NOW - 2 * DAY), engine=ENGINE_A), live(z(NOW - DAY))]
+        rows = golive_expiry.runway((r for r in old), NOW, 3)
+        self.assertEqual(next(r for r in rows if r["stage"] == "19")["status"], "ENGINE_CHANGED")
+
+    def test_engine_c2_precedence_expired_then_engine_changed_then_failed_future_soon_ok(self):
+        """ENGINE-C2: EXPIRED beats ENGINE_CHANGED beats FAILED. Bugs: engine check placed before the age check
+        (a stale old-engine row says ENGINE_CHANGED, ledger says STALE) or after the result check (a failed
+        old-engine row says FAILED, ledger says ENGINE_CHANGED)."""
+        cases = (("expired old engine", expiring("2", -SEC, engine=ENGINE_A), "EXPIRED", "STALE"),
+                 ("failed old engine", expiring("2", 10 * DAY, "fail", engine=ENGINE_A), "ENGINE_CHANGED", "ENGINE_CHANGED"),
+                 ("expiring-soon old engine", expiring("2", DAY, engine=ENGINE_A), "ENGINE_CHANGED", "ENGINE_CHANGED"),
+                 ("failed live engine", expiring("2", 10 * DAY, "fail", engine=ENGINE_B), "FAILED", None),
+                 ("expiring-soon live engine", expiring("2", DAY, engine=ENGINE_B), "EXPIRES_SOON", None))
+        for name, rec, status, reason in cases:
+            with self.subTest(name):
+                records = [rec, live(z(NOW - DAY))]
+                self.assertEqual(one(records)["status"], status)
+                self.assertEqual(ledger_cell(records).get("reason"), reason)
+
+    def test_engine_c1_no_live_engine_leaves_every_status_unchanged(self):
+        """ENGINE-C1/C2: with no (settled) live record there is no engine to differ from, so statuses match the
+        engine-less baseline. Bug: treating a rehearsal's own engine, a gate record's engine or a future-dated
+        live record's engine as 'the' engine would flip these rows to ENGINE_CHANGED."""
+        shapes = (("pass", 10 * DAY), ("pass", DAY), ("pass", -SEC), ("fail", 10 * DAY), ("fail", -SEC))
+        no_engine_evidence = (("none", []),
+                              ("gate record on another engine", [record("2", kind="gate", digit="e", engine=ENGINE_B)]),
+                              ("future-dated live record", [live(z(NOW + DAY))]))
+        for result, delta in shapes:
+            baseline = one([expiring("2", delta, result)])
+            for engine in (None, ENGINE_A):
+                for name, extra in no_engine_evidence:
+                    with self.subTest(result=result, delta=str(delta), engine=engine, extra=name):
+                        self.assertEqual(one([expiring("2", delta, result, engine=engine), *extra]), baseline)
+        self.assertEqual(one([live(z(NOW - DAY))], stage="2"), row("2", "MISSING"))  # live alone is not a rehearsal
+
+    def test_engine_c1_runway_agrees_with_the_ledger_over_a_matrix(self):
+        """ENGINE-C1/C2 (the valuable one): over rehearsal result x age x engine x live-evidence shapes, the runway
+        says ENGINE_CHANGED exactly when the ledger's rehearsed cell says so, EXPIRED exactly when it says STALE,
+        FUTURE_DATED when it says so for a pass, and a ledger pass is only ever OK/EXPIRES_SOON. Bug: a copied or
+        drifted newest-live-engine rule (e.g. counting future-dated or failed live records) disagrees on some row."""
+        ages = {"expired": -SEC, "soon": DAY, "ok": 10 * DAY, "future": AGE + SEC}
+        lives = {"none": [], "b-new": [live(z(NOW - DAY))], "future-b": [live(z(NOW + DAY))],
+                 "a-newest-elsewhere": [live(z(NOW - 2 * DAY)), live(z(NOW - DAY // 2), engine=ENGINE_A, stage="3", digit="f")],
+                 "b-failed": [live(z(NOW - DAY), result="fail")]}
+        seen = set()
+        for age, delta in ages.items():
+            for result in ("pass", "fail"):
+                for engine in (None, ENGINE_A, ENGINE_B):
+                    for live_name, extra in lives.items():
+                        with self.subTest(age=age, result=result, engine=engine, live=live_name):
+                            records = [expiring("2", delta, result, engine=engine), *extra]
+                            cell, status = ledger_cell(records), one(records)["status"]
+                            seen.add(status)
+                            self.assertEqual(status == "ENGINE_CHANGED", cell.get("reason") == "ENGINE_CHANGED")
+                            self.assertEqual(status == "EXPIRED", cell.get("reason") == "STALE")
+                            if cell["status"] == "pass":
+                                self.assertIn(status, ("OK", "EXPIRES_SOON"))
+                            if cell.get("reason") == "FUTURE_DATED" and result == "pass":
+                                self.assertEqual(status, "FUTURE_DATED")
+                            if cell["status"] == "fail":
+                                self.assertEqual(status, "FAILED")
+        self.assertEqual(seen, set(golive_expiry.STATUSES) - {"MISSING"})  # the matrix is not vacuous
+
 
 class CliTests(unittest.TestCase):
     def setUp(self):
@@ -174,10 +264,10 @@ class CliTests(unittest.TestCase):
         path.touch(mode=0o600)
         path.write_text(json.dumps(data), encoding="utf-8")
 
-    def write_all(self, delta=timedelta(days=10), overrides=None, skip=()):
+    def write_all(self, delta=timedelta(days=10), overrides=None, skip=(), engine=None):
         for index, stage in enumerate(NEEDED):
             if stage not in skip:
-                self.write((overrides or {}).get(stage) or expiring(stage, delta, digit="0123456789abcdef"[index % 16]))
+                self.write((overrides or {}).get(stage) or expiring(stage, delta, digit="0123456789abcdef"[index % 16], engine=engine))
 
     def invoke(self, *extra, now=NOW):
         out, err = io.StringIO(), io.StringIO()
@@ -193,7 +283,23 @@ class CliTests(unittest.TestCase):
         self.write_all()
         code, out, _ = self.invoke()
         self.assertEqual((code, out.splitlines()[-1]),
-                         (0, f"{len(NEEDED)} rehearsals: {len(NEEDED)} OK, 0 EXPIRES_SOON, 0 EXPIRED, 0 FAILED, 0 MISSING, 0 FUTURE_DATED"))
+                         (0, f"{len(NEEDED)} rehearsals: {len(NEEDED)} OK, 0 EXPIRES_SOON, 0 EXPIRED, 0 FAILED, 0 MISSING, 0 FUTURE_DATED, 0 ENGINE_CHANGED"))
+
+    def test_engine_c3_counts_summary_json_and_exit_code_include_engine_changed(self):
+        """ENGINE-C3: after an engine switch the text row, summary line, --json counts/summary and exit code all
+        carry ENGINE_CHANGED. Bugs: the key missing from STATUSES-driven counts (KeyError or dropped), or the
+        exit code ignoring the new status because only the old five were treated as non-OK."""
+        self.write_all(engine=ENGINE_B, overrides={"19": expiring("19", 10 * DAY, engine=ENGINE_A)})
+        self.write(live(z(NOW - DAY)))  # the live engine is B; only stage 19 was rehearsed on A
+        total = len(NEEDED)
+        code, out, _ = self.invoke()
+        line = f"{total} rehearsals: {total - 1} OK, 0 EXPIRES_SOON, 0 EXPIRED, 0 FAILED, 0 MISSING, 0 FUTURE_DATED, 1 ENGINE_CHANGED"
+        self.assertEqual((code, out.splitlines()[-1]), (1, line))
+        self.assertIn(f"\n19 | ENGINE_CHANGED | {z(NOW + 10 * DAY - AGE)} | {z(NOW + 10 * DAY)}\n", out)
+        code, out, _ = self.invoke("--json")
+        data = json.loads(out)
+        self.assertEqual((code, data["summary"]), (1, line))
+        self.assertEqual(data["counts"], dict.fromkeys(golive_expiry.STATUSES, 0) | dict(OK=total - 1, ENGINE_CHANGED=1))
 
     def test_c3_exit_one_for_each_non_ok_status(self):
         """C3: each of the five non-OK statuses alone must flip the exit code to 1."""
