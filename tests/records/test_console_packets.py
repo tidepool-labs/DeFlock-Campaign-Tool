@@ -8,6 +8,7 @@ from unittest import mock
 
 from campaign_tool.records import admin_panel as ap, public_packets as pp
 from tests.records import test_console_manual_events as http_fixture
+from tests.records import test_console_snapshot as snapshot_fixture
 from tests.records.test_public_packets import Base, doc
 
 
@@ -51,6 +52,7 @@ class Packets(Base):
         status, page, _ = self.request('GET', '/packets')
         self.assertEqual(status, 200)
         self.assertIn('No packets pending.', page)
+        self.assertNotIn('pinned export', page)
         self.assertNotIn('could not be read', page)
 
     def test_unavailable_evidence_hides_the_entire_queue(self):
@@ -142,3 +144,37 @@ class Packets(Base):
         pp.propose(self.project, doc(agency_key='alpha-pd', text='Revised policy.'), now=self.now)
         for fn, args in ((pp.approve, (self.fields['signature'],)), (pp.decide, ('rejected', 'operator'))):
             self.assertEqual(self.code(fn, self.project, self.ident, *args, revision=0), 'packet_stale')
+
+
+class PinnedPackets(snapshot_fixture.Panel):
+    def test_packet_list_describes_the_pinned_export_not_the_live_queue(self):
+        # Reusing the loopback empty message would imply the live queue is empty
+        # even though only this export's admitted pending list is empty.
+        def pending_list(rows):
+            def replace_pending(dest):
+                path = dest / 'console-model' / 'packets.json'
+                model = json.loads(path.read_text())
+                self.assertEqual(model['state'], 'ok')
+                self.assertTrue(model['pending'])
+                model['pending'] = rows
+                path.write_text(json.dumps(model))
+            return replace_pending
+
+        self.make_export(snapshot_fixture.RUN, pending_list(None))
+        self.up()
+        unreadable = self.get('/packets', 503)
+        self.assertIn('Pending packet evidence could not be read.', unreadable)
+        self.assertNotIn('No pending packets were listed', unreadable)
+
+        self.make_export(snapshot_fixture.RUN2, pending_list([]))
+        empty = self.get('/packets')
+        self.assertNotIn(self.proposed, empty)
+        self.assertIn('Pending packets from the pinned export', empty)
+        self.assertIn('No pending packets were listed in this export.', empty)
+        self.assertNotIn('No packets pending.', empty)
+
+        self.make_export(snapshot_fixture.RUN3)
+        populated = self.get('/packets')
+        self.assertIn(self.proposed, populated)
+        self.assertIn('Pending packets from the pinned export', populated)
+        self.assertNotIn('No pending packets were listed', populated)
