@@ -230,7 +230,8 @@ class CheckStateTests(InputFixture):
         mapping = self.healthy("s5-engine-switch", content=b"SECRET-CONTENT")
         mapping["extra"] = str(self.root / "gone")
         paths = sorted(self.root.rglob("*"))
-        before = [(p, p.lstat().st_mtime_ns, p.lstat().st_atime_ns, p.lstat().st_size) for p in paths]
+        # atime is not compared: listing a directory (as this test does) bumps it under relatime.
+        before = [(p, p.lstat().st_mtime_ns, p.lstat().st_size) for p in paths]
 
         def refuse(*args, **kwargs):
             raise AssertionError("input was opened or evaluated")
@@ -240,7 +241,7 @@ class CheckStateTests(InputFixture):
             report = inputs.check(gate_spec("s5-engine-switch"), mapping)
         self.assertEqual(report["extra"]["state"], "UNUSED")
         self.assertEqual(sorted(self.root.rglob("*")), paths)
-        self.assertEqual([(p, p.lstat().st_mtime_ns, p.lstat().st_atime_ns, p.lstat().st_size) for p in paths], before)
+        self.assertEqual([(p, p.lstat().st_mtime_ns, p.lstat().st_size) for p in paths], before)
 
 
 class CliTests(InputFixture):
