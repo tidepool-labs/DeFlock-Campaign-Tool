@@ -434,7 +434,9 @@ def render(model, today, first):
            "<p>Run %s. %s DATED means a recorded or agency-stated date; INFERRED means arithmetic or a projection. "
            "%s "
            "Subscribing from a phone needs hosting, which is not built.</p>" % (esc(model["run_id"]), esc(LABEL), esc(cb.COMPUTED_LEGEND)),
-           '<p><a href="/calendar?month=%s">&larr; %s</a> <a href="/calendar?month=%s">%s &rarr;</a></p>' % (
+           '<section id="calendar-month" aria-label="Month grid" tabindex="-1">',
+           '<p><a href="/calendar?month=%s">&larr; %s</a> <a href="/calendar?month=%s">%s &rarr;</a> '
+           '<a href="#calendar-agenda">Jump to agenda</a></p>' % (
                prev.strftime("%Y-%m"), prev.strftime("%b %Y"), nxt.strftime("%Y-%m"), nxt.strftime("%b %Y"))]
     banner = console_layout.sources_banner(
         console_layout.plain(k for k in ("timeline", "links", "public", "packets", "followup", "queue", "sends")
@@ -458,7 +460,9 @@ def render(model, today, first):
                              for e in items if e["date"] == day)
             cells.append("<td>%s%s</td>" % ("<strong>%d</strong>" % n if day == today else (n or ""), labels))
         out.append("<tr>%s</tr>" % "".join(cells))
-    out.append("</tbody></table><h2>Agenda</h2>")
+    out += ['</tbody></table></section>',
+            '<section id="calendar-agenda" aria-label="Calendar agenda" tabindex="-1">',
+            '<h2>Agenda</h2>', '<p><a href="#calendar-month">Back to month grid</a></p>']
     ordered = sorted(items, key=lambda e: (not (e["kind"] == "overdue" or e["date"] < today), e["date"] != today, e["date"],
                                            e["kind"], e["agency_key"]))
     out.append("<ul>")
@@ -468,7 +472,7 @@ def render(model, today, first):
             flag, e["date"], esc(KINDS[e["kind"]]), esc(e["agency"]), esc(e["request"]), esc(e["label"]), e["basis"],
             esc(e["source"])))
     out.append("</ul>" if ordered else "<li>Nothing dated in this window.</li></ul>")
-    return "\n".join(out + ["</main></body></html>"]) + "\n"
+    return "\n".join(out + ["</section></main></body></html>"]) + "\n"
 
 
 # ---- panel seam and CLI ------------------------------------------------------------------------------
