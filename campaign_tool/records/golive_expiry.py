@@ -11,10 +11,10 @@ import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-from . import golive_catalog, golive_evidence
+from . import golive_catalog, golive_evidence, golive_ledger
 from .golive_ledger import _REHEARSAL_AGE
 
-STATUSES = ("OK", "EXPIRES_SOON", "EXPIRED", "FAILED", "MISSING", "FUTURE_DATED")
+STATUSES = ("OK", "EXPIRES_SOON", "EXPIRED", "FAILED", "MISSING", "FUTURE_DATED", "ENGINE_CHANGED")
 _STAMP = "%Y-%m-%dT%H:%M:%SZ"
 _E2E_PROOF = "records-e2e-proof-v1"
 _MAX_WITHIN_DAYS = 30
@@ -39,13 +39,17 @@ def _expiry(recorded):
         return _LAST
 
 
-def _status(record, now, within_days):
+def _status(record, now, within_days, engine_changed=False):
     recorded = _utc(record["recorded_at"])
     expires = _expiry(recorded)
     # Same comparison as the ledger's cutoff (recorded < now - age), checked
     # first as the ledger does, so a stale failure is STALE there too.
     if expires < now:
         return "EXPIRED"
+    # The ledger checks the engine before the result, so an old-engine failure is
+    # ENGINE_CHANGED there as well; the flag is the ledger's own cell, not a copy of its rule.
+    if engine_changed:
+        return "ENGINE_CHANGED"
     if record["result"] == "fail":
         return "FAILED"
     if recorded > now:
@@ -63,8 +67,12 @@ def runway(evidence, now, within_days):
         now = now.replace(tzinfo=timezone.utc)
     now = now.astimezone(timezone.utc)
     # Same filter as the ledger: descriptive sandbox proof never qualifies a rehearsal.
+    evidence = tuple(evidence)
     rehearsals = tuple(row for row in evidence if row["kind"] == "rehearsal"
                        and row["source"]["schema"] != _E2E_PROOF)
+    # Engine freshness comes from the ledger itself so the two cannot disagree.
+    changed = {entry["stage"] for entry in golive_ledger.build([], evidence, now)
+               if entry["rehearsed"].get("reason") == "ENGINE_CHANGED"}
     rows = []
     for stage, rule in golive_catalog.STAGES.items():
         if not rule.needs_rehearsal:
@@ -73,7 +81,7 @@ def runway(evidence, now, within_days):
         if record is None:
             rows.append(dict(stage=stage, status="MISSING", recorded_at=None, expires_at=None))
             continue
-        rows.append(dict(stage=stage, status=_status(record, now, within_days),
+        rows.append(dict(stage=stage, status=_status(record, now, within_days, stage in changed),
                          recorded_at=record["recorded_at"],
                          expires_at=_stamp(_expiry(_utc(record["recorded_at"])))))
     return rows
