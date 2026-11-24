@@ -125,6 +125,26 @@ class BatchTests(unittest.TestCase):
                          ["big.json", "binary.json", "corrupt.json", "dup.json", "fifo.json", "link.json"])
         self.assertEqual((report.recorded, report.ignored), ([], 1))
 
+    def test_c1_directory_named_json_is_refused_and_still_traversed(self):
+        """C1: A folder named *.json is refused by name (not silently skipped) and still descended.
+
+        Bug caught: `x.json/` vanishing from the report because directory entries were skipped
+        before the *.json check, or the refusal stopping the immediate-subdirectory traversal.
+        """
+        self.put("top.json", self.gate())
+        self.put("directory.json/inner.json", self.gate(gate_id="inner-gate"))
+        (self.receipts / "a" / "nested.json").mkdir(parents=True)
+        (self.receipts / "a" / "nested.json" / "deeper.json").write_text(json.dumps(self.gate()))
+        (self.receipts / "plain-dir").mkdir()
+        (self.receipts / ".hidden.json").mkdir()
+        self.assertEqual(self.kinds(), {
+            "a/nested.json": "refused", "directory.json": "refused",
+            "directory.json/inner.json": "gate", "top.json": "gate"})
+        report = self.run_batch()
+        self.assertEqual(report.refused, [("a/nested.json", "not a regular file"),
+                                          ("directory.json", "not a regular file")])
+        self.assertEqual(len(report.recorded), 2)
+
     def test_c1_candidate_cap_and_unusable_root(self):
         """C1: More than 500 files stops the run before any write; an unusable root is refused.
 
@@ -282,6 +302,29 @@ class BatchTests(unittest.TestCase):
         self.assertEqual(self.cli("--dry-run")[1],
                          ["dry-run: recorded=0 would_record=0 already_recorded=4 refused=0 ignored=1"])
         self.assertEqual(sorted(p.name for p in self.evidence.iterdir()), before)
+
+    def test_c3_dry_run_models_evidence_directory_capacity(self):
+        """C3: A dry run refuses what a real run would refuse once the evidence directory is full.
+
+        Bug caught: the dry run tracking only row identities, predicting would-record rows (exit 0)
+        for a directory `append` rejects with "evidence directory is full" - any entry counts.
+        """
+        self.put("a.json", self.rehearsal(("13", "14")))
+        self.put("b.json", self.gate(("19",), gate_id="b-gate"))
+        for limit, seeded, expected_rows in ((3, 1, 2), (1, 1, 0)):  # partially full, then full
+            with self.subTest(limit=limit), patch.object(golive_evidence, "_MAX_FILES", limit):
+                reports = []
+                for dry_run in (True, False):
+                    evidence = self.root / f"evidence-{limit}-{dry_run}"
+                    evidence.mkdir()
+                    (evidence / "notes.txt").write_text("not json")  # counts against capacity
+                    reports.append(batch.record_all(self.receipts, evidence, LATER, dry_run=dry_run))
+                    self.assertEqual(len(list(evidence.iterdir())), seeded + (0 if dry_run else expected_rows))
+                dry, real = reports
+                self.assertEqual(dry, real)
+                self.assertEqual(len(real.recorded), expected_rows)
+                self.assertTrue(real.refused)
+                self.assertTrue(all(message.endswith("evidence directory is full") for _, message in real.refused))
 
     def test_c3_cli_exit_1_when_refused_but_others_recorded(self):
         """C3: A refusal exits 1 yet the good receipts are on file; the message names the file."""

@@ -97,7 +97,8 @@ def scan(root):
     """List candidates in sorted order: *.json directly in root and in immediate subdirectories.
 
     Hidden names are skipped and subdirectories are not followed beyond one level. Symlinks,
-    oversize, non-regular and unparseable files come back refused (never silently dropped);
+    oversize, non-regular (including a directory named *.json) and unparseable files come back
+    refused (never silently dropped);
     valid JSON with another schema comes back ignored. More than MAX_FILES files raises
     ValueError, so nothing is quietly left unrecorded.
     """
@@ -109,9 +110,12 @@ def scan(root):
 
     def take(dir_fd, base, entries):
         for name, is_dir in entries:
-            if name.startswith(".") or is_dir or not name.endswith(".json"):
+            if name.startswith(".") or not name.endswith(".json"):
                 continue
-            found.append(_examine(dir_fd, base + name, name))
+            if is_dir:  # a folder named *.json is refused by name; the top level still descends into it
+                found.append(Candidate(base + name, REFUSED, "not a regular file"))
+            else:
+                found.append(_examine(dir_fd, base + name, name))
             if len(found) > MAX_FILES:
                 raise ValueError(f"more than {MAX_FILES} receipt files")
 
@@ -141,6 +145,21 @@ def _identity(record):
     return record["source"]["sha256"], record["stage"], record["kind"]
 
 
+def _entry_count(evidence):
+    """Entries of the evidence directory that `append` counts against its capacity."""
+    try:
+        dir_fd = golive_evidence._open_directory(evidence)
+    except (OSError, ValueError):
+        raise ValueError("unusable evidence directory") from None
+    try:
+        with os.scandir(dir_fd) as entries:
+            return sum(1 for _ in entries)
+    except OSError:
+        raise ValueError("unusable evidence directory") from None
+    finally:
+        os.close(dir_fd)
+
+
 def _records(candidate, root, now):
     path = Path(root) / candidate.name
     if candidate.kind == REHEARSAL:
@@ -159,6 +178,9 @@ def record_all(receipts, evidence, now, dry_run=False):
         seen = {_identity(record) for record in golive_evidence.load(evidence)}
     except ValueError:
         raise ValueError("unusable evidence directory") from None
+    # A dry run models publication capacity too: `append` refuses a new row once the directory
+    # holds _MAX_FILES entries of any kind (an existing identity is still a duplicate).
+    entries = _entry_count(evidence) if dry_run else 0
     recorded, refused, already, ignored = [], [], 0, 0
     for candidate in candidates:
         if candidate.kind == IGNORED:
@@ -177,8 +199,12 @@ def record_all(receipts, evidence, now, dry_run=False):
             if dry_run:
                 if _identity(record) in seen:
                     already += 1
+                elif entries >= golive_evidence._MAX_FILES:
+                    refused.append((candidate.name, f"stage {record['stage']}: evidence directory is full"))
+                    break
                 else:
                     seen.add(_identity(record))
+                    entries += 1
                     recorded.append(golive_evidence._filename(record))
                 continue
             try:
