@@ -139,8 +139,11 @@ def render(model, filters, page_rows=(), total=0):
                                   else "No events are recorded in this run's timeline."))
         return "\n".join(out + [console_layout.END])
     page = filters["page"]
+    destinations = [(page - 1, "Previous page"), (page + 1, "Next page")]
+    if page > 2:  # On page 2, Previous page already goes to the first page.
+        destinations.insert(0, (1, "First page"))
     links = " ".join('<a href="%s">%s</a>' % (esc(_href(filters, n)), text)
-                     for n, text in ((page - 1, "Previous page"), (page + 1, "Next page")) if 1 <= n <= pages)
+                     for n, text in destinations if 1 <= n <= pages)
     out.append('<nav aria-label="Timeline pagination"><p role="status">%d events, newest first (dates in Pacific time). '
                'Page %d of %d.</p>%s</nav>' % (total, page, pages, links))
     out.append("<table><caption>Events across agencies</caption><thead><tr>%s</tr></thead><tbody>" % "".join(

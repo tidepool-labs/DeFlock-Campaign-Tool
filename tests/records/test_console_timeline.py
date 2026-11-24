@@ -8,6 +8,7 @@ import threading
 import unittest
 import urllib.parse
 from contextlib import closing
+from html import unescape
 from pathlib import Path
 from unittest.mock import patch
 
@@ -129,19 +130,22 @@ class TimelinePage(Base):
         self.assertEqual(self.rows(get, "/timeline?agency=&month=&kind=")[0].__len__(), len(self.rows(get, "/timeline")[0]))  # blank form fields
 
     def test_timeline_pages_at_100_after_filtering_and_keeps_filters_in_links(self):
-        busy = [event("call", "2026-10-%02d" % (1 + i % 28), "busy %03d" % i) for i in range(201)]
-        busy += [event("call", "2026-11-02"), event("promised date", "2026-10-05")]
+        busy = [event("call", "2026-10-%02d" % (1 + i % 28), "busy %03d" % i) for i in range(300)]
+        busy += [event("call", "2026-10-29", "newest matching call"),
+                 event("call", "2026-11-02"), event("promised date", "2026-10-30")]
         quiet = [event("sent", "2026-10-05", "quiet %d" % i) for i in range(100)]
-        write(self.project, [request(GAMMA, "R-1", busy), request(BETA, "R-2", quiet + [event("call", "2026-10-05")])])
+        write(self.project, [request(GAMMA, "R-1", busy), request(BETA, "R-2", quiet + [event("call", "2026-10-31")])])
         get = self.live()
         path = "/timeline?agency=tracker%3Agamma+%2F+coroner&month=2026-10&kind=call"
         # Literal destinations catch lost filters, encoding changes and off-by-one/dead links,
         # even if both navigation regions are wrong in the same way.
         href = path.replace("&", "&amp;")
-        second, third = href + "&amp;page=2", href + "&amp;page=3"
+        second, third, fourth = (href + "&amp;page=%d" % n for n in (2, 3, 4))
+        first = (href, "First page")
         cases = ((1, 100, [(second, "Next page")]),
                  (2, 100, [(href, "Previous page"), (third, "Next page")]),
-                 (3, 1, [(second, "Previous page")]))
+                 (3, 100, [first, (second, "Previous page"), (fourth, "Next page")]),
+                 (4, 1, [first, (third, "Previous page")]))
         for page, count, expected in cases:
             with self.subTest(page=page):
                 rows, body = self.rows(get, path + ("&page=%d" % page if page > 1 else ""))
@@ -151,19 +155,28 @@ class TimelinePage(Base):
                 header = re.search(r'<nav aria-label="Timeline pagination">(.*?)</nav>', before, re.S)
                 if header is None:
                     self.fail("labelled pagination must precede the rows")
-                self.assertIn("Page %d of 3." % page, header[1])
+                self.assertIn("Page %d of 4." % page, header[1])
                 footer = re.search(r'<nav aria-label="Pages">(.*?)</nav>', after, re.S)
                 if footer is None:
                     self.fail("retain the existing pagination below the rows")
-                for nav in (header, footer):
-                    self.assertEqual(re.findall(r'<a href="([^"]+)">([^<]+)</a>', nav[1]), expected)
-        self.assertEqual(get(path + "&page=4")[0], 400)
+                anchors = r'<a href="([^"]+)">([^<]+)</a>'
+                header_links = re.findall(anchors, header[1])
+                self.assertEqual(header_links, expected)
+                self.assertEqual(re.findall(anchors, footer[1]), expected)
+                if page == 3:
+                    # Follow the rendered link through the real GET parser: a reset link that
+                    # drops any active filter could put a newer nonmatching event first.
+                    newest, _ = self.rows(get, unescape(header_links[0][0]))
+                    self.assertEqual(len(newest), 100)
+                    self.assertIn("<td>newest matching call</td>", newest[0])
+        self.assertEqual(get(path + "&page=5")[0], 400)
 
         for query, count in (("kind=sent", 100), ("month=2025-01", 0)):
             with self.subTest(query=query), patch.object(cb.cd, "_read", wraps=cb.cd._read) as read:
                 rows, body = self.rows(get, "/timeline?" + query)
                 self.assertEqual(len(rows), count)
                 # No unusable controls, and no rereading timeline data to build pagination.
+                self.assertNotIn("First page", body)
                 self.assertNotIn("Previous page", body)
                 self.assertNotIn("Next page", body)
                 self.assertEqual(sum(call.args[0].name == "timeline.json" for call in read.call_args_list), 1)
@@ -210,6 +223,7 @@ class TimelinePage(Base):
                 rows, body = self.rows(self.live(), "/timeline")
                 self.assertEqual(rows, [])
                 self.assertIn("Timeline unavailable", body)
+                self.assertNotIn("First page", body)
                 self.assertNotIn("No events", body)
                 self.assertNotIn("<table", body)
         self.assertEqual(self.live()("/timeline?kind=bogus")[0], 400)  # still validated while unavailable
