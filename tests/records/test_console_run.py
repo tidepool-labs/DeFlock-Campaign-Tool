@@ -194,6 +194,33 @@ class RunDetail(unittest.TestCase):
                 target = re.findall(rf'<section id="{fragment}"><h2>([^<]*)</h2><p>([^<]*)</p>', html)
                 self.assertEqual(target, [(label, explanation.split(" | ")[1])])  # jumped to the wrong explanation
 
+    # A status-only shortcut list strands the reader at the top of the page when an OK stage needs action.
+    def test_affected_stage_links_include_action_and_blocking_on_ok_stages(self):
+        data = make(0, "warn")  # extract already warns and has an action item
+        data["needs_g"] += [
+            {"code": "GATE_REVIEW_REQUIRED", "stage": "digest_gates", "severity": "blocking", "count": 1},
+            {"code": "PORTAL_RETRY_EXHAUSTED", "stage": "portal", "severity": "info", "count": 1},
+            {"code": "ADOPTION_CODED_GAPS", "stage": "adoption", "severity": "action", "count": 2},
+            {"code": "ADOPTION_UNACCEPTED_GAP", "stage": "adoption", "severity": "action", "count": 1},
+        ]
+        (self.target / "reports" / (IDS[0] + ".json")).write_text(json.dumps(data))
+        html = self.detail(0)
+        nav = SHORTCUTS.findall(html)
+        self.assertEqual(len(nav), 1)
+        expected = [("stage-3", "3. adoption: ok"), ("stage-5", "5. extract: warn"), ("stage-6", "6. digest_gates: ok")]
+        self.assertEqual(re.findall(r'<a href="#([^"]*)">([^<]*)</a>', nav[0]), expected)
+        for fragment, label in expected:
+            with self.subTest(stage=label):
+                self.assertEqual(html.count(f' id="{fragment}"'), 1)
+                section = html.split(f'<section id="{fragment}">', 1)[1].split("</section>", 1)[0]
+                self.assertTrue(section.startswith(f"<h2>{label}</h2>"))
+                self.assertIn("Needs attention:", section)
+
+        # Validation rejects zero on disk; exercise the render boundary directly for the count guard.
+        clean = make(0, "clean")
+        clean["needs_g"] = [{"code": "AWAITING_OCR", "stage": "extract", "severity": "action", "count": 0}]
+        self.assertIsNone(SHORTCUTS.search(page.render([clean], 0)))
+
     # Owner: unmapped codes. Fails if an unmapped notification reason falls through to generic copy, the family fallback
     # shadows a fixed entry or changes other unknown codes, or a notification prefix bypasses unsafe-token refusal.
     def test_unmapped_codes_keep_their_token_and_use_the_appropriate_fallback(self):
