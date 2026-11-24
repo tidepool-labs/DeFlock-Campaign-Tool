@@ -162,6 +162,17 @@ class CompileTest(unittest.TestCase):
         self.put("retention_practice", value={**full("retention_practice"), "min_days": None, "max_days": None})
         self.assertEqual(self.ok("bounds.json")[2], "agency=alpha emitted=0 incomplete=1\n")  # no default bound is supplied
 
+        for label, value_fields in (("absent", {}), ("null", {"value": None}), ("empty_object", {"value": {}})):
+            with self.subTest(value=label):
+                self.put("custodian")
+                entry = self.doc["agencies"][0]["facts"]["custodian"]
+                entry.pop("value")
+                entry.update(value_fields)
+                rows, agency, out = self.ok(label + ".json")
+                self.assertNotIn("custodian", agency["facts"])
+                self.assertEqual(rows["custodian"]["status"], "unknown")
+                self.assertEqual(out, "agency=alpha emitted=0 incomplete=1\n")
+
     def test_unattested_omitted_and_nonobserved_has_no_value(self):
         self.add("custodian", custodian_attested=False)
         self.add("safeguards", applicability_confirmed=False)
@@ -191,6 +202,13 @@ class CompileTest(unittest.TestCase):
         self.setUp()
         with self.subTest("position"):
             self.assertEqual(self.refused("days_negative", edit("retention_practice", observed_days=-1)), "comparison_input_days_negative agency=1 field=retention_practice key=observed_days\n")
+
+        # A truthiness fallback would silently drop these malformed values as incomplete and write a fact sheet.
+        for value in (False, 0, "", []):
+            with self.subTest(value=value):
+                self.setUp()
+                self.put("custodian", value=value)
+                self.assertEqual(self.refused("unknown_value_key"), "comparison_input_unknown_value_key agency=1 field=custodian key=value\n")
 
     def test_refuses_bad_review_and_inventory(self):
         item = lambda **kw: {"agency_id": "alpha", "request_id": "REQ-1", **kw}  # noqa: E731
