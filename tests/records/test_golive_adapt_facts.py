@@ -167,6 +167,16 @@ class FactsEvidenceTests(unittest.TestCase):
         self.out.unlink()
         self.assert_unbound()
 
+    def test_c2_symlink_ancestor_hidden_by_dotdot_is_refused(self):
+        """C2: `link/../<run id>` is judged as supplied, not after collapsing (bug: abspath erased the link)."""
+        link = self.base / "link"
+        link.symlink_to(self.base / "copied", target_is_directory=True)
+        self.out = link / ".." / "copied" / RUN_ID
+        self.assert_unbound()
+        # A symlinked ancestor on a plain path is refused too.
+        self.out = link / RUN_ID
+        self.assert_unbound()
+
     def test_c2_run_report_must_be_valid_finished_non_stub(self):
         """C2: test-mode, stub, failed-outputs, future and invalid reports, and bad report files, bind nothing."""
         stub = [{"code": "STUB_STAGE_BACKEND", "stage": "outputs", "severity": "info", "count": 1}]

@@ -88,7 +88,8 @@ def _bound_report(path, now):
 
 def _open_outputs(outputs_dir, run_id):
     try:
-        path = Path(os.path.abspath(outputs_dir))
+        # No normalisation: abspath would collapse `link/..` and hide a symlinked ancestor from the walk.
+        path = Path(outputs_dir)
         if path.name != run_id:
             raise ValueError("directory name is not the run id")
         fd = golive_evidence._open_directory(path)  # refuses a symlink at any component
