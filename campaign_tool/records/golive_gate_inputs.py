@@ -99,6 +99,13 @@ def _line(name, item):
     return f"{name} {item['kind']}: {item['state']} (used by {used})"
 
 
+def _scrub(message, paths):
+    """Drop any supplied path from a diagnostic; longest first so a parent never half-hides a child."""
+    for path in sorted({str(p) for p in paths if p}, key=len, reverse=True):
+        message = message.replace(path, "<path>")
+    return message
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--spec", required=True, type=Path)
@@ -114,8 +121,11 @@ def main(argv=None):
             inputs[name] = path
         spec = json.loads(args.spec.read_text(encoding="utf-8"), object_pairs_hook=golive_gate._unique_object)
         report = check(spec, inputs)
-    except (ValueError, OSError, RecursionError) as exc:
-        parser.error(str(exc))
+    except OSError as exc:
+        # str(OSError) embeds the filename; keep only the reason so no path reaches stderr.
+        parser.error(f"cannot read --spec: {exc.strerror or type(exc).__name__}")
+    except (ValueError, RecursionError) as exc:
+        parser.error(_scrub(str(exc), [args.spec, *inputs.values(), *(p.partition("=")[2] for p in args.input)]))
     ok = ready(report)
     if args.json:
         print(json.dumps({"gate_id": spec["gate_id"], "ready": ok, "inputs": report}, indent=2))

@@ -302,6 +302,33 @@ class CliTests(InputFixture):
             inputs.main(["--spec", str(self.root / "absent.json")])
         self.assertEqual(raised.exception.code, 2)
 
+    def test_c4_error_diagnostics_carry_no_path(self):
+        """C4: an unreadable spec or a path-bearing --input error still exits 2 without echoing any path.
+
+        Believable bug: passing str(OSError) to parser.error prints the full spec path.
+        """
+        marker = "private-marker"
+        missing = self.root / marker / "spec.json"
+        (self.root / "adir.json").mkdir()
+        spec_file = self.root / "bad.json"
+        spec_file.write_text("{not json", encoding="utf-8")
+        for spec_path in (missing, self.root / "adir.json", spec_file):
+            with self.subTest(spec=spec_path.name):
+                out, err = io.StringIO(), io.StringIO()
+                with redirect_stdout(out), redirect_stderr(err), self.assertRaises(SystemExit) as raised:
+                    inputs.main(["--spec", str(spec_path)])
+                self.assertEqual((raised.exception.code, out.getvalue()), (2, ""))
+                self.assertIn("error: ", err.getvalue())
+                for leaked in (str(self.root), marker, str(spec_path)):
+                    self.assertNotIn(leaked, err.getvalue())
+        # A path inside a ValueError message (here from a mapped --input) is scrubbed too.
+        leaky = self.root / marker / "copy.bin"
+        with patch.object(inputs, "required_inputs", side_effect=ValueError(f"cannot use {leaky}")):
+            code, out, err = self.run_cli(gate_spec("s8-units"), "--input", f"a={leaky}")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("cannot use <path>", err)
+        self.assertNotIn(marker, err)
+
     def test_c4_output_names_and_states_only(self):
         """C4: neither contents, digests nor paths reach stdout or stderr, in text or JSON form."""
         gate_id = "s6a-trust-mount"
