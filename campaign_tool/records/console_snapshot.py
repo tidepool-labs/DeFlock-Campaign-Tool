@@ -102,7 +102,17 @@ class Pinner:
         with self.lock:
             return self._named(name)
 
+    def historical_sealed(self, name):
+        """``(Pin, manifest bytes)`` of one installed export, both taken from the single manifest read that was verified
+        (so a caller can cite the exact bytes, and the Pin's ``exported_at`` comes from those same bytes)."""
+        _need(isinstance(name, str) and ce.NAME.fullmatch(name), "export_name_invalid")
+        with self.lock:
+            return self._named_sealed(name)
+
     def _named(self, name):
+        return self._named_sealed(name)[0]
+
+    def _named_sealed(self, name):
         root_fd, fd = aq._open_chain(self.root), None
         try:
             _need(_private_dir(os.fstat(root_fd)), "export_root_unsafe")
@@ -125,7 +135,7 @@ class Pinner:
                 self.verified.add(key)
             exported_at = manifest.get("exported_at")
             return Pin(os.path.join(self.root, "exports", name), run_id, pid, name,
-                       exported_at if isinstance(exported_at, str) else "unknown time")
+                       exported_at if isinstance(exported_at, str) else "unknown time"), raw
         finally:
             os.close(root_fd)
             if fd is not None:

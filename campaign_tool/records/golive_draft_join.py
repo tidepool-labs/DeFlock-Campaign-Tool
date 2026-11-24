@@ -1,9 +1,10 @@
 """Go-live reply-draft join (DFS1123-2312-13): is this exact (queue id, revision) a real reply draft in ONE sealed export?
 
 ``python -m campaign_tool.records.golive_draft_join --export-root DIR --name EXPORT --queue-id ID --revision N
-[--max-age-hours H] [--json]`` verifies the named export with ``Pinner.historical``, reads the manifest bytes once and
-prints their SHA-256 with every result, so a freshness check and a signoff cite the same manifest. The queue and mail-draft
-bytes parsed for the join are hashed against that same manifest, so a file swapped only while being read is refused.
+[--max-age-hours H] [--json]`` verifies the named export with ``Pinner.historical_sealed``, which returns the Pin AND the
+manifest bytes from the one manifest read that was verified, and prints those bytes' SHA-256 with every result, so a
+freshness check and a signoff cite the same manifest (its ``exported_at`` is parsed from those same bytes). The queue and
+mail-draft bytes parsed for the join are hashed against that same manifest, so a file swapped only while being read is refused.
 A nonzero placement
 count is not provenance and a link in the review page does not name a reply: the pair must be a queue row of a reply
 kind AND have a mail-draft row in the Drafts mailbox (placed / found_existing) in that same export.
@@ -14,7 +15,6 @@ only ids, kind, state and digests. A PASS is machine-valid evidence for a review
 import argparse
 import hashlib
 import json
-import os
 import re
 import sys
 import time
@@ -35,18 +35,6 @@ class Unverified(Exception):
     def __init__(self, code):
         super().__init__(code)
         self.code = code
-
-
-def _manifest_bytes(pin):
-    """The sealed manifest's bytes, read through the same no-symlink, capped reader the pin uses."""
-    fd = aq._open_chain(pin.path)
-    try:
-        raw = cs._read_file(fd, ce.MANIFEST, cs.MAX_MANIFEST)
-    finally:
-        os.close(fd)
-    if raw is None:
-        raise Unverified("export_manifest_invalid")
-    return raw
 
 
 def _sealed_files(raw):
@@ -103,13 +91,11 @@ def check(export_root, name, queue_id, revision, max_age_hours=DEFAULT_MAX_AGE_H
     """The result dict for one export; ``code`` is None on PASS. Raises Unverified for a bad export."""
     now = time.time() if now is None else now
     try:
-        pin = cs.Pinner(export_root).historical(name)
-        raw = _manifest_bytes(pin)
+        pin, raw = cs.Pinner(export_root).historical_sealed(name)  # the Pin and the bytes it verified: one manifest read
         source = cs.SnapshotSource(pin, expected=_sealed_files(raw))  # parsed bytes must hash to the cited manifest
         queue = _rows(source.queue_rows(), "id")
         drafts = _rows(source.mail_drafts(), "queue_id")
-        again = cs.Pinner(export_root).historical(name)  # a swap or edit after we read is refused, not averaged
-        if again != pin or _manifest_bytes(again) != raw:
+        if cs.Pinner(export_root).historical_sealed(name) != (pin, raw):  # a swap or edit after we read is refused
             raise Unverified("export_changed")
         taken = _exported_at(pin)
     except UNVERIFIED as error:

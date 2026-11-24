@@ -138,17 +138,43 @@ class Binding(Join):
         self.assertNotEqual(seen[0], seen[1])
         self.assertEqual(seen, [self.manifest_digest(first), self.manifest_digest(second)])
 
-    def test_c1_manifest_swapped_between_verification_and_result_is_refused(self):
-        # Protects C1. Bug: freshness and signoff may cite different manifests (manifest bytes not re-read and compared).
-        name = self.make_export()
-        real = gdj._manifest_bytes
-        calls = []
+    def manifest_reads_swapped(self, name, swapped_calls):
+        """Run the CLI while the manifest read inside the pin returns a stale-dated copy (same files map) on the listed
+        call numbers (1 = first read, 2 = the re-check); the file on disk never changes. Returns (code, json, stale bytes)."""
+        path = self.root / "exports" / name / "EXPORT.json"
+        manifest = json.loads(path.read_text())
+        manifest["exported_at"] = stamp(timedelta(hours=-100))
+        stale, real, calls = json.dumps(manifest).encode(), gdj.cs._read_file, []
 
-        def swap(pin):
-            calls.append(1)
-            return real(pin) if len(calls) == 1 else real(pin) + b" "
-        with mock.patch.object(gdj, "_manifest_bytes", swap):
-            self.assertIn("export_changed", self.refused(name, "ok", 1, "EXPORT_UNVERIFIED", status=2))
+        def read(dir_fd, fname, cap):
+            raw = real(dir_fd, fname, cap)
+            if fname == gdj.ce.MANIFEST:
+                calls.append(1)
+                if len(calls) in swapped_calls:
+                    return stale
+            return raw
+        with mock.patch.object(gdj.cs, "_read_file", read):
+            code, text = self.run_cli(name, "ok", 1, "--json")
+        self.assertEqual(len(calls), 2)
+        return code, json.loads(text), stale
+
+    def test_c1_manifest_swapped_for_only_one_read_is_refused(self):
+        # Protects C1. Bug: the digest/files map come from a manifest read separately from the one the pin verified, so a
+        # transient stale copy on either read is cited next to the real pin's fresh time (PASS with an unverified manifest).
+        name = self.make_export()
+        for calls in ({1}, {2}):
+            with self.subTest(swapped=calls):
+                code, found, _ = self.manifest_reads_swapped(name, calls)
+                self.assertEqual((code, found), (2, {"code": "EXPORT_UNVERIFIED", "reason": "export_changed"}))
+
+    def test_c1_manifest_swapped_for_every_read_cites_only_that_manifest_and_its_own_time(self):
+        # Protects C1. Bug: the cited digest is the substituted manifest's while freshness uses another manifest's time.
+        # A stale copy that is consistently verified and cited is an honest EXPORT_STALE, never a PASS on a fresh time.
+        name = self.make_export()
+        code, found, stale = self.manifest_reads_swapped(name, {1, 2})
+        self.assertEqual((code, found["code"]), (1, "EXPORT_STALE"))
+        self.assertEqual(found["manifest_sha256"], hashlib.sha256(stale).hexdigest())
+        self.assertEqual(found["exported_at"], json.loads(stale)["exported_at"])
 
     def test_c1_queue_or_drafts_swapped_only_while_read_is_refused(self):
         # Protects C1. Bug: the pin is checked before and after the read, so a file swapped for the read and restored
