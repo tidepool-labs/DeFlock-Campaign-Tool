@@ -93,11 +93,13 @@ def render(reports, index):
             "<p>Run %s. Started %s, finished %s (Pacific time). Trigger: %s. Overall: %s. Items to review: %d.</p>" % (
                 esc(report["run_id"]), esc(_pacific(report["started_at"])), esc(_pacific(report["finished_at"])),
                 esc(trigger), esc(report["overall_status"]), report["review_required_count"])]
+    needs_attention = {item["stage"] for item in report["needs_g"]
+                       if item["severity"] in ("action", "blocking") and item["count"] > 0}
     shortcuts, details = [], []
     for number, stage in enumerate(report["stages"], 1):
         anchor = "stage-%d" % number
         label = "%d. %s: %s" % (number, esc(stage["name"]), esc(stage["status"]))
-        if stage["status"] in ("warn", "fail"):
+        if stage["status"] in ("warn", "fail") or stage["name"] in needs_attention:
             shortcuts.append('<a href="#%s">%s</a>' % (anchor, label))
         details.append(_stage(anchor, label, stage, report))
     if shortcuts:
