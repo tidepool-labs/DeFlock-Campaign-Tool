@@ -100,6 +100,16 @@ class AccessSweepEvidenceTests(unittest.TestCase):
                 raw = blob(text)
                 self.assertEqual(adapter.records(raw, OBSERVED, NOW), expected(raw, "fail", ["ACCESS_SWEEP_FAILED"]))
 
+    def test_c5_extra_text_in_host_column_of_an_ok_line_is_refused(self):
+        """C5: Extra text between status and verdict on an `ok` line never becomes a pass (the widened host rule is FAIL-only)."""
+        lines = lines_of(sweep())
+        self.assertTrue(lines[1].endswith(" team.cloudflareaccess.com ok"))
+        for label, host in {"words": "team.cloudflareaccess.com arbitrary extra text", "ipv6": "::1", "unicode": "é.test"}.items():
+            with self.subTest(host=label):
+                bent = lines[1].rsplit(" ", 2)[0] + " " + host + " ok"
+                text = "\n".join([lines[0], bent, *lines[2:]]) + "\n"
+                self.assertEqual(refusal(blob(text)), "ACCESS_SWEEP_BAD_TRANSCRIPT")
+
     def test_c2_truncated_transcript_with_pass_footer_is_refused(self):
         """C2: Any probe line dropped, or one extra, under a pasted `PASS` footer is a count refusal."""
         lines = lines_of(sweep())

@@ -22,10 +22,13 @@ ANONYMOUS_ONLY = "ACCESS_SWEEP_ANONYMOUS_ONLY"
 FAILED = "ACCESS_SWEEP_FAILED"
 _ACCESS_HEADER = "ACCESS CHECK"
 _ISOLATION_HEADER = "ISOLATION CHECK (not an Access check)"
-# The location-host column is `urlsplit(Location).hostname` verbatim (`-` when absent, `?` when malformed), so a
-# recorded failure may print an IPv6 literal such as `::1` or any other host text; only control characters are
-# refused. The adapter never fetches or follows that value, and the row carries codes only.
-_PROBE = re.compile(r"(GET|HEAD|OPTIONS|POST) ([!-~]+) (?:[0-9]{3}|ERR:[A-Za-z0-9_]+) [^\x00-\x1f\x7f]+? (ok|FAIL)")
+# The location-host column is `urlsplit(Location).hostname` verbatim (`-` when absent, `?` when malformed). A
+# recorded FAIL may print any host text (an IPv6 literal such as `::1`, even one with a space), so a FAIL line takes
+# any non-control text there. An `ok` line can only come from an Access host or `-`/`?`, so it keeps the strict
+# host grammar: widened text on an `ok` line is malformed and must never become a pass. The adapter never fetches
+# or follows that value, and the row carries codes only.
+_PROBE = re.compile(r"(GET|HEAD|OPTIONS|POST) ([!-~]+) (?:[0-9]{3}|ERR:[A-Za-z0-9_]+) ([^\x00-\x1f\x7f]+?) (ok|FAIL)")
+_OK_HOST = re.compile(r"[A-Za-z0-9._-]+|\?")
 _FOOTER_FAIL = re.compile(r"FAIL ([1-9][0-9]*) probes")
 
 
@@ -65,7 +68,9 @@ def _judge(text):
             raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
         if match.group(1) != method or not re.fullmatch(_shown(scheme, path), match.group(2)):
             raise AccessSweepRefused("ACCESS_SWEEP_PROBE_SET")
-        failures += match.group(3) == "FAIL"
+        if match.group(4) == "ok" and not _OK_HOST.fullmatch(match.group(3)):
+            raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
+        failures += match.group(4) == "FAIL"
     if footer_fail and int(footer_fail.group(1)) != failures:
         raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
     return failures > 0 or footer != "PASS"
