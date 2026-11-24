@@ -48,17 +48,25 @@ def edges():
 
 
 def _cycle_members(ids, triples):
-    # Prune gates with no remaining prior or no remaining dependent; what is
-    # left lies on a cycle (or between cycles).
+    # A gate is on a cycle only if it can reach itself through one or more
+    # prior_gate edges among the unplaced gates; a gate merely between two
+    # cycles (or depending on one) is not named.
     left = set(ids)
-    pairs = {(p, g) for p, g, _ in triples}
-    while True:
-        has_in = {g for p, g in pairs if p in left and g in left}
-        has_out = {p for p, g in pairs if p in left and g in left}
-        keep = left & has_in & has_out
-        if keep == left:
-            return sorted(left)
-        left = keep
+    later = {gate_id: set() for gate_id in left}
+    for prior, gate_id, _ in triples:
+        if prior in left and gate_id in left:
+            later[prior].add(gate_id)
+    members = []
+    for start in sorted(left):
+        seen, todo = set(), list(later[start])
+        while todo:
+            current = todo.pop()
+            if current not in seen:
+                seen.add(current)
+                todo.extend(later[current])
+        if start in seen:
+            members.append(start)
+    return members
 
 
 def order():

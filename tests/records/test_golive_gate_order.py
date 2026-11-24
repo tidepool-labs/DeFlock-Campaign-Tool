@@ -129,6 +129,14 @@ class OrderTests(unittest.TestCase):
         self.assertEqual((code, out), (2, ""))
         self.assertIn("cycle among: a, b, c", err)
 
+    def test_c2_bridge_between_two_cycles_is_not_named(self):
+        # Contract C2: only gates on a cycle are named. Self-loops at a and b with
+        # a -> bridge -> b leave bridge on no cycle; pruning by in/out degree
+        # alone would wrongly keep it.
+        with fake(gate("a", ("a", 1)), gate("bridge", ("a", 1)), gate("b", ("a", 1), ("b", 1), ("bridge", 1))):
+            with self.assertRaisesRegex(ValueError, "cycle among: a, b$"):
+                mod.order()
+
     def test_c2_self_prior_is_a_cycle(self):
         # Contract C2: a gate that requires itself can never pass.
         with fake(gate("a", ("a", 1))):
