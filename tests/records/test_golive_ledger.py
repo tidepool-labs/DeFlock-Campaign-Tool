@@ -32,7 +32,7 @@ AGGREGATE = dict(status="missing", reason="AGGREGATE_ONLY")
 NOT_POSITIVE = dict(status="missing", reason="NOT_POSITIVE")
 
 
-def record(stage, kind, result="pass", stamp=STAMP, engine=ENGINE, *, source_schema="synthetic-v1"):
+def record(stage, kind, result="pass", stamp=STAMP, engine: str | None = ENGINE, *, source_schema="synthetic-v1"):
     return dict(schema="records-golive-evidence-v1", stage=stage, kind=kind, result=result,
                 recorded_at=stamp, engine=engine, actor="operator", codes=[],
                 source=dict(schema=source_schema, sha256="c" * 64, name="synthetic.json"))
@@ -153,6 +153,41 @@ class GoLiveLedgerTests(unittest.TestCase):
         matching = [dict(r, engine="b" * 40) if r["stage"] == "3" else r for r in records]
         self.assertEqual(self.ledger(evidence=matching)["3"],
                          row("3", "Arrival trigger", rehearsed=PASS, gate=PASS, state="GATED", next_kind="live"))
+
+    def test_engine_c1_gate_without_engine_ignores_newest_live_engine(self):
+        """Engine C1: A recorded gate whose engine is null is judged by its own result, not the live engine."""
+        # golive_record.from_gate always writes engine null; comparing it with the newest live
+        # engine makes every recorded GO read ENGINE_CHANGED once any live record names an engine.
+        live = record("A2", "live", stamp=LATER, engine="b" * 40)
+        for result, want in (("pass", PASS), ("fail", dict(status="fail", recorded_at=STAMP))):
+            rows = self.ledger(evidence=[record("3", "rehearsal", engine="b" * 40),
+                                         record("3", "gate", result, engine=None), live])
+            self.assertEqual(rows["3"]["gate"], want, result)
+        rows = self.ledger(evidence=[record("3", "rehearsal", engine="b" * 40), record("3", "gate", engine=None), live])
+        self.assertEqual(rows["3"], row("3", "Arrival trigger", rehearsed=PASS, gate=PASS, state="GATED",
+                                       next_kind="live"))
+        # Healthy control: the same gate with no live record anywhere is unchanged.
+        self.assertEqual(self.ledger(evidence=[record("3", "gate", engine=None)])["3"]["gate"], PASS)
+        # The future-dated rule still applies to a null-engine gate.
+        future = self.ledger(evidence=[record("3", "gate", stamp=FUTURE, engine=None), live])["3"]["gate"]
+        self.assertEqual(future, dict(status="missing", recorded_at=FUTURE, reason="FUTURE_DATED"))
+
+    def test_engine_c2_gate_with_a_different_engine_is_still_engine_changed(self):
+        """Engine C2: A gate that names an engine other than the newest live engine stays invalid."""
+        # Exempting every gate from the comparison (not only null-engine ones) lets a GO recorded
+        # against an older engine count for the engine now running live.
+        live = record("A2", "live", stamp=LATER, engine="b" * 40)
+        changed = dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED")
+        self.assertEqual(self.ledger(evidence=[record("3", "gate", engine="a" * 40), live])["3"]["gate"], changed)
+        self.assertEqual(self.ledger(evidence=[record("3", "gate", engine="b" * 40), live])["3"]["gate"], PASS)
+
+    def test_engine_c3_rehearsal_without_engine_is_still_engine_changed(self):
+        """Engine C3: A rehearsal with a null engine is not trusted against a known live engine."""
+        # Widening the null-engine exemption to rehearsals would let unattributed rehearsals qualify.
+        live = record("A2", "live", stamp=LATER, engine="b" * 40)
+        rows = self.ledger(evidence=[record("3", "rehearsal", engine=None), live])
+        self.assertEqual(rows["3"]["rehearsed"], dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED"))
+        self.assertEqual(self.ledger(evidence=[record("3", "rehearsal", engine=None)])["3"]["rehearsed"], PASS)
 
     def test_c2_later_fail_supersedes_pass_independently(self):
         """C2: Later failures win in both columns regardless of input order."""

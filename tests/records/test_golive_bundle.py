@@ -152,6 +152,58 @@ Rollback reference: RB-02
             with self.subTest(value=value):
                 self.assert_bad_input(rollback=value)
 
+    def render_stage19(self, cell):
+        rows = [dict(ROWS[0], rehearsed=cell)] + ROWS[1:]
+        return golive_bundle.render(GATE, rows, [PASS, FAIL], gate_spec=SPEC, rollback=ROLLBACK)
+
+    def test_future_c1_future_dated_line(self):
+        """FD-C1: A FUTURE_DATED ledger rehearsal prints its exact line instead of refusing the page.
+
+        Fails if the reader's allowed-reason tuple lacks FUTURE_DATED: the whole packet then raises
+        'invalid or duplicate stage row' exactly when the operator needs to see the evidence.
+        """
+        page = self.render_stage19({"status": "missing", "reason": "FUTURE_DATED"})
+        self.assertIn("- Stage 19 — Backup check: ledger rehearsal missing (FUTURE_DATED)\n", page)
+        self.assertEqual(page, FULL_PAGE.replace("(STALE)", "(FUTURE_DATED)"))
+
+    def test_future_c2_other_inputs_still_refused(self):
+        """FD-C2: Only the named reason is added; everything else keeps the same refusal text.
+
+        Fails if the fix widens the check to any string or truthy reason, or stops checking cell
+        shape, status or duplicates once FUTURE_DATED is allowed.
+        """
+        bad_cells = (
+            {"status": "missing", "reason": "BOGUS"},
+            {"status": "missing", "reason": "future_dated"},
+            {"status": "missing", "reason": "FUTURE_DATED "},
+            {"status": "missing", "reason": ""},
+            {"status": "unknown", "reason": "FUTURE_DATED"},
+            "FUTURE_DATED",
+        )
+        for cell in bad_cells:
+            with self.subTest(cell=cell), self.assertRaises(ValueError) as error:
+                self.render_stage19(cell)
+            self.assertIs(type(error.exception), ValueError)
+            self.assertEqual(str(error.exception), "invalid or duplicate stage row")
+        duplicate = [dict(ROWS[0], rehearsed={"status": "missing", "reason": "FUTURE_DATED"})]
+        with self.assertRaises(ValueError) as error:
+            golive_bundle.render(GATE, duplicate + ROWS, [], gate_spec=SPEC, rollback=ROLLBACK)
+        self.assertEqual(str(error.exception), "invalid or duplicate stage row")
+
+    def test_future_c3_existing_lines_unchanged(self):
+        """FD-C3: STALE, ENGINE_CHANGED and reason-less lines stay byte-for-byte as before.
+
+        Fails if the reason suffix is reformatted or applied to rows with no reason while adding
+        the new reason.
+        """
+        stale = self.render_stage19({"status": "missing", "reason": "STALE"})
+        self.assertEqual(stale, FULL_PAGE)
+        changed = self.render_stage19({"status": "fail", "reason": "ENGINE_CHANGED"})
+        self.assertEqual(changed, FULL_PAGE.replace("missing (STALE)", "fail (ENGINE_CHANGED)"))
+        plain = self.render_stage19({"status": "pass"})
+        self.assertIn("- Stage 19 — Backup check: ledger rehearsal pass\n", plain)
+        self.assertEqual(plain, FULL_PAGE.replace("missing (STALE)", "pass"))
+
     def test_c3_metadata_only(self):
         """C3: Input names, content fields and receipt output paths never reach the page."""
         gate = deepcopy(GATE)
