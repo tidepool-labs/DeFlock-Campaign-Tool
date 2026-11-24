@@ -125,6 +125,10 @@ class ParsePageTests(Base):
             "renamed column": html.replace(">State</th>", ">Status</th>", 1),
             "short row": html.replace("<td>3</td>", "", 1),
             "truncated": html[:html.index("</table>", pipeline_cut)],
+            # Cut just after the last table, before the shell's closing markup: every row is present.
+            "cut after console table": html[:html.rindex("</table>") + len("</table>")],
+            "cut after main": html[:html.rindex("</body>")],
+            "cut after body": html[:html.rindex("</html>")],
         }
         for name, text in cases.items():
             with self.subTest(case=name), self.assertRaises(ValueError) as raised:
@@ -282,11 +286,14 @@ class CliTests(Base):
         binary = self.root / "binary.html"
         binary.write_bytes(b"\xff\xfe" + self.html.encode())
         junk = self.save("junk.json", SENTINEL)
+        # Well under 2 MiB, yet json.loads exhausts the stack; a traceback would exit 1, the difference code.
+        deep = self.save("deep.json", "[" * 100000 + "]" * 100000)
         for name, page, cli in (("missing", str(self.root / "none.html"), good_cli),
                                 ("directory", str(self.root), good_cli),
                                 ("symlink", str(link), good_cli), ("oversize page", huge, good_cli),
                                 ("oversize ledger", good_page, huge), ("not utf-8", str(binary), good_cli),
-                                ("not json", good_page, junk)):
+                                ("not json", good_page, junk),
+                                ("too deeply nested", good_page, deep)):
             before = sorted(os.listdir(self.root))
             err = io.StringIO()
             with self.subTest(case=name), contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):

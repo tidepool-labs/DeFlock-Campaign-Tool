@@ -21,6 +21,8 @@ _TABLES = {"Pipeline stages": True, "Console stages": False}
 _HEADINGS = ("Stage", "Name", "Rehearsed", "Gate", "Live", "State", "Next")
 _SUMMARY = re.compile(r"(\d{1,6}) of (\d{1,6}) pipeline stages live")
 _NOT_PAGE = "not a go-live page"
+# The console shell ends every page with </main></body></html>; a page cut before that is truncated.
+_CLOSERS = ("main", "body", "html")
 
 
 class _Input(ValueError):
@@ -35,6 +37,7 @@ class _PageParser(HTMLParser):
     def __init__(self):
         super().__init__(convert_charrefs=True)
         self.statuses = []
+        self.closers = []  # closing document tags seen, in order
         self.tables = {}  # caption -> [(stage, state), ...]
         self._status = None
         self._table = None  # None outside a table, else [caption, header rows, body rows]
@@ -60,6 +63,8 @@ class _PageParser(HTMLParser):
             self._cell = (tag, [])
 
     def handle_endtag(self, tag):
+        if tag in _CLOSERS:
+            self.closers.append(tag)
         if tag == "p" and self._status is not None:
             self.statuses.append(" ".join("".join(self._status).split()))
             self._status = None
@@ -111,6 +116,8 @@ def parse_page(html_text):
     parser.close()
     if parser._table is not None:
         raise _not_page("truncated table")
+    if tuple(parser.closers) != _CLOSERS:
+        raise _not_page("truncated page")
     if set(parser.tables) != set(_TABLES):
         raise _not_page("expected tables missing")
     summaries = [text for text in parser.statuses if _SUMMARY.fullmatch(text)]
@@ -251,6 +258,8 @@ def main(argv=None):
             cli = json.loads(_read(args.cli))
         except json.JSONDecodeError:
             raise _Input("ledger file is not JSON") from None
+        except RecursionError:  # A deeply nested document well under 2 MiB: still invalid input.
+            raise _Input("ledger file is nested too deeply") from None
         result = compare(page, cli)
     except ValueError as exc:
         print(f"golive_parity: {exc}", file=sys.stderr)
