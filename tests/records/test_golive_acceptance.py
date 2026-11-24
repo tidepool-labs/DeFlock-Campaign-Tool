@@ -142,11 +142,39 @@ class GoLiveAcceptanceTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             golive_acceptance.evaluate([{"stage": "1"}])
 
+    def test_c1_incomplete_duplicate_or_misclassified_rows_raise(self):
+        """C1: A ledger missing a pipeline stage, repeating a stage or misflagging one must not read as ready.
+
+        Without the completeness check, [] reports 0 of 0 live and READY; without the duplicate and
+        membership checks, a repeated or pipeline=False row silently skips or double counts a stage.
+        """
+        for label, rows in (
+            ("empty", []),
+            ("malformed stage 3", [{"stage": "3", "pipeline": False}]),
+            ("one pipeline stage absent", [r for r in all_satisfied() if r["stage"] != "3"]),
+            ("duplicate stage", all_satisfied() + [satisfied("3")]),
+            ("duplicate console stage", all_satisfied() + [satisfied("A1")]),
+            ("pipeline stage marked console", [dict(r, pipeline=False) if r["stage"] == "3" else r
+                                               for r in all_satisfied()]),
+            ("console stage marked pipeline", [dict(r, pipeline=True) if r["stage"] == "A1" else r
+                                               for r in all_satisfied()]),
+            ("pipeline flag not a bool", [dict(r, pipeline=1) if r["stage"] == "3" else r
+                                          for r in all_satisfied()]),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    golive_acceptance.evaluate(rows)
+
+    def test_c1_console_rows_may_be_absent(self):
+        """C1: Only pipeline stages are required, so a ledger without console-only rows still evaluates."""
+        rows = [r for r in all_satisfied() if r["pipeline"]]
+        self.assertEqual(golive_acceptance.evaluate(rows)["blockers"], [])
+
     def test_c2_manual_items_always_present(self):
         """C2: The human-only list is fixed and appears in ready, not-ready and JSON output."""
         expected = ["rollback drill", "FLAWLESS check", "stages 7 and 8 proven on new documents"]
-        self.assertEqual(golive_acceptance.evaluate([])["manual"], expected)
         self.assertEqual(golive_acceptance.evaluate(all_satisfied())["manual"], expected)
+        self.assertEqual(golive_acceptance.MANUAL, tuple(expected))
         reports, evidence = self.dirs()
         args = ["--reports", str(reports), "--evidence", str(evidence)]
         with patch.object(golive_ledger, "build", return_value=all_satisfied()):

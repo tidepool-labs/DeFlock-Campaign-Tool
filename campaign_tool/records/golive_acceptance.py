@@ -19,16 +19,30 @@ MANUAL = (
 def evaluate(rows):
     """Derive blockers from ledger rows and the catalogue flags; console-only rows never count.
 
-    Raises ValueError for a row that is malformed or names a stage outside the catalogue.
+    Raises ValueError for a row that is malformed, names a stage outside the catalogue, repeats a
+    stage, disagrees with the catalogue on pipeline membership, or when a catalogue pipeline stage
+    has no row, so an incomplete ledger can never read as ready.
     """
     order = {stage: index for index, stage in enumerate(golive_catalog.STAGES)}
+    rows = list(rows)
     live = total = 0
     found = []
+    seen = set()
     try:
         for row in rows:
             stage = row["stage"]
             if stage not in order:
                 raise ValueError(f"unknown stage {stage!r}")
+            if stage in seen:
+                raise ValueError(f"duplicate stage {stage!r}")
+            seen.add(stage)
+            if row["pipeline"] is not golive_catalog.STAGES[stage].pipeline:
+                raise ValueError(f"stage {stage!r} pipeline flag disagrees with the catalogue")
+        missing = [stage for stage, rule in golive_catalog.STAGES.items() if rule.pipeline and stage not in seen]
+        if missing:
+            raise ValueError(f"missing pipeline stages: {', '.join(missing)}")
+        for row in rows:
+            stage = row["stage"]
             if not row["pipeline"]:
                 continue
             rule = golive_catalog.STAGES[stage]
