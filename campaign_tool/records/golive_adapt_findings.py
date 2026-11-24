@@ -6,6 +6,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import stat
 import sys
 
@@ -13,6 +14,7 @@ from . import golive_evidence, public_packets
 
 _CODE = "FINDINGS_EVIDENCE_BAD_INPUT"
 _MARKER = ".t12-sandbox-v1"  # run_stages.SANDBOX_MARKER: a rehearsal sandbox is never live evidence
+_SHA256 = re.compile(r"[0-9a-f]{64}")
 _OPEN = {"proposed", "approved", "written"}
 _DEAD = {"expired", "rejected", "cancelled"}
 
@@ -68,8 +70,9 @@ def _event_ok(event, index, state):
               and _is_int(event["ts"]))
         status = "approved"
     elif kind == "written":
-        ok = (status == "approved" and _text(event.get("file"), 512) and isinstance(event.get("file_sha256"), str)
-              and len(event["file_sha256"]) == 64)
+        digest = event.get("file_sha256")  # the writer records hashlib's lowercase hexdigest
+        ok = (status == "approved" and _text(event.get("file"), 512) and isinstance(digest, str)
+              and _SHA256.fullmatch(digest) is not None)
         status = "written"
     else:
         reason = event.get("reason")
