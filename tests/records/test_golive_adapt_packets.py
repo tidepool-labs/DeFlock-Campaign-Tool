@@ -173,6 +173,11 @@ class RefusalTests(Base):
             "empty signature": edit(by_event["approved"], signature=""),
             "wrong time label": edit(by_event["written"], at="2026-10-26T06:14:21Z"),
             "unknown event": edit(by_event["written"], event="deployed"),
+            "list-typed event": edit(by_event["written"], event=[]),
+            "dict-typed event": edit(by_event["written"], event={}),
+            "list-typed file": edit(by_event["written"], file=[]),
+            "dict-typed signature": edit(by_event["approved"], signature={}),
+            "list-typed id": edit(by_event["approved"], id=[]),
             "reformatted line": lines[:1] + [lines[1].replace(b":", b": ", 1)] + lines[2:],
             "not json": lines[:-1] + [b"{nope"],
         }

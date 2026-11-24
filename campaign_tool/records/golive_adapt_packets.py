@@ -43,7 +43,8 @@ def _events(raw):
             raise ValueError("invalid journal line") from None
         # Appended lines are canonical, so any reformatted or hand-edited line is refused.
         if (not canonical or event.get("schema") != public_packets.SCHEMA or event.get("seq") != seq
-                or event.get("event") not in _EVENTS or not _int(event.get("ts"))):
+                or not isinstance(event.get("event"), str) or event["event"] not in _EVENTS
+                or not _int(event.get("ts"))):
             raise ValueError("invalid journal line")
         try:
             at = datetime.fromtimestamp(event["ts"], timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
