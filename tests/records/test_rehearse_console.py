@@ -24,8 +24,10 @@ PAGES = {
     "/runs": b"Run history", "/documents": b"Documents and findings", "/findings": b"All findings",
     "/drafts": b"Draft history", "/decisions": b"Decisions", "/health": b"System health", "/stages": b"Go-live stages",
     "/golive": b"Go-live",
+    "/comparison": b"Policy comparison",
 }
 GOLIVE_NOTICE = b"Go-live evidence is not configured on this console."
+COMPARISON_NOTICE = b"Policy comparison: unavailable: missing. The comparison has not been written for this run yet."
 
 
 class RehearseConsoleTests(unittest.TestCase):
@@ -149,6 +151,8 @@ class RehearseConsoleTests(unittest.TestCase):
                     self.assertIn(b"<h1>" + PAGES[route] + b"</h1>", body)
                 if route == "/golive":
                     self.assertIn(GOLIVE_NOTICE, body)
+                if route == "/comparison":
+                    self.assertIn(COMPARISON_NOTICE, body)
                 self.assertEqual(json.loads(self.receipt(route).read_bytes()), {
                     "route": route, "status": status, "body_sha256": hashlib.sha256(body).hexdigest(),
                 })
@@ -171,6 +175,9 @@ class RehearseConsoleTests(unittest.TestCase):
             ("/golive", 404, error, "PAGE_STATUS_UNEXPECTED"),
             ("/golive", 200, b"<h1>Go-live stages</h1><p>" + GOLIVE_NOTICE + b"</p>", "PAGE_HEADING_MISSING"),
             ("/golive", 200, b"<h1>Go-live</h1><p>0 of 22 live</p>", "GOLIVE_NOTICE_MISSING"),
+            # A heading-only check would certify a comparison the fixture never produced.
+            ("/comparison", 200, b"<h1>Policy comparison</h1><p>This comparison lists no agencies or requests.</p>",
+             "COMPARISON_NOTICE_MISSING"),
         ):
             with self.subTest(route=route, code=code), tempfile.TemporaryDirectory(dir=self.sandbox) as tmp:
                 original = self.sandbox
