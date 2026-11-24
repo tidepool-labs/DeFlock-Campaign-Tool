@@ -152,7 +152,10 @@ def _cli_view(cli):
         raise ValueError("ledger document has no rows list")
     rows = []
     for row in cli["rows"]:
-        if not isinstance(row, dict) or not isinstance(row.get("stage"), str) or row.get("state") not in STATES:
+        state = row.get("state") if isinstance(row, dict) else None
+        # Type first: an unhashable state (list, dict) must be invalid input, not a TypeError.
+        if not isinstance(row, dict) or not isinstance(row.get("stage"), str) \
+                or not isinstance(state, str) or state not in STATES:
             raise ValueError("ledger row has no valid stage and state")
         rows.append((row["stage"], row["state"]))
     live_count = cli.get("live_count")
@@ -182,7 +185,8 @@ def compare(page, cli):
     known = list(golive_catalog.STAGES)
     for stage in known + sorted(set(cli_states) - set(known)):
         shown = "DUPLICATE" if stage in repeated else cli_states.get(stage)
-        if page_states.get(stage) != shown:
+        # A catalogue stage missing from both sides is a difference too: nothing was compared.
+        if page_states.get(stage) != shown or (stage in golive_catalog.STAGES and shown is None):
             differences.append({"stage": stage, "page": page_states.get(stage), "cli": shown})
 
     page_live, cli_live = _live(page_rows), _live(
@@ -222,8 +226,13 @@ def _read(path):
         raise _Input("file is not UTF-8 text") from None
 
 
+_PSEUDO = frozenset({"(page summary vs rows)", "(cli summary vs rows)", "(cli live_count vs rows)",
+                    "(page total)", "(cli total)", "(count)"})
+
+
 def _label(stage):
-    return stage if stage in golive_catalog.STAGES or stage.startswith("(") else "(unrecognised stage)"
+    """Only catalogue stage IDs and this module's own count names may be printed; never input text."""
+    return stage if stage in golive_catalog.STAGES or stage in _PSEUDO else "(unrecognised stage)"
 
 
 def _show(value):
@@ -246,6 +255,7 @@ def main(argv=None):
     except ValueError as exc:
         print(f"golive_parity: {exc}", file=sys.stderr)
         return 2
+    result = dict(result, differences=[dict(item, stage=_label(item["stage"])) for item in result["differences"]])
     if args.json:
         print(json.dumps(result, indent=2))
     elif result["agree"]:
@@ -254,7 +264,7 @@ def main(argv=None):
     else:
         print(f"differ: {len(result['differences'])} difference(s)")
         for item in result["differences"]:
-            print(f"  {_label(item['stage'])}: page={_show(item['page'])} cli={_show(item['cli'])}")
+            print(f"  {item['stage']}: page={_show(item['page'])} cli={_show(item['cli'])}")
     return 0 if result["agree"] else 1
 
 

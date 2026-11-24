@@ -168,6 +168,17 @@ class CompareTests(Base):
         self.assertIn({"stage": doc["rows"][0]["stage"], "page": "BUILT", "cli": "DUPLICATE"}, diffs)
         self.assertIn({"stage": "ZZ9", "page": None, "cli": "BUILT"}, diffs)
 
+    def test_c2_stage_missing_from_both_is_a_difference(self):
+        """C2: A catalogue stage absent from both inputs is a difference, never a silent match."""
+        # Catches `None != None` being False: dropping the same non-LIVE stage from both would agree.
+        page = copy.deepcopy(self.page)
+        del page["rows"]["7"]
+        doc = copy.deepcopy(self.doc)
+        doc["rows"] = [row for row in doc["rows"] if row["stage"] != "7"]
+        result = golive_parity.compare(page, doc)
+        self.assertFalse(result["agree"])
+        self.assertEqual(result["differences"], [{"stage": "7", "page": None, "cli": None}])
+
     def test_c2_printed_count_checked_against_own_rows(self):
         """C2: A count that disagrees with its own side's rows is a difference even if both sides print the same."""
         # Catches trusting two equal summary lines while the rows underneath say otherwise.
@@ -202,6 +213,8 @@ class CompareTests(Base):
         bad = (None, [], dict(good, rows="x"), dict(good, rows=[{"stage": "1"}]),
                dict(good, rows=[{"stage": 1, "state": "LIVE"}]),
                dict(good, rows=[dict(good["rows"][0], state="DONE")]),
+               dict(good, rows=[dict(good["rows"][0], state=[])]),
+               dict(good, rows=[dict(good["rows"][0], state={})]),
                dict(good, live_count=True), dict(good, live_count=None),
                dict(good, summary="many"), {k: v for k, v in good.items() if k != "summary"})
         for index, doc in enumerate(bad):
@@ -234,6 +247,30 @@ class CliTests(Base):
         status, out, _ = self.run_cli(self.html, json.dumps(doc))
         self.assertEqual(status, 1)
         self.assertNotIn("<b>", out)
+
+    def test_c3_unrecognised_stage_text_is_never_echoed(self):
+        """C3: A CLI stage that is not a catalogue ID, even one starting with '(', is never printed."""
+        # Catches echoing any '('-prefixed stage string verbatim in text or JSON output.
+        for private in ("(" + SENTINEL + ")", SENTINEL):
+            doc = copy.deepcopy(self.doc)
+            doc["rows"].append(dict(doc["rows"][0], stage=private))
+            for extra in ((), ("--json",)):
+                with self.subTest(stage=private, extra=extra):
+                    status, out, err = self.run_cli(self.html, json.dumps(doc), *extra)
+                    self.assertEqual(status, 1)
+                    self.assertNotIn(SENTINEL, out + err)
+                    self.assertIn("(unrecognised stage)", out)
+
+    def test_c3_unhashable_state_is_invalid_input(self):
+        """C3: A ledger row whose state is a list or object exits 2 with fixed text, not a traceback."""
+        # Catches testing `state in STATES` before the type check (TypeError: unhashable).
+        for bad in ([], {}):
+            doc = copy.deepcopy(self.doc)
+            doc["rows"][0]["state"] = bad
+            with self.subTest(state=bad):
+                status, out, err = self.run_cli(self.html, json.dumps(doc))
+                self.assertEqual((status, out), (2, ""))
+                self.assertIn("golive_parity:", err)
 
     def test_c3_invalid_input_exit_two(self):
         """C3: Missing, non-regular, symlinked, oversize or invalid inputs exit 2 with fixed text."""
