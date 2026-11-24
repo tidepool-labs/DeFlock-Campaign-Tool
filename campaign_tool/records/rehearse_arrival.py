@@ -265,6 +265,14 @@ def _wake_wrapper(runtime):
     _require(wake.returncode == 0)
 
 
+def _arrival_run_id(row):
+    launch = json.loads(row)
+    run_id = launch["run_id"]
+    _require(launch["trigger"] == "arrival" and launch["batch_bound"] is True
+             and arrival.RUN_ID_RE.fullmatch(run_id) is not None)
+    return run_id
+
+
 def _dispatch_burst(runtime, pair):
     trace = runtime / "launches.jsonl"
     _require(not trace.exists() and arrival.pending(runtime) == [stamp for _, stamp in sorted(pair)])
@@ -274,13 +282,10 @@ def _dispatch_burst(runtime, pair):
     if not launches:
         raise _NotTriggered
     _require(len(launches) == 1 and len(pair) == 2)
-    launch = json.loads(launches[0])
-    run_id = launch["run_id"]
-    _require(launch["trigger"] == "arrival" and launch["batch_bound"] is True
-             and arrival.RUN_ID_RE.fullmatch(run_id) is not None)
+    run_id = _arrival_run_id(launches[0])
     batch_file = runtime / "TEST" / "work" / f"arrivals-{run_id}.json"
     paths = _claimed_paths(runtime, run_id, pair, json.loads(batch_file.read_bytes()))
-    return run_id, batch_file, [trace, *paths]
+    return run_id, batch_file, paths
 
 
 def run(sandbox):
@@ -290,6 +295,7 @@ def run(sandbox):
     queue = runtime / "arrival"
     target = units / "targets" / "TEST.json"
     lock = runtime / arrival.LOCK_NAME
+    trace = runtime / "launches.jsonl"
 
     def write_stamp():
         _require(not lock.exists() and not arrival.has_work(runtime))
@@ -316,7 +322,6 @@ def run(sandbox):
 
     def coordination_quiet():
         marker = runtime / arrival.MARKER_NAME
-        trace = runtime / "launches.jsonl"
 
         def stamp_state():
             return queue.stat().st_mtime_ns, {
@@ -346,7 +351,22 @@ def run(sandbox):
                  and stamp_state() == before and lock.stat().st_ino == inode
                  and not arrival.has_work(runtime, stamps_only=True)
                  and marker.read_bytes() == marker_bytes)
-        return [lock, marker]
+        # The next claim consumes this marker; it is not a replayable output.
+        return [lock]
+
+    def arrival_after_coordination():
+        earlier = trace.read_bytes()
+        stamp = _mail_stamp(runtime, "after-coordination")
+        _wake_wrapper(runtime)
+        final = trace.read_bytes()
+        launches = final.splitlines()
+        _require(final.startswith(earlier) and len(launches) == 2)
+        run_id = _arrival_run_id(launches[1])
+        _require(run_id not in (_SINGLE, _arrival_run_id(launches[0])))
+        batch_file = runtime / "TEST" / "work" / f"arrivals-{run_id}.json"
+        paths = _claimed_paths(runtime, run_id, [stamp], json.loads(batch_file.read_bytes()))
+        # Only publish the trace digest after the last append.
+        return [trace, batch_file, *paths, _report(runtime, target, fixture, run_id, batch_file)]
 
     stamps = []
     result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
@@ -354,6 +374,7 @@ def run(sandbox):
         ("render_units", lambda: _render(root, runtime, units, fixture)),
         ("write_stamp", write_stamp), ("consume", consume), ("run_report", report),
         ("batch_two", batch_two), ("coordination_quiet", coordination_quiet),
+        ("arrival_after_coordination", arrival_after_coordination),
     ):
         try:
             outputs = [{"path": path.relative_to(root).as_posix(),
