@@ -63,7 +63,7 @@ def _read_at(dir_fd, name):
     if len(raw) > pipeline_health.MAX_JSON_BYTES:
         raise ValueError("too_large")
     try:
-        data = json.loads(raw, object_pairs_hook=_unique_object)
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
     except RecursionError as exc:
         raise ValueError("metadata_json_depth") from exc
     if not isinstance(data, dict):
