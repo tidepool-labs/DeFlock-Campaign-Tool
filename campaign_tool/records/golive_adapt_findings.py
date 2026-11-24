@@ -36,19 +36,62 @@ def _reject_constant(_):
     raise ValueError("non-finite number")
 
 
+def _text(value, limit):
+    return isinstance(value, str) and 0 < len(value) <= limit
+
+
+def _event_ok(event, index, state):
+    """Check one journal line against what public_packets writes; ``state`` maps id -> [revision, status]."""
+    kind, ident, rev = event["event"], event.get("id"), event.get("revision")
+    if event.get("seq") != index or not isinstance(event.get("at"), str):
+        return False
+    if kind == "switch":
+        return (event.get("state") in ("on", "off") and _text(event.get("principal"), 256)
+                and _is_int(event.get("round")) and event["round"] >= 0
+                and (event["state"] == "off" or _text(event.get("signature"), 16384)))
+    if kind not in ("packet", "approved", "rejected", "cancelled", "written"):
+        return False
+    if not (isinstance(ident, str) and public_packets.PACKET_ID.fullmatch(ident) and _is_int(rev) and rev >= 0):
+        return False
+    if kind == "packet":
+        if not (isinstance(event.get("packet"), dict) and isinstance(event.get("digest"), str)):
+            return False
+        if rev != (state[ident][0] + 1 if ident in state else 0):  # the writer numbers revisions in order
+            return False
+        state[ident] = [rev, "proposed"]
+        return True
+    if ident not in state or state[ident][0] != rev:  # a transition must name the current revision of a known packet
+        return False
+    status = state[ident][1]
+    if kind == "approved":
+        ok = (status == "proposed" and _text(event.get("principal"), 256) and _text(event.get("signature"), 16384)
+              and _is_int(event["ts"]))
+        status = "approved"
+    elif kind == "written":
+        ok = (status == "approved" and _text(event.get("file"), 512) and isinstance(event.get("file_sha256"), str)
+              and len(event["file_sha256"]) == 64)
+        status = "written"
+    else:
+        reason = event.get("reason")
+        ok = (status in ("proposed", "approved") and isinstance(event.get("actor"), str)
+              and public_packets.ACTOR.fullmatch(event["actor"]) is not None
+              and (reason is None or _text(reason, 500)))
+        status = kind
+    state[ident][1] = status
+    return bool(ok)
+
+
 def _events(raw, now_ts):
     events = [json.loads(line.decode("utf-8"), parse_constant=_reject_constant) for line in raw.split(b"\n")[:-1]]
-    for event in events:
+    state = {}
+    for index, event in enumerate(events):
         if not (isinstance(event, dict) and event.get("schema") == public_packets.SCHEMA
                 and isinstance(event.get("event"), str) and _is_int(event.get("ts"))):
             raise ValueError("invalid journal event")
         if event["ts"] > now_ts:  # a copy taken at observed_at cannot hold a later event
             raise ValueError("journal event after observed_at")
-        if event["event"] == "packet":
-            if not (isinstance(event.get("id"), str) and public_packets.PACKET_ID.fullmatch(event["id"])
-                    and _is_int(event.get("revision")) and event["revision"] >= 0
-                    and isinstance(event.get("packet"), dict) and isinstance(event.get("digest"), str)):
-                raise ValueError("invalid packet event")
+        if not _event_ok(event, index, state):  # fold() skips what it cannot place; a copy with such lines is not live proof
+            raise ValueError("invalid journal event")
     return events
 
 

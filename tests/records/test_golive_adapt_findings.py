@@ -141,6 +141,49 @@ class FindingsAdapterTests(unittest.TestCase):
         marker.write_bytes(b'{"sandbox_marker_version":1}\n')
         self.refused(path)
 
+    def test_c3_malformed_non_packet_events_and_transitions_are_refused(self):
+        """C3: fold() skips events it cannot place, so a bug that trusted it would turn a tampered copy (a valid
+        finding plus a rejected event with no revision, an orphan, stale or out-of-order transition) into a live pass."""
+        path = self.journal(packet(), approve=True)
+        good = path.read_bytes()
+        ident = pp.packet_id(packet())
+        signature = json.loads(good.splitlines()[1])["signature"]
+        self.assertEqual(adapter.records(path, utc(T0 + 60))[0]["result"], "pass")  # control: the intact copy passes
+        gone = object()
+
+        def extra(**fields):
+            base = {"schema": pp.SCHEMA, "seq": 2, "at": "x", "ts": T0, "event": "rejected", "id": ident,
+                    "revision": 0, "actor": "g@x"}
+            event = {k: v for k, v in {**base, **fields}.items() if v is not gone}
+            return good + json.dumps(event).encode() + b"\n"
+
+        # control: a well-formed rejection passes the structural check (the finding is then dead, a separate refusal)
+        self.assertEqual(len(adapter._events(extra(), T0 + 60)), 3)
+        self.refused(self.write(path, extra()))
+        cases = {
+            "rejected missing revision": extra(revision=gone), "rejected bad revision type": extra(revision=True),
+            "rejected stale revision": extra(revision=1), "rejected orphan id": extra(id="0" * 16),
+            "rejected missing id": extra(id=gone), "rejected missing actor": extra(actor=gone),
+            "rejected bad actor": extra(actor="../x"), "rejected bad reason": extra(reason=""),
+            "unknown event kind": extra(event="mystery"), "seq gap": extra(seq=7), "missing at": extra(at=gone),
+            "approved twice": extra(event="approved", principal="g@x", signature=signature),
+            "approved without principal": extra(event="approved", principal=gone, signature="s"),
+            "written without file": extra(event="written", file=gone, file_sha256=SHA),
+            "written bad digest": extra(event="written", file="a.json", file_sha256="zz"),
+            "bad switch state": extra(event="switch", state="maybe", principal="g@x", round=0, id=gone, revision=gone),
+            "switch without principal": extra(event="switch", state="off", round=0, id=gone, revision=gone, actor=gone),
+            "packet revision skipped": extra(event="packet", revision=5, packet=packet(), digest="d"),
+        }
+        for name, data in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    adapter._events(data, T0 + 60)
+                self.refused(self.write(path, data))
+
+    def write(self, path, data):
+        path.write_bytes(data)
+        return path
+
     def test_c1_cli_prints_rows_and_exits_two_with_only_the_code(self):
         """C1/C3: a CLI that echoes paths or text, or exits 0 on refusal, would leak or hide a bad input."""
         path = self.journal(packet(), now=int(time.time()) - 60)
