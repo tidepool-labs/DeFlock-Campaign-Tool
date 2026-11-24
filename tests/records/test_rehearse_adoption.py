@@ -179,12 +179,22 @@ class Fences(Base):
         def raw():
             with socket.socket() as sock:
                 sock.connect(("203.0.113.9", 80))
-        def swallowed():  # a stage that hides the refusal: only the fence record, read by no_sends, remembers it
+        def swallowed(host="mail.example.invalid"):  # a stage that hides the refusal: only the fence record, read by no_sends, remembers it
             try:
-                smtplib.SMTP("mail.example.invalid", 25)
+                smtplib.SMTP(host, 25)
             except OSError:
                 pass
-        attempts = {"smtp": (lambda: smtplib.SMTP("mail.example.invalid", 25), "delta"),
+        def loopback(address, family=socket.AF_INET):
+            def attempt():
+                with socket.socket(family) as sock:
+                    sock.connect(address)
+            return attempt
+        # Bug: a fence that waves loopback or local-socket relays through would let a stage send mail and still pass no_sends.
+        attempts = {"loopback smtp": (lambda: smtplib.SMTP("127.0.0.1", 25), "delta"),
+                    "loopback ipv6": (loopback(("::1", 25), socket.AF_INET6), "delta"),
+                    "unix relay": (loopback("/nonexistent/relay.sock", socket.AF_UNIX), "delta"),
+                    "swallowed loopback": (lambda: swallowed("127.0.0.1"), "adoption"),
+                    "smtp": (lambda: smtplib.SMTP("mail.example.invalid", 25), "delta"),
                     "name lookup": (lambda: socket.create_connection(("remote.example.invalid", 80), timeout=1), "delta"),
                     "raw connect": (raw, "delta"), "notify": (lambda: run_orchestrator.cmd_notify_fallback(None), "delta"),
                     "swallowed": (swallowed, "adoption")}
@@ -195,7 +205,7 @@ class Fences(Base):
                     result = self.replacing(label, lambda name, project: None,
                                             before=lambda name, a=attempt, s=stage: name == s and a())
                 self.assertEqual((last(result), connects),
-                                 (("no_sends" if label == "swallowed" else stage, "SEND_ATTEMPTED"), []))
+                                 (("no_sends" if label.startswith("swallowed") else stage, "SEND_ATTEMPTED"), []))
 
 
 class Entry(Base):

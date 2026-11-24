@@ -2,7 +2,7 @@
 
 The real ``delta`` and ``adoption`` stage adapters run on a fictional export (e2e_proof's account and folder), then the
 sandbox ledger is checked by SHA-256. A control changes one byte of a second copy after its receipt is written; the real
-adoption stage must refuse it (ADOPTION_NOT_REFUSED if it adopts). A send or non-loopback connection fails the driver.
+adoption stage must refuse it (ADOPTION_NOT_REFUSED if it adopts). A send or any socket connection (loopback included) fails the driver.
 """
 
 import argparse
@@ -162,20 +162,18 @@ def _no_sends(c):
 
 @contextmanager
 def _fenced(attempts, sandbox):
-    """Record and refuse any notification or non-loopback connection (SMTP included); keep temp files and HOME inside."""
+    """Record and refuse any notification or socket connection (loopback and local SMTP relays included); keep temp files and HOME inside."""
     def refuse(label):
         attempts.append(label)
         raise OSError(label)
     def connect(self, address, *args):
-        if self.family != socket.AF_UNIX and not (isinstance(address, tuple) and address[0] in ("127.0.0.1", "::1")):
-            refuse("connect")
-        return real_connect(self, address, *args)
+        refuse("connect")  # every address: a loopback or local-socket SMTP relay would send mail just the same
     def resolve(host, *args, **kwargs):
         if host not in (None, "localhost", "127.0.0.1", "::1"):
             refuse("resolve")
         return real_resolve(host, *args, **kwargs)
 
-    real_connect, real_resolve, tmp = socket.socket.connect, socket.getaddrinfo, sandbox / "tmp"
+    real_resolve, tmp = socket.getaddrinfo, sandbox / "tmp"
     tmp.mkdir(mode=0o700)
     with (patch.object(socket.socket, "connect", connect), patch.object(socket, "getaddrinfo", resolve),
           patch.object(run_orchestrator, "cmd_notify_fallback", lambda *a, **k: refuse("notify")),
