@@ -8,7 +8,8 @@ from unittest import mock
 
 from campaign_tool.records import console_settings as cs, console_snapshot, public_updates as pu, public_packets as pp
 from tests.records.test_admin_panel import Base, Http, RUN, ap
-from tests.records.test_console_snapshot import Panel, tree_state
+from tests.records.test_console_model import RUN as MODEL_RUN
+from tests.records.test_console_snapshot import Panel, RUN2, RUN3, RUN4, tree_state
 from tests.approval_signing import Signer
 
 
@@ -157,6 +158,7 @@ class SettingsTests(Base):
             status, _, html = client.send('GET', '/settings')
             self.assertEqual(status, 200)
             self.assertIn('aria-current="page">Settings', html)
+            self.assertNotIn('Pinned export readings:', html)
             self.assertNotIn('<form', html)
             self.assertEqual(client.send('GET', '/settings?x=1')[0], 404)
             self.assertEqual(client.send('POST', '/settings')[0], 404)
@@ -168,6 +170,35 @@ class SettingsTests(Base):
 
 
 class PinnedSettingsTests(Panel):
+    def test_settings_names_the_export_pinned_for_each_request(self):
+        # A generic reminder warning or a stale run label leaves the operator
+        # unable to tell which saved readings Settings is showing.
+        self.up()
+        for run, stamp, shown in (
+                (MODEL_RUN, '2026-11-10T15:01:00Z', '2026-11-10T15:01:00Z'),
+                (RUN2, '2026-11-11T16:02:00Z', '2026-11-11T16:02:00Z'),
+                (RUN3, None, 'unavailable'),
+                (RUN4, '<fixture> & time', '&lt;fixture&gt; &amp; time')):
+            with self.subTest(run=run):
+                def set_stamp(dest):
+                    path = dest / 'EXPORT.json'
+                    manifest = json.loads(path.read_text())
+                    if stamp is None:
+                        manifest.pop('exported_at')
+                    else:
+                        manifest['exported_at'] = stamp
+                    path.write_text(json.dumps(manifest))
+
+                name = self.make_export(run, set_stamp)
+                before = tree_state(self.root)
+                page = self.get('/settings')
+                self.assertEqual(tree_state(self.root), before)
+                top = page.split('<h1>Settings</h1>', 1)[1].split('<h2>Sending</h2>', 1)[0]
+                self.assertEqual(top.count('Pinned export readings:'), 1, top)
+                self.assertIn(f'<p>Pinned export readings: run {run}; export time: {shown}.</p>', top)
+                for hidden in (self.pid, str(self.root), name):
+                    self.assertNotIn(hidden, top)
+
     def test_pinned_reminders_are_unobserved_without_reading_local_settings(self):
         # C1: a pinned export has no sealed reminder settings model. Reading the
         # project view would substitute local defaults for an operator's settings.
