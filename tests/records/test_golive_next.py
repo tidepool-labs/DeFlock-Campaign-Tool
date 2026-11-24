@@ -1,24 +1,48 @@
 """Runtime contracts for the read-only go-live plan."""
 
+import io
 import json
+import re
 import subprocess
 import sys
 import tempfile
 import unittest
+from contextlib import redirect_stdout
 from datetime import datetime, timezone
 from itertools import permutations
 from pathlib import Path
+from unittest.mock import patch
 
-from campaign_tool.records import golive_ledger, golive_next
+from campaign_tool.records import golive_catalog, golive_ledger, golive_next
 
 
 NOW = datetime(2026, 1, 20, tzinfo=timezone.utc)
+FUTURE = "2026-03-01T00:00:00Z"
 
 
 def receipt(stage, kind, *, stamp="2026-01-19T00:00:00Z", engine="a", result="pass"):
     return dict(schema="records-golive-evidence-v1", stage=stage, kind=kind, result=result,
                 recorded_at=stamp, engine=engine * 40, actor="operator", codes=[],
                 source=dict(schema="synthetic-v1", sha256="c" * 64, name="synthetic.json"))
+
+
+# One synthetic case per reason string the ledger can emit: (reason, stage, evidence).
+_R, _G = receipt("18", "rehearsal"), receipt("18", "gate")
+REASON_CASES = (
+    ("REHEARSAL_MISSING", "18", []),
+    ("REHEARSAL_FAIL", "18", [receipt("18", "rehearsal", result="fail")]),
+    ("STALE", "18", [receipt("18", "rehearsal", stamp="2026-01-05T00:00:00Z")]),
+    ("ENGINE_CHANGED", "18", [_R, receipt("1", "live", engine="b")]),
+    ("FUTURE_DATED", "18", [receipt("18", "rehearsal", stamp=FUTURE)]),
+    ("FUTURE_DATED", "18", [_R, receipt("18", "gate", stamp=FUTURE)]),
+    ("FUTURE_DATED", "1", [receipt("1", "live", stamp=FUTURE)]),
+    ("GATE_MISSING", "18", [_R]),
+    ("GATE_FAIL", "18", [_R, receipt("18", "gate", result="fail")]),
+    ("LIVE_MISSING", "18", [_R, _G]),
+    ("LIVE_FAILED", "18", [_R, _G, receipt("18", "live", result="fail")]),
+    ("AGGREGATE_ONLY", "9", [receipt("9", "rehearsal")]),
+    ("NOT_POSITIVE", "8", [receipt("8", "rehearsal")]),
+)
 
 
 class PlanTests(unittest.TestCase):
@@ -48,6 +72,36 @@ class PlanTests(unittest.TestCase):
             other = [r for r in rows if r not in group]
             for shuffled in permutations(group):
                 self.assertEqual(golive_next.plan([*shuffled, *other]), expected)
+
+    def test_future_c5_every_ledger_reason_has_plan_and_text(self):
+        """Future C5: Each reason the ledger can emit plans and has plain text, so none raises KeyError."""
+        # A new ledger reason without _REASON_TEXT passes plan() and then breaks the text view.
+        emitted = set()
+        for reason, stage, evidence in REASON_CASES:
+            with self.subTest(reason=reason, stage=stage):
+                rows = [r for r in golive_ledger.build([], evidence, NOW) if r["stage"] == stage]
+                (item,) = golive_next.plan(rows)
+                self.assertEqual(item["reason"], reason)
+                self.assertIn(reason, golive_next._REASON_TEXT)
+                emitted.add(reason)
+        source = Path(golive_ledger.__file__).read_text(encoding="utf-8")
+        literals = set(re.findall(r'reason="([A-Z_]+)"', source))
+        # Every literal the ledger source can emit has a case above, and no text entry is dead.
+        self.assertEqual(literals - emitted, set())
+        self.assertEqual(set(golive_next._REASON_TEXT), emitted)
+        self.assertEqual(golive_next._REASON_TEXT["FUTURE_DATED"], "the evidence is dated in the future")
+
+    def test_future_c5_future_dated_stage_18_plans_the_first_missing_column(self):
+        """Future C5: The reproduced stage-18 case asks for a new rehearsal, not the live step."""
+        # Before the fix the ledger said GATED/pass and this plan asked for live proof.
+        evidence = [receipt("18", "rehearsal", stamp=FUTURE), receipt("18", "gate", stamp=FUTURE)]
+        rows = [r for r in golive_ledger.build([], evidence, NOW) if r["stage"] == "18"]
+        self.assertEqual(golive_next.plan(rows),
+                         [dict(stage="18", action="rehearse", owner="operator", reason="FUTURE_DATED")])
+        control = [receipt("18", "rehearsal"), receipt("18", "gate")]
+        rows = [r for r in golive_ledger.build([], control, NOW) if r["stage"] == "18"]
+        self.assertEqual(golive_next.plan(rows),
+                         [dict(stage="18", action="go live", owner="operator", reason="LIVE_MISSING")])
 
     def test_c1_only_first_gap_counts_and_live_always_drops_out(self):
         """C1: LIVE wins even with gaps; failed, stale and wrong-engine receipts do not."""
@@ -97,6 +151,33 @@ class CliTests(unittest.TestCase):
                               "--reports", str(self.reports), "--evidence", str(self.evidence), *args],
                              capture_output=True, text=True, check=False)
         return run.returncode, run.stdout, run.stderr
+
+    def test_future_c5_every_reason_renders_as_plain_text(self):
+        """Future C5: The numbered text view prints each emitted reason's text without KeyError."""
+        for reason, stage, evidence in REASON_CASES:
+            with self.subTest(reason=reason, stage=stage):
+                rows = [r for r in golive_ledger.build([], evidence, NOW) if r["stage"] == stage]
+                out = io.StringIO()
+                with patch.object(golive_next.golive_ledger, "build", return_value=rows), redirect_stdout(out):
+                    code = golive_next.main(["--reports", str(self.reports), "--evidence", str(self.evidence)])
+                self.assertEqual(code, 0)
+                label = golive_catalog.STAGES[stage].label
+                self.assertRegex(out.getvalue(), rf"^1\. \w[\w-]*: .+ for stage {stage} \({re.escape(label)}\) — "
+                                                 rf"{re.escape(golive_next._REASON_TEXT[reason])}\.\n$")
+
+    def test_future_c5_future_dated_evidence_on_disk_prints_plain_text(self):
+        """Future C5: A real future-dated receipt gives the plain sentence through the actual CLI."""
+        # The CLI reads the real clock, so use a year no clock reaches.
+        stamp = "2999-01-01T00:00:00Z"
+        path = self.evidence / "29990101T000000Z-18-rehearsal-cccccccc.json"
+        path.touch(mode=0o600)
+        path.write_text(json.dumps(receipt("18", "rehearsal", stamp=stamp)), encoding="utf-8")
+        self.assertEqual(self.invoke("--stage", "18"), (0,
+            "1. operator: Rehearse offline for stage 18 (Timers + monitoring) — the evidence is dated in the future.\n",
+            ""))
+        code, out, err = self.invoke("--stage", "18", "--json")
+        self.assertEqual((code, json.loads(out), err), (0, [
+            dict(stage="18", action="rehearse", owner="operator", reason="FUTURE_DATED")], ""))
 
     def test_c2_numbered_plain_text_and_exact_owner_filter(self):
         """C2: Number the filtered list from one and keep human labels intact."""
