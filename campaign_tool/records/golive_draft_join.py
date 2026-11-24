@@ -2,7 +2,9 @@
 
 ``python -m campaign_tool.records.golive_draft_join --export-root DIR --name EXPORT --queue-id ID --revision N
 [--max-age-hours H] [--json]`` verifies the named export with ``Pinner.historical``, reads the manifest bytes once and
-prints their SHA-256 with every result, so a freshness check and a signoff cite the same manifest. A nonzero placement
+prints their SHA-256 with every result, so a freshness check and a signoff cite the same manifest. The queue and mail-draft
+bytes parsed for the join are hashed against that same manifest, so a file swapped only while being read is refused.
+A nonzero placement
 count is not provenance and a link in the review page does not name a reply: the pair must be a queue row of a reply
 kind AND have a mail-draft row in the Drafts mailbox (placed / found_existing) in that same export.
 
@@ -45,6 +47,14 @@ def _manifest_bytes(pin):
     if raw is None:
         raise Unverified("export_manifest_invalid")
     return raw
+
+
+def _sealed_files(raw):
+    """The manifest's ``files`` map (relative path -> sha256) from the exact manifest bytes this run cites."""
+    files = aq._strict_load(raw, "export_manifest_invalid").get("files")
+    if not (isinstance(files, dict) and all(isinstance(k, str) and isinstance(v, str) for k, v in files.items())):
+        raise Unverified("export_manifest_invalid")
+    return files
 
 
 def _rows(rows, id_key):
@@ -95,10 +105,10 @@ def check(export_root, name, queue_id, revision, max_age_hours=DEFAULT_MAX_AGE_H
     try:
         pin = cs.Pinner(export_root).historical(name)
         raw = _manifest_bytes(pin)
-        source = cs.SnapshotSource(pin)
+        source = cs.SnapshotSource(pin, expected=_sealed_files(raw))  # parsed bytes must hash to the cited manifest
         queue = _rows(source.queue_rows(), "id")
         drafts = _rows(source.mail_drafts(), "queue_id")
-        again = cs.Pinner(export_root).historical(name)  # a swap or edit while we read is refused, not averaged
+        again = cs.Pinner(export_root).historical(name)  # a swap or edit after we read is refused, not averaged
         if again != pin or _manifest_bytes(again) != raw:
             raise Unverified("export_changed")
         taken = _exported_at(pin)

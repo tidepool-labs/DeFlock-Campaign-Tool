@@ -150,6 +150,29 @@ class Binding(Join):
         with mock.patch.object(gdj, "_manifest_bytes", swap):
             self.assertIn("export_changed", self.refused(name, "ok", 1, "EXPORT_UNVERIFIED", status=2))
 
+    def test_c1_queue_or_drafts_swapped_only_while_read_is_refused(self):
+        # Protects C1. Bug: the pin is checked before and after the read, so a file swapped for the read and restored
+        # afterwards is joined unseen (a placed first-request read as a reply-extension passed with the old digest).
+        name = self.make_export()
+        model = self.root / "exports" / name / "console-model"
+        for fname, method, old, new in (("queue.json", "queue_rows", b'"first-request"', b'"reply-extension"'),
+                                         ("mail-drafts.json", "mail_drafts", b'"placed"', b'"found_existing"')):
+            path, real = model / fname, getattr(gdj.cs.SnapshotSource, method)
+            original = path.read_bytes()
+            self.assertIn(old, original)
+
+            def swap(source, _real=real, _path=path, _original=original, _old=old, _new=new):
+                _path.chmod(0o600)
+                _path.write_bytes(_original.replace(_old, _new))
+                try:
+                    return _real(source)
+                finally:
+                    _path.write_bytes(_original)
+            with mock.patch.object(gdj.cs.SnapshotSource, method, swap):
+                self.assertIn("export_hash_mismatch", self.refused(name, "first", 0, "EXPORT_UNVERIFIED", status=2))
+            self.assertEqual(path.read_bytes(), original)
+            self.refused(name, "first", 0, "REPLY_NOT_REPLY_KIND")  # untouched export keeps its honest refusal
+
 
 class NoEcho(Join):
     def test_c4_output_has_only_ids_kind_state_and_digests_and_changes_nothing(self):

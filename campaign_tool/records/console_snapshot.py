@@ -218,8 +218,10 @@ class SnapshotSource:
     """The same methods over <pin.path>/console-model/*.json; one instance serves one request."""
     snapshot = True
 
-    def __init__(self, pin):
-        self.pin, self._docs = pin, {}
+    def __init__(self, pin, expected=None):
+        """``expected``: optional manifest ``files`` map; when given, every model file read must hash to its entry
+        (the bytes parsed are the bytes checked) or the load is refused as ``export_hash_mismatch``."""
+        self.pin, self._docs, self.expected = pin, {}, expected
 
     def _load(self, name, schema=ce.MODEL_SCHEMA):
         """The parsed ok model file, or the code it is unavailable with."""
@@ -230,6 +232,8 @@ class SnapshotSource:
             raw = None if model is None else _read_file(model, name, MAX_MODEL)
             if raw is None:
                 return "console_model_missing"
+            if self.expected is not None and self.expected.get(ce.MODEL_DIR + "/" + name) != hashlib.sha256(raw).hexdigest():
+                return "export_hash_mismatch"
             doc = aq._strict_load(raw, "console_model_invalid")
         except (aq.ApprovalQueueError, ce.ExportError, SnapshotError, OSError):
             return "console_model_invalid"
