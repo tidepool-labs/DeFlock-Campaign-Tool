@@ -181,7 +181,10 @@ def latest(records, stage, kind):
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="golive_evidence")
     parser.add_argument("--dir", required=True)
-    parser.add_argument("--json", action="store_true")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--json", action="store_true")
+    output.add_argument("--source-prefix", action="store_true",
+                        help="append the first 12 hex characters of the stored source digest to each text row")
     args = parser.parse_args(argv)
     try:
         records = load(args.dir)
@@ -192,8 +195,11 @@ def main(argv=None):
         print(json.dumps(records))
     else:
         for record in records:
-            print(record["stage"], record["kind"], record["result"], record["recorded_at"],
-                  json.dumps(record["source"]["schema"]), ",".join(record["codes"]), sep="\t")
+            columns = [record["stage"], record["kind"], record["result"], record["recorded_at"],
+                       json.dumps(record["source"]["schema"]), ",".join(record["codes"])]
+            if args.source_prefix:
+                columns.append(record["source"]["sha256"][:12])
+            print(*columns, sep="\t")
     return 0
 
 

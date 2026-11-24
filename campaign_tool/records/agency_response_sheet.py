@@ -1,9 +1,10 @@
 """One phone-sized markdown response sheet per agency (DFAGB-08).
 
 Read-only projection of an existing run's response-items.json through item_tiers.
-Prints only identifiers, tier, raw rating token, display state and diagnostic flags;
-never ask text, response text, evidence or exemption wording. A machine reading,
-review required; not a legal finding. Nothing is sent, published or approved.
+Prints only identifiers, tier, recognized rating tokens or fixed markers, display
+state and diagnostic flags; never ask text, response text, evidence or exemption
+wording. A machine reading, review required; not a legal finding. Nothing is sent,
+published or approved.
 """
 import argparse
 import contextlib
@@ -36,7 +37,9 @@ def _raw(ask):
     value = ask["rating"]
     if value is None:
         return "null"
-    return value if isinstance(value, str) else "invalid:" + type(value).__name__
+    if not isinstance(value, str):
+        return "invalid:" + type(value).__name__
+    return value if value in item_tiers.STATES else "unrecognized"
 
 
 def _state(ask):

@@ -80,7 +80,7 @@ class SheetTests(unittest.TestCase):
     def test_null_absent_unknown_unrated(self):
         values = [None, UNSET, "banana", ["x"], 7]
         out = self.one([ask(i + 1, v) for i, v in enumerate(values)])
-        for i, raw in enumerate(["null", "absent", "banana", "invalid:list", "invalid:int"]):
+        for i, raw in enumerate(["null", "absent", "unrecognized", "invalid:list", "invalid:int"]):
             self.assertIn("- ask %d | tier 1 | raw %s | not rated |" % (i + 1, raw), out)
         for word in ("| produced", "| withheld", "| not addressed"):
             self.assertNotIn(word, out)
@@ -105,10 +105,15 @@ class SheetTests(unittest.TestCase):
                 self.out.unlink()
 
     def test_no_text_leaks(self):
-        out = self.one([ask(1, "exemption_cited", ["free text " + CANARY, "text_unreviewed"])], flags=[CANARY])
+        # A malformed producer rating must not add a line of prose to the phone sheet.
+        out = self.one([ask(1, "exemption_cited", ["free text " + CANARY, "text_unreviewed"]),
+                        ask(2, "unfamiliar\n" + CANARY)], flags=[CANARY])
         self.assertNotIn(CANARY, out)
         self.assertNotIn("6254", out)
-        self.assertIn("flags: other_flag, text_unreviewed", out)
+        self.assertIn("- ask 1 | tier 1 | raw exemption_cited | exemption cited | flags: other_flag, text_unreviewed", out)
+        self.assertIn("- ask 2 | tier 1 | raw unrecognized | not rated | flags: none", out)
+        self.assertIn("machine reading, review required; not a legal finding", out)
+        self.assertTrue(out.endswith("unclear and text_unreviewed asks need a person to read the response\n"))
 
     def test_inputs_unchanged_and_out_guards(self):
         self.one([ask(1, "answered")])

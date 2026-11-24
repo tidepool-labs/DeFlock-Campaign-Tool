@@ -32,18 +32,37 @@ def _report_proofs(reports):
     return {row["stage"]: row["last_proven_run"] for row in rows}
 
 
-def _check(required, record, newest_live, cutoff=None):
+def _when(stamp):
+    return datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+
+
+def _is_future(record, now):
+    return record is not None and _when(record["recorded_at"]) > now
+
+
+def _future(record):
+    # Neither proof nor failure: the newest record is untrustworthy, so no older one stands in for it.
+    return dict(status="missing", recorded_at=record["recorded_at"], reason="FUTURE_DATED")
+
+
+def _check(required, record, newest_live, now, cutoff=None, *, null_engine_ok=False):
     if not required or record is None:
         return dict(status="missing" if required else "not needed", recorded_at=None)
     stamp = record["recorded_at"]
-    if cutoff is not None and datetime.fromisoformat(stamp.replace("Z", "+00:00")) < cutoff:
+    if _is_future(record, now):
+        return _future(record)
+    if cutoff is not None and _when(stamp) < cutoff:
         return dict(status="missing", recorded_at=stamp, reason="STALE")
-    if newest_live is not None and record["engine"] != newest_live["engine"]:
+    # A recorded gate GO carries no engine (golive_record.from_gate); it is not an engine mismatch.
+    unattributed = null_engine_ok and record["engine"] is None
+    if newest_live is not None and not unattributed and record["engine"] != newest_live["engine"]:
         return dict(status="missing", recorded_at=stamp, reason="ENGINE_CHANGED")
     return dict(status=record["result"], recorded_at=stamp)
 
 
-def _live(stage, rule, record, run_id):
+def _live(stage, rule, record, run_id, now):
+    if _is_future(record, now):
+        return _future(record)
     if record is not None and record["result"] == "pass":
         return dict(status="evidence", recorded_at=record["recorded_at"])
     source = golive_stages.STAGES[stage].source if rule.live_source == "run_report" else None
@@ -65,6 +84,10 @@ def build(reports, evidence, now):
     the first required column without positive evidence, even if a later
     column already has it. Freshness is relative to the newest live record
     across the ledger; absence of a live record does not establish an engine.
+    A gate record with a null engine (as written by ``golive_record.from_gate``)
+    is not compared with that engine; rehearsals and gates naming an engine are.
+    A record dated after ``now`` is FUTURE_DATED: missing, never a pass or a
+    failure, never replaced by an older record, and never the newest live engine.
     """
     if now.utcoffset() is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -76,21 +99,24 @@ def build(reports, evidence, now):
                        and row["source"]["schema"] != "records-e2e-proof-v1")
     live_records = {stage: golive_evidence.latest(evidence, stage, "live")
                     for stage in golive_catalog.STAGES}
+    settled = tuple(row for row in evidence if not _is_future(row, now))
+    settled_live = (golive_evidence.latest(settled, stage, "live") for stage in golive_catalog.STAGES)
     # Match the evidence reader's timestamp/filename ordering across stages.
-    newest_live = max((record for record in live_records.values() if record is not None),
+    newest_live = max((record for record in settled_live if record is not None),
                       key=lambda record: (record["recorded_at"], record["stage"],
                                           record["source"]["sha256"][:8]), default=None)
     rows = []
     for stage, rule in golive_catalog.STAGES.items():
         rehearsed = _check(rule.needs_rehearsal, golive_evidence.latest(rehearsals, stage, "rehearsal"),
-                           newest_live, cutoff)
-        gate = _check(rule.needs_gate, golive_evidence.latest(evidence, stage, "gate"), newest_live)
+                           newest_live, now, cutoff)
+        gate = _check(rule.needs_gate, golive_evidence.latest(evidence, stage, "gate"), newest_live, now,
+                      null_engine_ok=True)
         record = live_records[stage]
-        live = _live(stage, rule, record, proofs.get(stage))
+        live = _live(stage, rule, record, proofs.get(stage), now)
         if live["status"] != "missing":
             state = "LIVE"
         elif ("fail" in (rehearsed["status"], gate["status"])
-              or record is not None and record["result"] == "fail"):
+              or record is not None and record["result"] == "fail" and not _is_future(record, now)):
             state = "BLOCKED"
         elif gate["status"] == "pass":
             state = "GATED"

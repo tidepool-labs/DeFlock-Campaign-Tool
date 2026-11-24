@@ -1,7 +1,7 @@
 """One plain sentence per stage, needs-G and outcome code the run engine emits (DFCON17-03).
 
-A fixed table: nothing here is read from a run report. ``explain`` is shared by the run detail page and any other
-console page that shows a code. A code with no entry is shown as itself with "no description yet", never hidden.
+The descriptions are fixed text. ``explain`` is shared by the run detail page and any other console page that shows
+a code. Safe unmapped codes keep their token with a notification-specific or generic fallback.
 """
 import re
 
@@ -166,9 +166,11 @@ CODES = {
 
 
 def explain(code):
-    """The sentence for a known code; otherwise the code with "no description yet" (an unsafe token is not echoed)."""
+    """The fixed sentence or a safe code with its fallback; unsafe tokens are not echoed."""
     if isinstance(code, str) and code in CODES:
         return CODES[code]
     if isinstance(code, str) and CODE_RE.fullmatch(code):
+        if code.startswith("NOTIFY_"):
+            return "%s: %s" % (code, CODES["NOTIFY_FAILED"])
         return "%s: %s" % (code, NO_DESCRIPTION)
     return "Unrecognised code: %s" % NO_DESCRIPTION

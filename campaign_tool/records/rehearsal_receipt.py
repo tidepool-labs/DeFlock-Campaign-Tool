@@ -101,9 +101,13 @@ def _validate_shape(receipt):
         raise ValueError("invalid rehearsal receipt schema")
     if not _matches(r"[A-Za-z_][A-Za-z_0-9]*", receipt["module"]):
         raise ValueError("invalid rehearsal module basename")
-    for key in ("stages", "manual_steps"):
-        if not _list_of(receipt[key], lambda item: isinstance(item, str)):
-            raise ValueError("invalid rehearsal string list")
+    stages = receipt["stages"]
+    if not stages or not _list_of(stages, lambda item: isinstance(item, str) and item.strip()):
+        raise ValueError("rehearsal stages must be a nonempty list of nonblank strings")
+    if len(set(stages)) != len(stages):
+        raise ValueError("duplicate rehearsal stage identity")
+    if not _list_of(receipt["manual_steps"], lambda item: isinstance(item, str)):
+        raise ValueError("invalid rehearsal string list")
     if not _list_of(receipt["codes"], _code):
         raise ValueError("invalid rehearsal driver codes")
     if _timestamp(receipt["finished_at"]) < _timestamp(receipt["started_at"]):
@@ -112,10 +116,15 @@ def _validate_shape(receipt):
         raise ValueError("invalid rehearsal engine identity")
     if not isinstance(receipt["steps"], list):
         raise ValueError("invalid rehearsal steps")
+    step_names = set()
     for step in receipt["steps"]:
         if (not _keys(step, {"name", "code", "outputs"}) or not isinstance(step["name"], str)
-                or not _code(step["code"]) or not isinstance(step["outputs"], list)):
+                or not step["name"].strip() or not _code(step["code"])
+                or not isinstance(step["outputs"], list)):
             raise ValueError("invalid rehearsal step")
+        if step["name"] in step_names:
+            raise ValueError("duplicate rehearsal step name")
+        step_names.add(step["name"])
         for output in step["outputs"]:
             if (not _keys(output, {"path", "sha256"})
                     or not _matches(r"[0-9a-f]{64}", output["sha256"])):

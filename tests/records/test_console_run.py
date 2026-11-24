@@ -11,6 +11,7 @@ from pathlib import Path
 
 from campaign_tool.records import admin_panel as ap, console_codes, console_page_run as page, mail_adoption, mail_resolution_plan, run_stages
 from campaign_tool.records.intake import mail_delta
+from campaign_tool.records.run_orchestrator import notify_reason_code
 from tests.records.test_console_runs import fetch
 from tests.records.test_pipeline_health import report_for
 
@@ -21,7 +22,8 @@ IDS = [report_for(BASE + timedelta(hours=i), seq=i)["run_id"] for i in range(3)]
 
 
 def make(i, kind):
-    data = report_for(BASE + timedelta(hours=i), "fail" if kind == "fail" else "ok", seq=i)
+    data = report_for(BASE + timedelta(hours=i), "fail" if kind == "fail" else "ok", seq=i,
+                      notify_failed=kind in ("notify-unmapped", "notify-failed"))
     data["mode"] = "manual"
     if kind in ("warn", "unmapped"):
         code = "ZZZ_NEW_STAGE_CODE" if kind == "unmapped" else "EXTRACT_BACKLOG_DEFERRED"
@@ -33,6 +35,8 @@ def make(i, kind):
         data.update(overall_status="warn", review_required_count=1)
     if kind == "pending":
         data["stages"][7].update(status="skipped", error_code="NOTIFY_PENDING", duration_seconds=None)
+    if kind == "notify-unmapped":
+        data["stages"][7]["error_code"] = notify_reason_code("fixture transport error")
     if kind in GAPS:
         gapped(data, GAPS[kind])
     if kind == "oldgaps":  # an older engine: the aggregate needs-G items exist but no breakdown was recorded
@@ -190,15 +194,48 @@ class RunDetail(unittest.TestCase):
                 target = re.findall(rf'<section id="{fragment}"><h2>([^<]*)</h2><p>([^<]*)</p>', html)
                 self.assertEqual(target, [(label, explanation.split(" | ")[1])])  # jumped to the wrong explanation
 
-    # Owner: unmapped codes. Fails if a code missing from the table is dropped, echoed as a bare code, or an unsafe token is echoed.
-    def test_unmapped_code_is_shown_with_no_description_yet(self):
-        self.put("clean", "unmapped")
-        got = self.lines(1)
+    # A status-only shortcut list strands the reader at the top of the page when an OK stage needs action.
+    def test_affected_stage_links_include_action_and_blocking_on_ok_stages(self):
+        data = make(0, "warn")  # extract already warns and has an action item
+        data["needs_g"] += [
+            {"code": "GATE_REVIEW_REQUIRED", "stage": "digest_gates", "severity": "blocking", "count": 1},
+            {"code": "PORTAL_RETRY_EXHAUSTED", "stage": "portal", "severity": "info", "count": 1},
+            {"code": "ADOPTION_CODED_GAPS", "stage": "adoption", "severity": "action", "count": 2},
+            {"code": "ADOPTION_UNACCEPTED_GAP", "stage": "adoption", "severity": "action", "count": 1},
+        ]
+        (self.target / "reports" / (IDS[0] + ".json")).write_text(json.dumps(data))
+        html = self.detail(0)
+        nav = SHORTCUTS.findall(html)
+        self.assertEqual(len(nav), 1)
+        expected = [("stage-3", "3. adoption: ok"), ("stage-5", "5. extract: warn"), ("stage-6", "6. digest_gates: ok")]
+        self.assertEqual(re.findall(r'<a href="#([^"]*)">([^<]*)</a>', nav[0]), expected)
+        for fragment, label in expected:
+            with self.subTest(stage=label):
+                self.assertEqual(html.count(f' id="{fragment}"'), 1)
+                section = html.split(f'<section id="{fragment}">', 1)[1].split("</section>", 1)[0]
+                self.assertTrue(section.startswith(f"<h2>{label}</h2>"))
+                self.assertIn("Needs attention:", section)
+
+        # Validation rejects zero on disk; exercise the render boundary directly for the count guard.
+        clean = make(0, "clean")
+        clean["needs_g"] = [{"code": "AWAITING_OCR", "stage": "extract", "severity": "action", "count": 0}]
+        self.assertIsNone(SHORTCUTS.search(page.render([clean], 0)))
+
+    # Owner: unmapped codes. Fails if an unmapped notification reason falls through to generic copy, the family fallback
+    # shadows a fixed entry or changes other unknown codes, or a notification prefix bypasses unsafe-token refusal.
+    def test_unmapped_codes_keep_their_token_and_use_the_appropriate_fallback(self):
+        self.put("notify-unmapped", "unmapped", "notify-failed")
+        unmapped_notify = "NOTIFY_FIXTURE_TRANSPORT_ERROR: The summary notification could not be sent."
+        known_notify = "The summary notification could not be sent. (NOTIFY_FAILED)"
+        for i, explanation in ((0, unmapped_notify), (2, known_notify)):
+            with self.subTest(run=i):
+                self.assertEqual(self.lines(i)[8], f"8. notify: fail | {explanation} | {ZERO} | Not sent: {explanation}")
         self.assertIn("5. extract: warn | ZZZ_NEW_STAGE_CODE: no description yet | Counts: input 3, output 2, failed 0, skipped 1. | "
                       "Needs attention: | A document is extracted but its original is not preserved yet. (EXTRACT_PRESERVE_PENDING): "
-                      "for information, 1 | ZZZ_NEW_GAP_CODE: no description yet: needs action, 2", got)
-        self.assertEqual(console_codes.explain("<script>x</script>"), "Unrecognised code: no description yet")
-        self.assertEqual(console_codes.explain(None), "Unrecognised code: no description yet")
+                      "for information, 1 | ZZZ_NEW_GAP_CODE: no description yet: needs action, 2", self.lines(1))
+        for unsafe in ("<script>x</script>", "NOTIFY_<script>x</script>", None):
+            with self.subTest(unsafe=unsafe):
+                self.assertEqual(console_codes.explain(unsafe), "Unrecognised code: no description yet")
 
     def gap_page(self, kind, overall="ok", review=0):
         """The page lines of the only run, after proving everything outside the delta and adoption stages is the clean golden."""
