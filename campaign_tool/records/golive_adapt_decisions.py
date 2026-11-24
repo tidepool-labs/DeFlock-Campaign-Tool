@@ -32,10 +32,11 @@ def _applied_ids(manifest):
     for ident, entry in outcomes.items():
         if not isinstance(entry, dict) or not isinstance(entry.get("outcome"), str):
             return None
-        # A refusal row carries {outcome, refusal}; only the bare APPLIED shape counts as applied.
+        # The export writes exactly two shapes: {outcome: APPLIED} or {outcome: CODE, refusal: CODE} (CODE != APPLIED).
+        # Anything else, including a refusal row missing or altering its refusal code, is malformed.
         if entry == {"outcome": APPLIED}:
             done.add(ident)
-        elif entry["outcome"] == APPLIED:
+        elif entry["outcome"] in (APPLIED, "") or entry != {"outcome": entry["outcome"], "refusal": entry["outcome"]}:
             return None
     return set(ids), done
 

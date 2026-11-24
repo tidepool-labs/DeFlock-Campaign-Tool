@@ -131,8 +131,21 @@ class DecisionsEvidenceTests(unittest.TestCase):
         def duplicate_listed_id(value):
             value["applied_journal_ids"] = [ID_A, ID_A]
 
+        def refusal_missing_its_code(value):  # a non-APPLIED entry with no refusal field next to a valid APPLIED one
+            value["apply_outcomes"][ID_B] = {"outcome": STALE}
+
+        def refusal_code_differs_from_outcome(value):
+            value["apply_outcomes"][ID_B] = {"outcome": STALE, "refusal": "SIGNATURE_REFUSED"}
+
+        def refusal_with_extra_field(value):
+            value["apply_outcomes"][ID_B] = {"outcome": STALE, "refusal": STALE, "note": "x"}
+
+        def refusal_code_not_a_string(value):
+            value["apply_outcomes"][ID_B] = {"outcome": STALE, "refusal": 7}
+
         for edit in (list_refused_id, drop_listed_id, refused_outcome_with_applied_word, outcomes_not_a_mapping,
-                     duplicate_listed_id):
+                     duplicate_listed_id, refusal_missing_its_code, refusal_code_differs_from_outcome,
+                     refusal_with_extra_field, refusal_code_not_a_string):
             with self.subTest(edit=edit.__name__):
                 self.make([(ID_A, APPLIED), (ID_B, STALE)], edit=edit)
                 row = self.row()
