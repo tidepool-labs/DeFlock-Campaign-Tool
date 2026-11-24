@@ -27,6 +27,9 @@ def _record(register, now, raw, name):
         value = row.get("submitted_at")
         if value is None:
             continue
+        issues = row.get("issues")
+        if isinstance(issues, list) and "source_conflict:submitted_at" in issues:
+            raise ValueError("invalid submission date")
         if not isinstance(value, str):
             raise ValueError("invalid submission date")
         try:
