@@ -59,7 +59,10 @@ def _observed(value, now):
         raise _BadInput(_BAD) from None
     if stamp.utcoffset() is None or not isinstance(now, datetime) or now.utcoffset() is None:
         raise _BadInput(_BAD)
-    stamp = stamp.astimezone(timezone.utc)
+    try:
+        stamp = stamp.astimezone(timezone.utc)
+    except OverflowError:  # offset pushes the instant past year 1 or 9999
+        raise _BadInput(_BAD) from None
     if stamp > now or now - stamp > MAX_AGE:
         raise _BadInput(_BAD)
     return stamp.replace(microsecond=0)

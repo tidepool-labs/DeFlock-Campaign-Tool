@@ -120,7 +120,9 @@ class PortalRowTests(unittest.TestCase):
             with self.subTest(status=str(bad)[:30]):
                 self.refused(bad)
         for observed in ("2026-11-24T11:30:00", "not a time", None, "2026-11-24T12:00:01Z",
-                         "2026-11-23T11:59:59Z"):
+                         "2026-11-23T11:59:59Z",
+                         # UTC conversion overflows at both calendar ends; must stay a fixed refusal.
+                         "0001-01-01T00:00:00+01:00", "9999-12-31T23:59:59-01:00"):
             with self.subTest(observed=observed):
                 self.refused(good, observed)
         self.assertEqual(adapter.records(good, "2026-11-23T12:00:00Z", NOW)["result"], "pass")
@@ -200,6 +202,8 @@ class PortalCLITests(unittest.TestCase):
         old, _ = self.save({"items": [], "ledger_pending": 0}, "old.json")
         cases = [(sandbox,), (oversize,), (link,), (dup,), (invalid,), (self.tmp,), (self.tmp / "missing-secret-name",),
                  (sandbox, "--bogus-secret-arg"), (old, "--observed-at", "2020-01-01T00:00:00Z"),
+                 (old, "--observed-at", "0001-01-01T00:00:00+01:00"),
+                 (old, "--observed-at", "9999-12-31T23:59:59-01:00"),
                  (old, "--observed-at", (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat())]
         for case in cases:
             with self.subTest(case=str(case[0].name)):
