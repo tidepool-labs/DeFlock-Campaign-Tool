@@ -21,7 +21,7 @@ def _read(directory, name, limit):
         os.close(fd)
 
 
-def _manifest(root):
+def _manifest(root, now):
     try:
         # Single request pin, no cached fallback or pin diagnostic. The export
         # publisher makes generation directories immutable before switching current.
@@ -30,7 +30,9 @@ def _manifest(root):
         if raw is not None:
             value = aq._strict_load(raw, "export_manifest_invalid")
             if value["schema"] == ce.SCHEMA and value["run_id"] == pin.run_id:
-                return raw, value
+                exported_at = datetime.fromisoformat(value["exported_at"])
+                if exported_at.utcoffset() is not None and exported_at <= now:
+                    return raw, value
     except (snap.SnapshotError, ce.ExportError, aq.ApprovalQueueError, OSError, ValueError, KeyError, TypeError):
         pass
     return None, {}
@@ -57,7 +59,7 @@ def records(export_root, run_report, now):
     report_bytes, latest = _report(path)
     if latest is not None and health._future(latest, now):
         latest = None  # assess() does not present future reports to the check
-    raw, manifest = _manifest(export_root)
+    raw, manifest = _manifest(export_root, now)
     if latest is None:
         reason = "console_export_no_run"
     elif raw is None:
