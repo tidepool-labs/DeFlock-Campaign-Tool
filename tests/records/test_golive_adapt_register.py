@@ -44,6 +44,25 @@ class RegisterEvidenceTest(unittest.TestCase):
         doc = producer.build_register(data, as_of="2030-01-12")
         self.assertEqual(adapter.records(doc, NOW), expected(doc, "pass", []))
 
+        tracker = {"agency": "Synthetic Agency", "request_id": "SYN-1",
+                   "source": {"table": "tracker", "id": "row-1"}}
+        unrelated = producer.build_register(data, [{**tracker, "status": "closed"}], as_of="2030-01-12")
+        self.assertIn("source_conflict:status", unrelated["requests"][0]["issues"])
+        self.assertEqual(adapter.records(unrelated, NOW), expected(unrelated, "pass", []))
+
+        withheld = producer.build_register(data, [{**tracker, "submitted_at": "2030-01-09"}],
+                                           as_of="2030-01-12")
+        row = withheld["requests"][0]
+        self.assertIn("source_conflict:submitted_at", row["issues"])
+        self.assertIsNone(row["submitted_at"])
+        self.assertEqual(adapter.records(withheld, NOW), expected(withheld, "fail", ["REGISTER_NO_SENT"]))
+
+        # A retained export might restore the ledger's date but keep the conflict issue.
+        # Counting that date would turn a withheld send for the same request into a pass.
+        contradictory = {**withheld, "requests": [{**row, "submitted_at": doc["requests"][0]["submitted_at"]}]}
+        with self.assertRaises(ValueError):
+            adapter.records(contradictory, NOW)
+
     def test_c1_no_admitted_submission(self):
         """C1: an empty register, a receipt and a legacy proxy cannot prove send."""
         for doc in (register(), register({"submitted_at": None, "request_date": "2030-01-10"}),
