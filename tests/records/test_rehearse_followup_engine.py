@@ -22,6 +22,7 @@ OUTPUTS = {
     "seed_inputs": ["project/followup-settings.json", f"{RUN}/CURRENT-REQUEST-REGISTER.json",
                     f"{RUN}/outcomes/timeline.json", f"{RUN}/outcomes/response-items.json",
                     f"{RUN}/outcomes/received-items.json"],
+    "preview": [],
     "draft": [JOURNAL], "queue_check": [JOURNAL], "rerun_idempotent": [JOURNAL],
 }
 
@@ -65,7 +66,9 @@ class RehearsalTests(unittest.TestCase):
             report = driver.run(self.sandbox)
         self.assertEqual(report, self.expected())
         project = self.sandbox / "project"
-        self.assertEqual(engine.call_args_list, [mock.call(project, "stage-15", apply=True)] * 2)
+        self.assertEqual(engine.call_args_list, [mock.call(project, "stage-15", apply=False),
+                                                 mock.call(project, "stage-15", apply=True),
+                                                 mock.call(project, "stage-15", apply=True)])
         self.assertEqual([(r["request_id"], r["handled_by"], r["planned_date"])
                           for r in followup_route.route_run(project, "stage-15")],
                          [("SYN-DUE", "engine", "2026-11-06"), ("SYN-WAITING", "none", None)])
@@ -75,7 +78,8 @@ class RehearsalTests(unittest.TestCase):
         event, = map(json.loads, (self.sandbox / JOURNAL).read_bytes().splitlines())
         self.assertEqual((event["event"], event["id"], event["revision"]), ("draft", draft["id"], 0))
         # Folded rows alone could hide an extra journal mutation on the second pass.
-        self.assertEqual(report["steps"][2]["outputs"], report["steps"][4]["outputs"])
+        outputs = {step["name"]: step["outputs"] for step in report["steps"]}
+        self.assertEqual(outputs["draft"], outputs["rerun_idempotent"])
         evidence = draft["evidence"]
         self.assertEqual((evidence["asks_for"], evidence["pattern"], evidence["vehicle"],
                           evidence["planned_send_date"], evidence["source"]),
@@ -99,10 +103,46 @@ class RehearsalTests(unittest.TestCase):
             report = driver.run(self.sandbox)
         self.assertEqual(report["codes"], ["FOLLOWUP_DRAFT_EVIDENCE_MISMATCH"])
         self.assertEqual(report, self.expected("queue_check", "FOLLOWUP_DRAFT_EVIDENCE_MISMATCH"))
-        engine.assert_called_once_with(self.sandbox / "project", "stage-15", apply=True)
+        project = self.sandbox / "project"
+        self.assertEqual(engine.call_args_list, [mock.call(project, "stage-15", apply=False),
+                                                 mock.call(project, "stage-15", apply=True)])
+
+    def test_c1_preview_stops_before_draft(self):
+        """C1: a healthy preview count must not conceal an actual journal append."""
+        real_engine = driver.followup_engine.run
+        real_seed = driver._seed_inputs
+
+        for starting_queue in ("absent", "empty"):
+            with self.subTest(starting_queue=starting_queue):
+                self.sandbox = self.root / starting_queue
+                self.sandbox.mkdir(mode=0o700)
+                journal = self.sandbox / JOURNAL
+
+                def seed(project):
+                    paths = real_seed(project)
+                    if starting_queue == "empty":
+                        journal.parent.mkdir(exist_ok=True)
+                        journal.touch(mode=0o600)
+                    return paths
+
+                def append_on_preview(project, run_id, *, apply):
+                    summary = real_engine(project, run_id, apply=apply)
+                    if not apply:
+                        self.assertEqual((summary["would_queue"], summary["queued"]), (1, 0))
+                        # Simulate an ungated append that leaves the preview counters alone.
+                        self.assertEqual(real_engine(project, run_id, apply=True)["queued"], 1)
+                    return summary
+
+                with mock.patch.object(driver, "_seed_inputs", side_effect=seed), \
+                        mock.patch.object(driver.followup_engine, "run", side_effect=append_on_preview) as engine:
+                    report = driver.run(self.sandbox)
+                self.assertEqual(report["codes"], ["FOLLOWUP_PREVIEW_QUEUE_CHANGED"])
+                self.assertEqual(report, self.expected("preview", "FOLLOWUP_PREVIEW_QUEUE_CHANGED"))
+                engine.assert_called_once_with(self.sandbox / "project", "stage-15", apply=False)
+                self.assertEqual(len(journal.read_bytes().splitlines()), 1)
 
     def test_c2_remove_due_case(self):
-        """C2: removing the due case must fail draft, even with valid waiting inputs."""
+        """C2: losing the only due case gives zero would-queue; never enter draft."""
         real_seed = driver._seed_inputs
 
         def seed(project):
@@ -115,16 +155,24 @@ class RehearsalTests(unittest.TestCase):
             return paths
 
         output = StringIO()
-        with mock.patch.object(driver, "_seed_inputs", side_effect=seed), redirect_stdout(output):
+        with mock.patch.object(driver, "_seed_inputs", side_effect=seed), \
+                mock.patch.object(driver.followup_engine, "run", wraps=driver.followup_engine.run) as engine, \
+                redirect_stdout(output):
             self.assertEqual(driver.main(["--sandbox", str(self.sandbox)]), 1)
-        self.assertEqual(json.loads(output.getvalue()), self.expected("draft", "FOLLOWUP_DRAFT_MISSING"))
+        self.assertEqual(json.loads(output.getvalue()), self.expected("preview", "FOLLOWUP_PREVIEW_COUNT"))
+        engine.assert_called_once_with(self.sandbox / "project", "stage-15", apply=False)
         self.assertEqual(approval_queue.load_queue(self.sandbox / "project"), [])
         self.assertFalse((self.sandbox / JOURNAL).exists())
 
     def test_c1_refuse_engine_count_regression(self):
         """C1: a candidate reporting two queued drafts cannot pass the draft step."""
         self.sandbox.mkdir(mode=0o700)
-        with mock.patch.object(driver.followup_engine, "run", return_value={"queued": 2}):
+        real_engine = driver.followup_engine.run
+
+        def wrong_draft_count(project, run_id, *, apply):
+            return {"queued": 2} if apply else real_engine(project, run_id, apply=False)
+
+        with mock.patch.object(driver.followup_engine, "run", side_effect=wrong_draft_count):
             self.assertEqual(driver.run(self.sandbox), self.expected("draft", "FOLLOWUP_DRAFT_COUNT"))
 
     def test_c1_refuse_extra_journal_event(self):
@@ -134,13 +182,14 @@ class RehearsalTests(unittest.TestCase):
 
         def edit_after_draft(project, *args, **kwargs):
             summary = real_engine(project, *args, **kwargs)
-            row, = approval_queue.load_queue(project)
-            approval_queue.edit(project, row["id"], "synthetic", "synthetic edit")
+            if summary["queued"]:
+                row, = approval_queue.load_queue(project)
+                approval_queue.edit(project, row["id"], "synthetic", "synthetic edit")
             return summary
 
         with mock.patch.object(driver.followup_engine, "run", side_effect=edit_after_draft) as engine:
             self.assertEqual(driver.run(self.sandbox), self.expected("queue_check", "FOLLOWUP_QUEUE_UNEXPECTED"))
-        self.assertEqual(engine.call_count, 1)
+        self.assertEqual(engine.call_count, 2)
 
     def test_c1_refuse_changed_journal_on_rerun(self):
         """C1: zero new drafts in the summary cannot conceal a rerun journal mutation."""
@@ -153,7 +202,7 @@ class RehearsalTests(unittest.TestCase):
             if summary["duplicate"]:
                 row, = approval_queue.load_queue(project)
                 approval_queue.reject(project, row["id"], "synthetic", "synthetic rejection")
-            else:
+            elif summary["queued"]:
                 previous_outputs.extend(self.expected()["steps"][:-1])
             return summary
 

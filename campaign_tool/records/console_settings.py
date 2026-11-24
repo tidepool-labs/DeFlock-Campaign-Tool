@@ -11,9 +11,14 @@ def _row(label, value):
 
 def render(project, send_config=None, drafts_config=None, source=None):
     source = source or console_snapshot.LiveSource(project)
-    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>'
-           '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
-               approval_anchor_status.from_source(source), approval_anchor_status.pinned(source)))]
+    intro = '<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>'
+    if isinstance(source, console_snapshot.SnapshotSource):
+        pin = source.pin
+        stamp = pin.exported_at
+        intro += '<p>Pinned export readings: run %s; export time: %s.</p>' % (
+            esc(pin.run_id), esc(stamp if stamp and stamp != 'unknown time' else 'unavailable'))
+    out = [intro + '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
+        approval_anchor_status.from_source(source), approval_anchor_status.pinned(source)))]
     config = None
     if send_config is None:
         out.append(_row('Send config', 'not given to the console'))
