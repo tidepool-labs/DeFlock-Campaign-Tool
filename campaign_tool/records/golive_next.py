@@ -54,6 +54,35 @@ _REASON_TEXT = {
 _ACTION_TEXT = {"rehearse": "Rehearse offline", "gate": "Check the gate", "go live": "Record live proof"}
 
 
+def commands(items):
+    """Return one hint per item: the rehearse command, covering gate IDs, or a pointer.
+
+    Read from `rehearse.discover()` and `golive_gate_order.registry()` on every
+    call, so a new driver or gate pack appears without editing this file. A hint
+    names what to run; it does not run, authorize or schedule anything.
+    """
+    from . import golive_gate_order, rehearse
+
+    driven = {stage for driver in rehearse.discover() for stage in driver.STAGES}
+    gates = {}
+    for gate_id, spec in golive_gate_order.registry().items():
+        for stage in spec["stages"]:
+            gates.setdefault(stage, []).append(gate_id)
+    hints = []
+    for item in items:
+        stage = item["stage"]
+        if item["action"] == "rehearse":
+            hint = (f"records rehearse --stage {stage} --out <DIR>" if stage in driven
+                    else f"no rehearsal driver covers stage {stage}")
+        elif item["action"] == "gate":
+            hint = (f"gate pack IDs: {', '.join(gates[stage])}" if stage in gates
+                    else f"no gate pack covers stage {stage}")
+        else:
+            hint = "see the stage's evidence adapter"
+        hints.append(hint)
+    return hints
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--reports", required=True)
@@ -62,6 +91,8 @@ def main(argv=None):
     parser.add_argument("--owner", help="show only this catalogue owner (exact match)")
     parser.add_argument("--stage", choices=golive_catalog.STAGES,
                         help="show only this catalogue stage ID (exact match)")
+    parser.add_argument("--commands", action="store_true",
+                        help="add the exact rehearse command or covering gate pack IDs to each step")
     args = parser.parse_args(argv)
     now = datetime.now(timezone.utc)
     try:
@@ -76,7 +107,16 @@ def main(argv=None):
         items = [item for item in items if item["owner"] == args.owner]
     if args.stage is not None:
         items = [item for item in items if item["stage"] == args.stage]
+    hints = None
+    if args.commands:
+        try:
+            hints = commands(items)
+        except ValueError as exc:
+            print(f"golive_next: {exc}", file=sys.stderr)
+            return 2
     if args.json:
+        if hints is not None:
+            items = [dict(item, command=hint) for item, hint in zip(items, hints)]
         print(json.dumps(items, indent=2))
     elif args.stage is not None and not items:
         print(f"No pending step for stage {args.stage}.")
@@ -87,6 +127,8 @@ def main(argv=None):
             action = _ACTION_TEXT[item["action"]]
             reason = _REASON_TEXT[item["reason"]]
             print(f"{index}. {item['owner']}: {action} for stage {stage} ({label}) — {reason}.")
+            if hints is not None:
+                print(f"   run: {hints[index - 1]}")
     return 0
 
 
