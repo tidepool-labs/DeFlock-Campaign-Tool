@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,6 +19,7 @@ RUN = "run_20260101T060000Z_0a1b2c3d"
 NOW = datetime(2026, 1, 16, tzinfo=timezone.utc)
 STAMP = "2026-01-02T00:00:00Z"
 LATER = "2026-01-03T00:00:00Z"
+FUTURE = "2026-02-15T00:00:00Z"  # 30 days after NOW
 ENGINE = "a" * 40
 MISSING = dict(status="missing", recorded_at=None)
 UNNEEDED = dict(status="not needed", recorded_at=None)
@@ -159,6 +160,117 @@ class GoLiveLedgerTests(unittest.TestCase):
                    record("3", "rehearsal"), record("3", "gate")]
         self.assertEqual(self.ledger(evidence=records)["3"],
                          row("3", "Arrival trigger", rehearsed=FAIL, gate=FAIL, state="BLOCKED"))
+
+    def test_future_c1_stage_18_future_rehearsal_and_gate_are_not_proof(self):
+        """Future C1: A rehearsal and gate dated after now cannot show a stage as GATED."""
+        # Counting any timestamp as proof reports GATED/pass; the gate evaluator calls the same record stale.
+        label = "Timers + monitoring"
+        future = dict(status="missing", recorded_at=FUTURE, reason="FUTURE_DATED")
+        for case, rehearsal, gate, want in (
+            ("future pair", record("18", "rehearsal", stamp=FUTURE), record("18", "gate", stamp=FUTURE),
+             row("18", label, rehearsed=future, gate=future, state="BUILT", next_kind="rehearsal")),
+            ("healthy control", record("18", "rehearsal"), record("18", "gate"),
+             row("18", label, rehearsed=PASS, gate=PASS, state="GATED", next_kind="live")),
+        ):
+            with self.subTest(case=case):
+                self.assertEqual(self.ledger(evidence=[rehearsal, gate])["18"], want)
+        # The phone page and CLI print the same column through _cell.
+        self.write_record(record("18", "rehearsal", stamp=FUTURE))
+        self.write_record(record("18", "gate", stamp=FUTURE))
+        with patch.object(golive_ledger, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            code, out, err = self.invoke()
+        self.assertEqual((code, err), (0, ""))
+        self.assertIn(f"18 | {label} | yes | missing {FUTURE} FUTURE_DATED | missing {FUTURE} FUTURE_DATED"
+                      " | missing | BUILT | rehearsal", out.splitlines())
+
+    def test_future_c1_each_column_is_judged_alone_and_never_counts_as_fail(self):
+        """Future C1: A future gate leaves a good rehearsal alone; a future failure is not a failure."""
+        # Mapping a future failure to fail would show BLOCKED from a mis-dated file.
+        future = dict(status="missing", recorded_at=FUTURE, reason="FUTURE_DATED")
+        rows = self.ledger(evidence=[record("3", "rehearsal"), record("3", "gate", stamp=FUTURE),
+                                     record("4", "rehearsal", "fail", FUTURE), record("4", "gate", "fail", FUTURE)])
+        self.assertEqual(rows["3"], row("3", "Arrival trigger", rehearsed=PASS, gate=future,
+                                       state="REHEARSED", next_kind="gate"))
+        self.assertEqual(rows["4"], row("4", "Portal downloads", rehearsed=future, gate=future,
+                                       state="BUILT", next_kind="rehearsal"))
+
+    def test_future_c1_newer_future_record_does_not_fall_back_to_older_valid_one(self):
+        """Future C1: The newest record decides; an older pass must not stand in for a future one."""
+        # Falling back would let a hand-copied future file be hidden behind an older pass.
+        future = dict(status="missing", recorded_at=FUTURE, reason="FUTURE_DATED")
+        records = [record("3", "rehearsal"), record("3", "gate"),
+                   record("3", "rehearsal", stamp=FUTURE), record("3", "gate", stamp=FUTURE)]
+        for order in (records, records[::-1]):
+            self.assertEqual(self.ledger(evidence=order)["3"],
+                             row("3", "Arrival trigger", rehearsed=future, gate=future, state="BUILT"))
+
+    def test_future_c4_record_dated_exactly_now_is_accepted(self):
+        """Future C4: Only strictly later than now is future; equal behaves as before, for any now."""
+        # A >= comparison would reject a record written in the same second as the clock read.
+        at_now = "2026-01-16T00:00:00Z"
+        after = "2026-01-16T00:00:01Z"
+        pass_now = dict(status="pass", recorded_at=at_now)
+        for name, now in (("aware UTC", NOW), ("naive UTC", NOW.replace(tzinfo=None)),
+                          ("offset", NOW.astimezone(timezone(timedelta(hours=-8))))):
+            with self.subTest(now=name):
+                rows = self.ledger(evidence=[record("3", "rehearsal", stamp=at_now), record("3", "gate", stamp=at_now),
+                                             record("1", "live", stamp=at_now),
+                                             record("4", "rehearsal", stamp=after), record("4", "live", stamp=after)],
+                                   now=now)
+                self.assertEqual(rows["3"], row("3", "Arrival trigger", rehearsed=pass_now, gate=pass_now,
+                                               state="GATED", next_kind="live"))
+                self.assertEqual(rows["1"], row("1", "Request sent", rehearsed=UNNEEDED,
+                                               live=dict(status="evidence", recorded_at=at_now),
+                                               state="LIVE", next_kind=None))
+                self.assertEqual(rows["4"], row("4", "Portal downloads", state="BUILT", next_kind="rehearsal",
+                                               rehearsed=dict(status="missing", recorded_at=after, reason="FUTURE_DATED"),
+                                               gate=MISSING,
+                                               live=dict(status="missing", recorded_at=after, reason="FUTURE_DATED")))
+
+    def test_future_c2_future_live_record_is_not_live_failed_or_evidence(self):
+        """Future C2: A future live record is neither proof nor a failure, with or without a report."""
+        # Treating it as evidence shows LIVE; routing it to LIVE_FAILED shows BLOCKED for a dating mistake.
+        future = dict(status="missing", reason="FUTURE_DATED", recorded_at=FUTURE)
+        for result in ("pass", "fail"):
+            with self.subTest(result=result):
+                rows = self.ledger(evidence=[record("1", "live", result, FUTURE)])
+                self.assertEqual(rows["1"], row("1", "Request sent", rehearsed=UNNEEDED, live=future,
+                                               state="BUILT", next_kind="live"))
+        # The newest record decides: an older valid receipt is not a fallback.
+        rows = self.ledger(evidence=[record("1", "live"), record("1", "live", stamp=FUTURE)])
+        self.assertEqual(rows["1"], row("1", "Request sent", rehearsed=UNNEEDED, live=future,
+                                       state="BUILT", next_kind="live"))
+        # A report-proved stage is not rescued by a future receipt either; the report itself is untouched.
+        data = report()
+        set_stage(data, "sync")
+        reports = golive_stages.load_reports(self._write_reports(data), now=NOW)
+        self.assertEqual(self.ledger(reports)["2"], row("2", "Email intake / sync", live=REPORT, state="LIVE"))
+        rows = self.ledger(reports, [record("2", "live", stamp=FUTURE)])
+        self.assertEqual(rows["2"], row("2", "Email intake / sync", live=future, state="BUILT"))
+
+    def test_future_c3_future_live_record_does_not_set_the_newest_engine(self):
+        """Future C3: A future live receipt cannot invalidate other rows as ENGINE_CHANGED."""
+        # Picking the newest live record by stamp alone lets one mis-dated file mark every row stale.
+        other = "b" * 40
+        base = [record("3", "rehearsal"), record("3", "gate"), record("1", "live")]
+        good = row("3", "Arrival trigger", rehearsed=PASS, gate=PASS, state="GATED", next_kind="live")
+        changed = dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED")
+        # Control: the same receipt with a real past date does change the engine.
+        self.assertEqual(self.ledger(evidence=[*base, record("A2", "live", stamp=LATER, engine=other)])["3"],
+                         row("3", "Arrival trigger", rehearsed=changed, gate=changed))
+        self.assertEqual(self.ledger(evidence=[*base, record("A2", "live", stamp=FUTURE, engine=other)])["3"], good)
+        # With an older real receipt on the same stage, the older one still sets the engine.
+        both = [*base, record("A2", "live", stamp=LATER, engine=other), record("A2", "live", stamp=FUTURE)]
+        self.assertEqual(self.ledger(evidence=both)["3"],
+                         row("3", "Arrival trigger", rehearsed=changed, gate=changed))
+        # A future rehearsal reports FUTURE_DATED even when its engine also differs.
+        rows = self.ledger(evidence=[record("3", "rehearsal", stamp=FUTURE, engine=other), *base[1:]])
+        self.assertEqual(rows["3"]["rehearsed"], dict(status="missing", recorded_at=FUTURE, reason="FUTURE_DATED"))
+
+    def _write_reports(self, data):
+        self.write_report(data)
+        return self.reports
 
     def test_c3_count_excludes_console_rows_in_both_output_formats(self):
         """C3: Count only LIVE pipeline rows, including A2 but not a live console-only row."""

@@ -43,6 +43,7 @@ _REASON_TEXT = {
     "REHEARSAL_FAIL": "the last rehearsal did not pass",
     "STALE": "the rehearsal is out of date",
     "ENGINE_CHANGED": "the receipt is for another engine",
+    "FUTURE_DATED": "the evidence is dated in the future",
     "GATE_MISSING": "a passing gate receipt is missing",
     "GATE_FAIL": "the last gate did not pass",
     "LIVE_MISSING": "live proof is missing",
