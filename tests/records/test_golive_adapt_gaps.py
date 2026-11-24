@@ -20,7 +20,7 @@ from campaign_tool.records.outcomes import gap_proposals as gp, received_items a
 RUN, OTHER = "run_20260101T060000Z_0a1b2c3d", "run_other"
 NOW = datetime(2026, 1, 2, tzinfo=timezone.utc)
 FIXTURE = Path("examples/run-report/records-run-report-v1.synthetic.json")
-SECRET = "SENTINEL-REQUEST-TEXT"
+LEAK_MARKER = "SENTINEL-REQUEST-TEXT"
 FILES = {"gaps": adapter.GAPS, "items": adapter.ITEMS, "register": adapter.REGISTER, "timeline": adapter.TIMELINE}
 GAP, ITEMS, REG, TL = "GAPS_FILE_", "REGISTER_FILE_ITEMS_", "REGISTER_FILE_REGISTER_", "REGISTER_FILE_TIMELINE_"
 
@@ -205,10 +205,10 @@ class GapsEvidenceTest(unittest.TestCase):
 
     def test_c4_rows_carry_codes_only_never_request_text(self):
         """C4 bug: quoted request text, or a parser message, copied into the evidence row."""
-        raw = b'{"quote": "' + SECRET.encode() + b'", "quote": 1}'
-        for change in ({"gaps": gap_doc(OTHER, quote=SECRET)}, {"gaps": raw}, {"items": raw}, {"timeline": raw}):
+        raw = b'{"quote": "' + LEAK_MARKER.encode() + b'", "quote": 1}'
+        for change in ({"gaps": gap_doc(OTHER, quote=LEAK_MARKER)}, {"gaps": raw}, {"items": raw}, {"timeline": raw}):
             rows = self.rows(self.build(**change))
-            self.assertNotIn(SECRET, json.dumps(rows))
+            self.assertNotIn(LEAK_MARKER, json.dumps(rows))
             self.assertTrue(all(re.fullmatch(r"(GAPS|REGISTER)_FILE_[A-Z_]+", c) for r in rows for c in r["codes"]))
 
     def test_c5_strict_bounded_safe_and_read_only(self):
