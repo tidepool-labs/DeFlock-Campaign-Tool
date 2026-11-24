@@ -6,10 +6,14 @@ import json
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from copy import deepcopy
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
 from campaign_tool.records import golive_acceptance, golive_catalog, golive_ledger
+from campaign_tool.records import rehearsal_receipt as rr
+from campaign_tool.records import rehearse_engine_switch as driver
 
 PASS = dict(status="pass", recorded_at="2026-01-02T00:00:00Z")
 MISSING = dict(status="missing", recorded_at=None)
@@ -34,6 +38,15 @@ def all_satisfied():
 
 def codes(result):
     return [(b["stage"], b["code"]) for b in result["blockers"]]
+
+MODULE = "rehearse_engine_switch"
+ENGINE = "a" * 40
+OTHER_HUMAN = ["FLAWLESS check", "stages 7 and 8 proven on new documents"]
+# Golden output of the unchanged command for one blocked ledger (stage 3 gate missing).
+GOLDEN_TEXT = (
+    "{n} of {n} pipeline stages live\nBlockers:\n  3 Arrival trigger: GATE_NOT_PASS\n"
+    "Human-only items (not machine-checked):\n  - rollback drill\n  - FLAWLESS check\n"
+    "  - stages 7 and 8 proven on new documents\nNOT READY: 1 blockers\n")
 
 
 class GoLiveAcceptanceTests(unittest.TestCase):
@@ -276,6 +289,134 @@ class GoLiveAcceptanceTests(unittest.TestCase):
         listing = sorted(p.name for p in (*reports.iterdir(), *evidence.iterdir()))
         self.invoke("--reports", str(reports), "--evidence", str(evidence))
         self.assertEqual(sorted(p.name for p in (*reports.iterdir(), *evidence.iterdir())), listing)
+
+
+class RollbackReceiptTests(unittest.TestCase):
+    """C1-C4 of the optional --rollback-receipt argument, using a real synthetic driver receipt."""
+
+    @classmethod
+    def setUpClass(cls):
+        # Private 0700 root inside cwd; the sandbox stays alive so mutated receipts re-hash real outputs.
+        fixture = tempfile.TemporaryDirectory(dir=Path.cwd())
+        cls.addClassCleanup(fixture.cleanup)
+        cls.root = Path(fixture.name).resolve()
+        cls.count = 0
+        sandbox = cls.root / "sandbox"
+        sandbox.mkdir(mode=0o700)
+        cls.result, cls.sandbox = driver.run(sandbox), sandbox
+        cls.finish = datetime.now(timezone.utc).replace(microsecond=0)
+        cls.start = cls.finish.replace(second=0)
+
+    def receipt(self, mutate=lambda result: None, engine=ENGINE):
+        """Write a schema-valid receipt (mutated before building) and return its path."""
+        result = deepcopy(self.result)
+        mutate(result)
+        built = rr.build(MODULE, result, self.sandbox, self.start, self.finish, engine)
+        type(self).count += 1
+        out = self.root / f"out{self.count}"
+        out.mkdir(mode=0o700)
+        return rr.write(built, out)
+
+    def run_cli(self, path, *extra, rows=None):
+        folder = tempfile.TemporaryDirectory(dir=self.root)
+        self.addCleanup(folder.cleanup)
+        reports, evidence = Path(folder.name) / "reports", Path(folder.name) / "evidence"
+        reports.mkdir()
+        evidence.mkdir()
+        argv = ["--reports", str(reports), "--evidence", str(evidence), *extra]
+        if path is not None:
+            argv += ["--rollback-receipt", str(path)]
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(golive_ledger, "build", return_value=rows or all_satisfied()), \
+                redirect_stdout(out), redirect_stderr(err):
+            code = golive_acceptance.main(argv)
+        return code, out.getvalue(), err.getvalue()
+
+    def test_c1_without_flag_output_is_unchanged(self):
+        """C1: No flag means the exact historic text and JSON keys, with no rollback line or key.
+
+        Bug caught: always emitting a rollback section (or dropping the drill from the list) when the
+        flag is absent, which would silently change every existing consumer's output.
+        """
+        rows = all_satisfied()
+        next(r for r in rows if r["stage"] == "3").update(gate=MISSING)
+        code, text, err = self.run_cli(None, rows=rows)
+        self.assertEqual((code, err, text), (1, "", GOLDEN_TEXT.format(n=len(PIPELINE))))
+        _, raw, _ = self.run_cli(None, "--json", rows=rows)
+        data = json.loads(raw)
+        self.assertEqual(list(data), ["live", "total", "blockers", "manual", "summary", "verdict"])
+        self.assertEqual(data["manual"], list(golive_acceptance.MANUAL))
+
+    def test_c2_pass_receipt_removes_only_the_drill(self):
+        """C2/C4: A passed drill on a qualified receipt is shown as machine-checked and leaves the human list.
+
+        Bug caught: reading the receipt but leaving the drill human-only, or dropping other human items.
+        """
+        path = self.receipt()
+        code, text, err = self.run_cli(path)
+        self.assertEqual((code, err), (0, ""))
+        lines = text.splitlines()
+        self.assertIn("Rollback drill (machine-checked): PASS", lines)
+        self.assertNotIn("  - rollback drill", lines)
+        self.assertEqual([line for line in lines if line.startswith("  - ")], [f"  - {i}" for i in OTHER_HUMAN])
+        self.assertEqual(lines[-1], "READY FOR HUMAN ACCEPTANCE")
+        _, raw, _ = self.run_cli(path, "--json")
+        data = json.loads(raw)
+        self.assertEqual(data["rollback"], {"status": "PASS", "codes": []})
+        self.assertEqual(data["manual"], OTHER_HUMAN)
+        self.assertNotIn("accepted", (text + raw).lower())
+
+    def test_c3_failed_or_unqualified_receipt_is_not_ready_with_no_blockers(self):
+        """C3: A drill FAIL or an unqualified receipt makes NOT READY and exit 1 despite zero stage blockers.
+
+        Bug caught: judging readiness from stage blockers alone, so a failed drill still reads READY;
+        or treating a drill-PASS receipt that does not qualify (no engine) as a pass.
+        """
+        broken = self.receipt(lambda result: result["steps"].__delitem__(slice(4, None)))
+        unknown_engine = self.receipt(engine=None)
+        for label, path, code_name in (("drill failed", broken, "ROLLBACK_STEP_MISSING"),
+                                       ("unqualified", unknown_engine, "REHEARSAL_ENGINE_UNKNOWN")):
+            with self.subTest(label):
+                code, text, err = self.run_cli(path)
+                lines = text.splitlines()
+                self.assertEqual((code, err), (1, ""))
+                line = next(l for l in lines if l.startswith("Rollback drill (machine-checked): FAIL ("))
+                self.assertIn(code_name, line)
+                self.assertIn("  - rollback drill", lines)
+                self.assertEqual(lines[-1], "NOT READY: rollback drill FAIL")
+                _, raw, _ = self.run_cli(path, "--json")
+                data = json.loads(raw)
+                self.assertEqual((data["blockers"], data["rollback"]["status"]), ([], "FAIL"))
+                self.assertIn(code_name, data["rollback"]["codes"])
+                self.assertEqual(data["verdict"], "NOT READY: rollback drill FAIL")
+                self.assertEqual(data["manual"], list(golive_acceptance.MANUAL))
+
+    def test_c3_fail_and_stage_blockers_are_both_counted(self):
+        """C3/C4: Stage blockers and a failed drill show together and never read as accepted.
+
+        Bug caught: a failed drill hiding the stage blocker count, or the verdict losing NOT READY.
+        """
+        rows = all_satisfied()
+        next(r for r in rows if r["stage"] == "3").update(gate=MISSING)
+        code, text, _ = self.run_cli(self.receipt(engine=None), rows=rows)
+        self.assertEqual(code, 1)
+        self.assertEqual(text.splitlines()[-1], "NOT READY: 1 blockers, rollback drill FAIL")
+        self.assertNotIn("accepted", text.lower())
+
+    def test_c3_unreadable_receipt_exits_two_with_one_message_and_no_verdict(self):
+        """C3: A missing, malformed or non-receipt file exits 2 with one stderr line and no stdout.
+
+        Bug caught: letting the error fall through to a verdict (exit 0/1), or leaking the path.
+        """
+        garbage = self.root / "garbage.json"
+        garbage.write_text("{not json", encoding="utf-8")
+        wrong = self.root / "wrong.json"
+        wrong.write_text("{}", encoding="utf-8")
+        for path in (self.root / "missing.json", garbage, wrong):
+            with self.subTest(path=path.name):
+                code, out, err = self.run_cli(path)
+                self.assertEqual((code, out), (2, ""))
+                self.assertEqual(err, "golive_acceptance: unreadable or invalid rehearsal receipt\n")
 
 
 if __name__ == "__main__":
