@@ -179,6 +179,39 @@ class ExplainTests(ExplainFixture):
         self.assertTrue(line.startswith("copy [digest] at [path] [31mred: fail - "), line)
         self.assertNotIn("\x1b", line)
 
+    def test_c1_timestamp_must_be_a_real_utc_instant_not_in_the_future(self):
+        """C1: the recorder rejects impossible and future times, so must the explainer (bug: shape-only check)."""
+        good = self.produced()["go"]
+        for stamp in ("2025-99-99T99:99:99Z", "2026-02-30T00:00:00Z", "2026-11-21T24:00:00Z", "2026-11-21T20:00:60+00:00"):
+            with self.subTest(stamp=stamp), self.assertRaisesRegex(ValueError, "invalid gate timestamp"):
+                explain(dict(good, evaluated_at=stamp))
+        self.assertTrue(explain(dict(good, evaluated_at="2026-11-21T20:00:00.123456+00:00"))[0].startswith("GO:"))
+        with self.assertRaisesRegex(ValueError, "in the future"):
+            explain(dict(good, evaluated_at="2999-01-01T00:00:00Z"))
+        self.assertTrue(explain(good, now=NOW)[0].startswith("GO:"))
+        with self.assertRaisesRegex(ValueError, "in the future"):
+            explain(good, now=NOW - timedelta(seconds=1))
+
+    def test_c3_unknown_code_and_gate_id_cannot_carry_a_digest_in_text_or_json(self):
+        """C3: a digest hidden in an unrecognized code or the gate id is redacted in both formats (bug: echoed)."""
+        base = self.produced()["mismatch"]
+        upper, lower = PIN.upper(), PIN
+        receipt = dict(base, gate_id=f"gate-{lower}", checks=[dict(base["checks"][0], code="X" + upper)])
+        text = "\n".join(explain(receipt))
+        self.assertNotIn(upper, text)
+        self.assertNotIn(lower, text)
+        self.assertIn("unrecognized code X[digest]", text)
+        self.assertTrue(text.startswith("NO-GO: gate gate-[digest] (stages"), text)
+        path = self.write("digest.json", receipt)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = explain_mod.main([str(path), "--json"])
+        out = out.getvalue()
+        parsed = json.loads(out)
+        self.assertEqual((code, parsed["gate_id"], parsed["checks"][0]["code"]), (1, "gate-[digest]", "X[digest]"))
+        self.assertNotIn(upper, out)
+        self.assertNotIn(lower, out)
+
 
 class ExplainCliTests(ExplainFixture):
     def run_cli(self, *argv):

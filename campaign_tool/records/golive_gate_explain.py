@@ -6,6 +6,7 @@ import os
 import re
 import stat
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 RECEIPT_SCHEMA = "records-golive-gate-v1"
@@ -89,8 +90,11 @@ def _clean(value):
     return " ".join("".join(ch if ch.isprintable() else " " for ch in value).split())[:120]
 
 
-def validate(receipt):
-    """Same strictness as the go-live recorder's gate projection; raise ValueError if not consistent."""
+def validate(receipt, now=None):
+    """Same strictness as the go-live recorder's gate projection; raise ValueError if not consistent.
+
+    `now` (timezone-aware) is the clock for the future-timestamp check; it defaults to the current UTC time.
+    """
     if (not isinstance(receipt, dict) or receipt.keys() != KEYS or receipt["schema"] != RECEIPT_SCHEMA
             or not isinstance(receipt["gate_id"], str) or not GATE_ID.fullmatch(receipt["gate_id"])
             or not isinstance(receipt["stages"], list) or not receipt["stages"]
@@ -101,6 +105,12 @@ def validate(receipt):
     stamp = receipt["evaluated_at"]
     if not isinstance(stamp, str) or not STAMP.fullmatch(stamp):
         raise ValueError("invalid gate timestamp")
+    try:  # the shape is not enough: the recorder also needs a real UTC instant
+        evaluated_at = datetime.fromisoformat(stamp)
+    except ValueError:
+        raise ValueError("invalid gate timestamp") from None
+    if evaluated_at > (now if now is not None else datetime.now(timezone.utc)):
+        raise ValueError("gate timestamp is in the future")
     for key, pin in receipt["inputs"].items():
         if not key.strip() or "=" in key or not isinstance(pin, str) or not DIGEST.fullmatch(pin):
             raise ValueError("invalid gate input digest")
@@ -118,26 +128,27 @@ def validate(receipt):
         raise ValueError("inconsistent gate verdict")
 
 
-def _describe(receipt):
-    validate(receipt)
+def _describe(receipt, now=None):
+    validate(receipt, now)
     rows = []
     for check in receipt["checks"]:
         known = EXPLANATIONS.get(check["code"])
-        meaning = known[1] if known else f"unrecognized code {check['code']}"
+        code = _clean(check["code"])  # an unknown code is receipt text: it may carry a digest
+        meaning = known[1] if known else f"unrecognized code {code}"
         fix = None if check["state"] == "pass" else (known[2] if known else UNKNOWN_FIX)
-        rows.append({"label": _clean(check["label"]), "state": check["state"], "code": check["code"],
+        rows.append({"label": _clean(check["label"]), "state": check["state"], "code": code,
                      "meaning": meaning, "fix": fix})
     return rows
 
 
 def _header(receipt):
     stages = ", ".join(_clean(stage) for stage in receipt["stages"])
-    return f"{receipt['verdict']}: gate {receipt['gate_id']} (stages {stages})"
+    return f"{receipt['verdict']}: gate {_clean(receipt['gate_id'])} (stages {stages})"
 
 
-def explain(receipt):
+def explain(receipt, now=None):
     """Return plain-text lines for a valid receipt; the verdict printed is the receipt's own."""
-    rows = _describe(receipt)
+    rows = _describe(receipt, now)
     lines = [_header(receipt)]
     for row in rows:
         lines.append(f"{row['label']}: {row['state']} - {row['meaning']}")
@@ -193,7 +204,7 @@ def main(argv=None):
         receipt = read_receipt(args.receipt)
         rows = _describe(receipt)
         if args.json:
-            text = json.dumps({"verdict": receipt["verdict"], "gate_id": receipt["gate_id"],
+            text = json.dumps({"verdict": receipt["verdict"], "gate_id": _clean(receipt["gate_id"]),
                                "stages": [_clean(stage) for stage in receipt["stages"]],
                                "checks": rows, "note": NOTE}, indent=2)
         else:
