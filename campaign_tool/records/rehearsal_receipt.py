@@ -116,10 +116,15 @@ def _validate_shape(receipt):
         raise ValueError("invalid rehearsal engine identity")
     if not isinstance(receipt["steps"], list):
         raise ValueError("invalid rehearsal steps")
+    step_names = set()
     for step in receipt["steps"]:
         if (not _keys(step, {"name", "code", "outputs"}) or not isinstance(step["name"], str)
-                or not _code(step["code"]) or not isinstance(step["outputs"], list)):
+                or not step["name"].strip() or not _code(step["code"])
+                or not isinstance(step["outputs"], list)):
             raise ValueError("invalid rehearsal step")
+        if step["name"] in step_names:
+            raise ValueError("duplicate rehearsal step name")
+        step_names.add(step["name"])
         for output in step["outputs"]:
             if (not _keys(output, {"path", "sha256"})
                     or not _matches(r"[0-9a-f]{64}", output["sha256"])):
