@@ -131,7 +131,7 @@ def _item(row, token, waiting):
 
 def render_body(doc, token, held=frozenset()):
     """The page fragment. token None: the read-only list (no form, button, token or submit URL)."""
-    out = ["<h1>Finding review</h1>"]
+    out = ["<h1>Finding review</h1>", '<p><a href="/findings">All findings</a></p>']
     if doc is None:
         out.append('<p class="diag" role="status">Finding review needs configuration: start the console with --analysis-root ROOT.</p>')
         return "".join(out)

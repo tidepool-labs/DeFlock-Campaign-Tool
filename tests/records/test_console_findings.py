@@ -80,6 +80,14 @@ class FindingConsole(Apply):
 
 
 class FindingPage(FindingConsole):
+    def all_findings_target(self, page):
+        # A global navigation link alone leaves the review body with no return path.
+        (body,) = re.findall(r'<main\b[^>]*>(.*?)</main>', page, re.S)
+        links = re.findall(r'<a href="(/findings)">([^<]*)</a>', body)
+        self.assertEqual(links, [("/findings", "All findings")], "expected one local All findings link")
+        self.assertLess(body.index("</h1>"), body.index('<a href="/findings">'))
+        return links[0][0]
+
     def add_unreadable_agency(self):
         config = self.ar / "agencies" / "unreadable-agency" / "review-config.json"
         config.parent.mkdir()
@@ -88,7 +96,10 @@ class FindingPage(FindingConsole):
     def test_the_page_lists_the_waiting_finding_with_facts_f4_and_the_exact_payload(self):
         self.up_findings()
         row = self.frow()
-        page = self.get("/findings/review")
+        listing = self.get("/findings")
+        (review_target,) = re.findall(r'<a href="([^"]+)">review it</a>', listing)
+        self.assertEqual(review_target, "/findings/review")
+        page = self.get(review_target)
         text = html.unescape(page)
         for want in (self.slug, "N1", CLAIM, row["topic"], self.o.digest[:12], "page 2", "confirm", "1 finding waiting", "not a human review"):
             self.assertIn(want, text)
@@ -111,6 +122,7 @@ class FindingPage(FindingConsole):
         self.assertEqual(self.decide("/findings/review/approve", agency="unreadable-agency", finding_id="N1",
                                      finding_sha256=row["finding_sha256"], signature="not a signature")[0], 409)
         self.assertEqual(self.lines(), [])
+        self.assertIn("<h1>All findings</h1>", self.get(self.all_findings_target(page)))
 
     def test_zero_readable_findings_after_a_read_failure_is_not_a_definite_empty_queue(self):
         public_ok = self.findings.with_name("PUBLIC-OK.csv")
@@ -121,6 +133,7 @@ class FindingPage(FindingConsole):
         self.assertIn("No finding is waiting for a human review.", empty)
         self.assertNotIn("Queue incomplete", empty)
         self.assertNotIn("<form", empty)
+        self.all_findings_target(empty)
 
         self.add_unreadable_agency()
         partial = self.get("/findings/review")
@@ -141,6 +154,7 @@ class FindingPage(FindingConsole):
         before = tree_state(self.ar)
         self.assertEqual(self.decide("/findings/review/reject", agency=self.slug, finding_id="N1", finding_sha256="a" * 64, reason="x")[0], 503)
         self.assertEqual((self.lines(), tree_state(self.ar)), ([], before))
+        self.all_findings_target(page)
 
     def test_an_unreadable_analysis_view_is_said_never_shown_as_an_empty_list(self):
         self.up_findings()
@@ -153,6 +167,7 @@ class FindingPage(FindingConsole):
         self.assertNotIn("Queue incomplete", page)
         self.assertNotIn("0 findings waiting", page)
         self.assertNotIn("<form", page)
+        self.all_findings_target(page)
         config.write_bytes(good)
         journal = self.ar / ".analysis" / "finding-reviews.jsonl"  # a corrupt review journal defers; it is never read as empty
         journal.write_text("not json\n")
