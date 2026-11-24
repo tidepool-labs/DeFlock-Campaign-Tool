@@ -385,6 +385,9 @@ def navigation(row, rows):
         index = ids.index(current)
         if row["status"] == "pending":
             nav += '<p>Draft %d of %d</p>' % (index + 1, len(ids))
+            if index > 0:
+                previous_url = esc("/review?id=" + urllib.parse.quote(ids[index - 1], safe=""))
+                nav += '<a href="%s">Previous pending draft</a> · ' % previous_url
         ids.pop(index)
     if not ids:
         return nav + '<a href="/">Queue index</a> · No other pending drafts.</nav>'
