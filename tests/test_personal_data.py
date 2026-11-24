@@ -992,6 +992,7 @@ _MODULES = {
     "organizer-maintained public statements content/statements.json (built by the site), no catalog store": "statements",
     "agenda PDF bytes to the converter's stdin pipe only; no file written": "meeting_pdf_scan",
     "append-only 0600 go-live evidence metadata in an explicit directory; no copied receipt bytes or catalog store": "records.golive_record",
+    "stdout or explicit --out only: plain-text sitting packet of operator-copied metadata (check states, hashes, rollback reference); no copied evidence bytes, catalog store or send": "records.golive_bundle",
 }
 MODULE_UNKNOWN = {module: reason for reason, names in _MODULES.items() for module in names.split()}
 
@@ -1110,6 +1111,7 @@ MODULE_FUNCTIONS = {
     'records.gates.safe_output': ('write_private',),
     'records.gates.validate_findings': ('main',),
     'records.golive_gate': ('_write_receipt', 'main'),  # new 0600 receipt only in the explicit --out directory
+    'records.golive_bundle': ('main',),  # prints the packet to stdout or delegates one new 0600 file to golive_gate._write_receipt under explicit --out
     'records.intake.document_drop': ('capture',),
     'records.intake.eml_export': ('_ensure_private', '_write_private', 'export_message',),
     'records.intake.folder': (
