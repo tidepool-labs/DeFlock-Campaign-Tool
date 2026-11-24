@@ -29,6 +29,8 @@ jobs:
         with:
           persist-credentials: false
       - name: Pinned public ledger candidate
+        # Needed only when the engine lacks the WP1 ledger; every step below selects the in-tree copy first.
+        if: ${{ hashFiles('campaign_tool/records/ledger/store.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
