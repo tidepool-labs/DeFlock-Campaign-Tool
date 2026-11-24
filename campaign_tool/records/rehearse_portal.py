@@ -177,7 +177,11 @@ class _Rehearsal:
         expected = {(_HOST, digest, "bytes_verified_stage_pending") for digest in self.digests}
         if self.delivery != (2, 0) or rows != expected:
             raise PortalError("fixture_enrollment_incomplete")
-        return [self.database, *(self.blobs / digest for digest in sorted(self.digests))]
+        blobs = [self.blobs / digest for digest in sorted(self.digests)]
+        for blob in blobs:
+            if ledger_store.file_hash(blob) != blob.name:
+                raise PortalError("fixture_enrollment_digest_mismatch")
+        return [self.database, *blobs]
 
     def _refusal(self, host, path, reason, http_status):
         item = self._inventory(host, path)
