@@ -1,7 +1,7 @@
 """Registry for trusted, in-package read-only console pages.
 
 A console_page_<name>.py exports PATHS (a nonempty tuple of exact GET paths),
-NAV (None or (label, integer order), linking PATHS[0]), and serve(handler) -> bool.
+NAV (None or (unique label, integer order), linking PATHS[0]), and serve(handler) -> bool.
 The callback can read the pinned request state and use _send/_fail. It receives
 handler.path unchanged, including any query. There is no write or POST hook.
 """
@@ -41,6 +41,7 @@ def _discover():
 
 def _load():
     routes, nav = {}, []
+    nav_labels = set()
     for page in _discover():
         def invalid(reason):
             return ValueError(f"Invalid console page {page.__name__}: {reason}")
@@ -71,6 +72,9 @@ def _load():
                     or not item[0].strip() or not item[0].isprintable() or type(item[1]) is not int):
                 raise invalid("NAV must be None or a printable label and integer order")
             label, order = item
+            if label in nav_labels:
+                raise invalid(f"duplicate NAV label {label!r}")
+            nav_labels.add(label)
             nav.append((order, label, paths[0]))
     return MappingProxyType(routes), tuple((label, path) for _, label, path in sorted(nav))
 
