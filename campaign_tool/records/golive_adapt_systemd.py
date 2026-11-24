@@ -23,6 +23,10 @@ _FAMILIES = (
 _TRACKED_UNITS = frozenset(unit for _, required in _FAMILIES for unit in required)
 
 
+class UnitsNotTracked(ValueError):
+    """A capture named none of the tracked go-live units; the message is a stable code."""
+
+
 def _validate_marker(raw, value):
     """Reuse journal readers on just the supplied bytes, never on a live journal."""
     schema = value["schema"]
@@ -113,7 +117,9 @@ def records(receipt_paths, now):
 
     ``now`` is a datetime (a naive datetime is interpreted as UTC).
     Valid journal markers yield no rows. Invalid input or conflicting states
-    for a tracked unit at the same observed instant raise ValueError.
+    for a tracked unit at the same observed instant raise ValueError. A capture
+    naming none of the tracked units raises UnitsNotTracked (a ValueError whose
+    message is ``UNITS_NOT_TRACKED``) rather than yielding silently no rows.
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
@@ -129,6 +135,8 @@ def records(receipt_paths, now):
             if schema == _CAPTURE:
                 units = _capture_units(value, now)
                 observed_at = value["observed_at"]
+                if not _TRACKED_UNITS.intersection(units):
+                    raise UnitsNotTracked("UNITS_NOT_TRACKED")
                 for unit in _TRACKED_UNITS.intersection(units):
                     state = units[unit]
                     if observed_states.setdefault((unit, observed_at), state) != state:
@@ -138,6 +146,8 @@ def records(receipt_paths, now):
                 _validate_marker(raw, value)
             else:
                 raise ValueError("unknown receipt schema")
+        except UnitsNotTracked:
+            raise
         except (OSError, ValueError, TypeError, RecursionError, host.Rejected):
             # Input paths and parser values may be private.
             raise ValueError("invalid systemd receipt or unit status capture") from None
