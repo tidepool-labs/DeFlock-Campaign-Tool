@@ -1,8 +1,10 @@
 """Runtime contracts for hash-linked go-live evidence recording."""
 
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import hashlib
+from io import StringIO
 import json
 from pathlib import Path
 import stat
@@ -267,15 +269,29 @@ class GoLiveRecordTests(unittest.TestCase):
 
     def test_c4_pass_and_duplicate_exit(self):
         """C4: Module entry point prints all GO filenames; a replay refuses with exit 2."""
-        path = self.save(self.gate(stages=("18", "19")))
+        path = self.save(self.gate(stages=("18", "19"), now=NOW + timedelta(microseconds=987654)))
         status, names, err = self.cli("gate", path)
         records = golive_evidence.load(self.evidence)
         self.assertEqual((status, names, err), (0, [
             next(p.name for p in self.evidence.iterdir() if f"-{stage}-gate-" in p.name)
             for stage in ("18", "19")], ""))
-        self.assertEqual([(r["stage"], r["result"]) for r in records], [("18", "pass"), ("19", "pass")])
+        # A delayed import must not refresh either row, round the observation
+        # up, change the GO verdict, or hash reserialized receipt bytes.
+        self.assertEqual(records, [self.expected(), self.expected(stage="19")])
         self.assertEqual(self.cli("gate", path), (2, [], "golive_record: EVIDENCE_DUPLICATE\n"))
         self.assertEqual(golive_evidence.load(self.evidence), records)
+
+    def test_c4_future_gate_refused_before_append(self):
+        """DFX-03 C1: Even a one-microsecond future gate must not create either row."""
+        path = self.save(self.gate(stages=("18", "19"), now=NOW + timedelta(microseconds=1)))
+        stdout, stderr = StringIO(), StringIO()
+        with patch.object(golive_record, "datetime", wraps=datetime) as clock:
+            clock.now.return_value = NOW
+            with redirect_stdout(stdout), redirect_stderr(stderr):
+                status = golive_record.main(["gate", str(path), "--evidence", str(self.evidence)])
+        self.assertEqual(list(self.evidence.iterdir()), [])
+        self.assertEqual((status, stdout.getvalue(), stderr.getvalue()),
+                         (2, "", "golive_record: gate timestamp is in the future\n"))
 
     def test_c4_fail_written_and_stage_selection(self):
         """C4: An explicit rehearsal stage is retained and exit 1 still publishes the failure."""

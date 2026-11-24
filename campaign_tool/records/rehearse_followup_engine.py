@@ -20,6 +20,7 @@ _DAY = "2026-11-06"
 _AGENCY = "synthetic-agency"
 _DUE = "SYN-DUE"
 _WAITING = "SYN-WAITING"
+_ASK_NUMBER = 1
 _JOURNAL = Path("approvals/queue.jsonl")
 
 
@@ -70,7 +71,7 @@ def _seed_inputs(project):
     historic_receipt = {"agency_id": _AGENCY, "request_id": _DUE, "received_at": "2026-11-03T12:00:00Z",
                         "item_id": received_items.item_id(hashlib.sha256(b"Synthetic receipt").hexdigest())}
     ratings = [dict(agency_key=_AGENCY, request_id=row["request_id"],
-                    asks=[{"ask_id": "ask-1", "text": "ALPR search logs", "rating": "missing"}])
+                    asks=[{"ask_id": f"ask-{_ASK_NUMBER}", "text": "ALPR search logs", "rating": "missing"}])
                for row in (due, waiting)]
     inputs = {
         project / followup_clock.SETTINGS_FILE: {
@@ -88,6 +89,24 @@ def _seed_inputs(project):
     for path, document in inputs.items():
         _write_json(path, document)
     return list(inputs)
+
+
+def _journal_bytes(journal):
+    try:
+        return _sandbox_path(journal).read_bytes()
+    except FileNotFoundError:
+        return None  # Distinguish an absent journal from an empty one.
+
+
+def _preview(project):
+    journal = project / _JOURNAL
+    before = _journal_bytes(journal)
+    result = followup_engine.run(project, _RUN, apply=False)
+    if _journal_bytes(journal) != before:
+        raise _StepFailed("FOLLOWUP_PREVIEW_QUEUE_CHANGED")
+    if (result["would_queue"], result["queued"]) != (1, 0):
+        raise _StepFailed("FOLLOWUP_PREVIEW_COUNT")
+    return []
 
 
 def _draft(project):
@@ -108,6 +127,13 @@ def _queue_check(project):
     if (actual != [("followup-playbook", "pending", _AGENCY, _DUE, _RUN)]
             or events != [("draft", rows[0]["id"])]):
         raise _StepFailed("FOLLOWUP_QUEUE_UNEXPECTED")
+    # The fixture's closed due case calls for a new request for exactly its missing ask.
+    expected = {"source": "followup_engine", "pattern": "closed_new_request", "vehicle": "new_request",
+                "planned_send_date": _DAY, "asks_for": [_ASK_NUMBER]}
+    evidence = rows[0].get("evidence")
+    if (not isinstance(evidence, dict) or any(evidence.get(key) != value for key, value in expected.items())
+            or type(evidence["asks_for"][0]) is not int):
+        raise _StepFailed("FOLLOWUP_DRAFT_EVIDENCE_MISMATCH")
     return [journal]
 
 
@@ -129,6 +155,7 @@ def run(sandbox):
     for name, action, args in (
         ("init_project", _init_project, (sandbox, project)),
         ("seed_inputs", _seed_inputs, (project,)),
+        ("preview", _preview, (project,)),
         ("draft", _draft, (project,)),
         ("queue_check", _queue_check, (project,)),
         ("rerun_idempotent", _rerun, (project,)),

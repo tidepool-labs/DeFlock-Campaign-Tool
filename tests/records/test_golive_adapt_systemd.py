@@ -65,35 +65,45 @@ class AdapterTests(unittest.TestCase):
             "codes": list(codes),
         }
 
-    def assertInvalid(self, path):
+    def assertInvalid(self, *paths):
         with self.assertRaises(ValueError) as caught:
-            adapter.records([path], NOW)
+            adapter.records(paths, NOW)
         self.assertIs(type(caught.exception), ValueError)
         self.assertEqual(str(caught.exception), ERROR)
 
     def test_c1_arrival_both_flags_required(self):
-        """C1: Arrival alone yields only stage 3, even when enabled or active is false."""
-        for enabled, active in product((True, False), repeat=2):
-            with self.subTest(enabled=enabled, active=active):
-                path = self.receipt(capture(unit(ARRIVAL, enabled, active), unit("other.path")))
-                expected = (self.evidence(path, "3", "pass") if enabled and active else
-                            self.evidence(path, "3", "fail", ["UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"]))
+        """C1: Preserve the healthy row and report each failed flag independently."""
+        disabled = "UNIT_NOT_ENABLED_RECORDS_ARRIVAL_PATH"
+        inactive = "UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"
+        cases = (
+            ((True, True), "pass", ()),
+            ((True, False), "fail", (inactive,)),
+            ((False, True), "fail", (disabled,)),
+            ((False, False), "fail", (disabled, inactive)),
+        )
+        for state, result, codes in cases:
+            with self.subTest(state=state):
+                path = self.receipt(capture(unit(ARRIVAL, *state), unit("other.path")))
+                expected = self.evidence(path, "3", result, codes)
                 self.assertEqual(adapter.records([path], NOW), [expected])
 
     def test_c1_timer_matrix(self):
         """C1: Every monitored timer is necessary; unrelated timers cannot fill gaps."""
-        missing = ("UNIT_MISSING_RECORDS_HEALTH_TIMER", "UNIT_MISSING_RECORDS_BACKUP_CHECK_TIMER",
-                   "UNIT_MISSING_RECORDS_CONSOLE_CHECK_TIMER")
-        inactive = ("UNIT_NOT_ACTIVE_RECORDS_HEALTH_TIMER", "UNIT_NOT_ACTIVE_RECORDS_BACKUP_CHECK_TIMER",
-                    "UNIT_NOT_ACTIVE_RECORDS_CONSOLE_CHECK_TIMER")
-        states = (None, (True, True), (True, False), (False, True), (False, False))
-        for triple in product(states, repeat=3):
+        suffixes = ("RECORDS_HEALTH_TIMER", "RECORDS_BACKUP_CHECK_TIMER", "RECORDS_CONSOLE_CHECK_TIMER")
+        reasons = {
+            None: ("MISSING",),
+            (True, True): (),
+            (True, False): ("NOT_ACTIVE",),
+            (False, True): ("NOT_ENABLED",),
+            (False, False): ("NOT_ENABLED", "NOT_ACTIVE"),
+        }
+        for triple in product(reasons, repeat=3):
             with self.subTest(states=triple):
                 units = [unit(name, *state) for name, state in zip((HEALTH, BACKUP, CONSOLE), triple)
                          if state is not None]
                 path = self.receipt(capture(unit("other.timer"), *reversed(units)))
-                codes = [missing[i] if state is None else inactive[i]
-                         for i, state in enumerate(triple) if state != (True, True)]
+                codes = [f"UNIT_{reason}_{suffix}" for suffix, state in zip(suffixes, triple)
+                         for reason in reasons[state]]
                 expected = [self.evidence(path, "18", "fail" if codes else "pass", codes)] if units else []
                 self.assertEqual(adapter.records([path], NOW), expected)
 
@@ -103,7 +113,7 @@ class AdapterTests(unittest.TestCase):
         path = self.receipt(capture(unit(CONSOLE), unit(BACKUP), unit(HEALTH), unit(ARRIVAL, False),
                                     observed_at=earlier), "two-families.json")
         rows = adapter.records([str(path)], NOW)
-        self.assertEqual(rows, [self.evidence(path, "3", "fail", ["UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"], earlier),
+        self.assertEqual(rows, [self.evidence(path, "3", "fail", ["UNIT_NOT_ENABLED_RECORDS_ARRIVAL_PATH"], earlier),
                                 self.evidence(path, "18", "pass", stamp=earlier)])
         for row in rows:
             self.assertIsNone(golive_evidence.validate(row))
@@ -122,6 +132,32 @@ class AdapterTests(unittest.TestCase):
         """C1: An empty inventory cannot imply that any monitored family was evaluated."""
         self.assertEqual(adapter.records([self.receipt(capture())], NOW), [])
         self.assertEqual(adapter.records([], NOW), [])
+
+    def test_c2_same_instant_conflicting_unit_states(self):
+        """C2: Per-file validation alone lets one unit have two states at one instant."""
+        for name, first, second in (
+            (ARRIVAL, (True, True), (False, True)),
+            (CONSOLE, (False, True), (False, False)),
+        ):
+            a = self.receipt(capture(unit(name, *first)), "a.json")
+            b = self.receipt(capture(unit(name, *second)), "b.json")
+            for paths in ((a, b), (b, a)):
+                with self.subTest(unit=name, first=paths[0].name):
+                    self.assertInvalid(*paths)
+
+    def test_c1_compatible_captures_keep_individual_evidence(self):
+        """C1: Agreement does not deduplicate rows, and only tracked units at the same second join."""
+        a = self.receipt(capture(unit(ARRIVAL), unit("other.path")), "a.json")
+        b = self.receipt(capture(unit(ARRIVAL), unit("other.path", False)), "b.json", canonical=True)
+        timers = self.receipt(capture(unit(HEALTH), unit(BACKUP), unit(CONSOLE)), "timers.json")
+        earlier = "2026-01-02T03:04:04Z"
+        old = self.receipt(capture(unit(ARRIVAL, active=False), observed_at=earlier), "old.json")
+        self.assertEqual(adapter.records([a, b, timers, old], NOW), [
+            self.evidence(a, "3", "pass"),
+            self.evidence(b, "3", "pass"),
+            self.evidence(timers, "18", "pass"),
+            self.evidence(old, "3", "fail", ["UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"], earlier),
+        ])
 
     def test_c2_capture_shape(self):
         """C2: Reject extra, absent, malformed or repeated fields instead of guessing."""
@@ -217,4 +253,9 @@ class AdapterTests(unittest.TestCase):
         """C3: A later bad input exits 2 without emitting earlier evidence or private text."""
         good = self.receipt(capture(unit(ARRIVAL)), "good.json")
         bad = self.receipt(b"not JSON", "bad.json")
-        self.assertEqual(self.cli(str(good), str(bad), "--json"), (2, "", f"golive_adapt_systemd: {ERROR}\n"))
+        expected = (2, "", f"golive_adapt_systemd: {ERROR}\n")
+        self.assertEqual(self.cli(str(good), str(bad), "--json"), expected)
+        conflict = self.receipt(capture(unit(ARRIVAL, active=False)), "conflict.json")
+        for flags in ((), ("--json",)):
+            with self.subTest(flags=flags):
+                self.assertEqual(self.cli(str(good), str(conflict), *flags), expected)

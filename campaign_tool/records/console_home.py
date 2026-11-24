@@ -375,6 +375,25 @@ def _pending_drafts(queue):
         return None
 
 
+def _golive(run_report_path, now):
+    from . import console_page_golive, golive_catalog, golive_evidence, golive_ledger, golive_next
+
+    target = co._target(run_report_path)
+    if target is None:
+        return None
+    reports = console_page_golive._reports(target / "reports", now)
+    evidence = golive_evidence.load(target / "golive-evidence")
+    rows = golive_ledger.build(reports, evidence, now)
+    steps = golive_next.plan(rows)
+    next_step = "No remaining steps."
+    if steps:
+        first = steps[0]
+        stage = first["stage"]
+        next_step = "Next: %s — %s for stage %s (%s)." % (
+            first["owner"], golive_next._ACTION_TEXT[first["action"]], stage, golive_catalog.STAGES[stage].label)
+    return "%s · %s" % (golive_ledger._summary(rows), next_step)
+
+
 def render_system(model):
     sources = model.get("system") or {}
     drafts = _pending_drafts(model.get("queue") or {})
@@ -402,8 +421,11 @@ def render_home(model, token):
     out = ([console_layout.sources_banner(console_layout.plain(missing))] if missing else []) + [
            "<h1>Home</h1>",
            '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
-               model.get("approval_anchor", "unknown"), model.get("approval_anchor_pinned", True))),
-           render_system(model),
+               model.get("approval_anchor", "unknown"), model.get("approval_anchor_pinned", True)))]
+    if "golive" in model:  # The Home route supplies this request-scoped observation.
+        status = model["golive"] or "Go-live status unavailable."
+        out.append('<p id="golive-status" role="status">%s <a href="/golive">Go-live</a></p>' % esc(status))
+    out += [render_system(model),
            '<p role="status">%s need your decision · %s due in the next 7 days · %s</p>' % (decision_count, week_count, waiting_count)
            + ('<p role="status" class="diag">%d open request%s no usable due date, so the 7-day count may be low.</p>' % (
               no_clock, " has" if no_clock == 1 else "s have") if no_clock else ""),
@@ -499,5 +521,6 @@ def serve(handler):
     model["site_prs"] = site_prs.read(handler)  # independent of the timeline and queue
     model["system"] = system_sources(options, handler.pin, getattr(handler.server, "analysis_root", None),
                                      getattr(handler.server, "stale_hours", None))
+    model["golive"] = _guard(_golive, options.get("run_report_path"), model["now"])
     handler._send(200, render_home(model, handler.csrf_token()))
     return True

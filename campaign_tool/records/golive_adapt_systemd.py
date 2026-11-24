@@ -20,6 +20,7 @@ _FAMILIES = (
     ("3", ("records-arrival.path",)),
     ("18", ("records-health.timer", "records-backup-check.timer", "records-console-check.timer")),
 )
+_TRACKED_UNITS = frozenset(unit for _, required in _FAMILIES for unit in required)
 
 
 def _validate_marker(raw, value):
@@ -78,24 +79,28 @@ def _capture_units(value, now):
             raise ValueError("invalid or duplicate unit name")
         if not isinstance(unit["enabled"], bool) or not isinstance(unit["active"], bool):
             raise ValueError("unit states must be booleans")
-        units[name] = unit["enabled"] and unit["active"]
+        units[name] = (unit["enabled"], unit["active"])
     return units
 
 
-def _rows(raw, value, name, now):
-    units = _capture_units(value, now)
+def _rows(raw, observed_at, name, units):
     for stage, required in _FAMILIES:
         if not any(unit in units for unit in required):
             continue
         codes = []
         for unit in required:
-            if not units.get(unit):
-                state = "NOT_ACTIVE" if unit in units else "MISSING"
-                suffix = unit.upper().replace("-", "_").replace(".", "_")
-                codes.append(f"UNIT_{state}_{suffix}")
+            suffix = unit.upper().replace("-", "_").replace(".", "_")
+            if unit not in units:
+                codes.append(f"UNIT_MISSING_{suffix}")
+                continue
+            enabled, active = units[unit]
+            if not enabled:
+                codes.append(f"UNIT_NOT_ENABLED_{suffix}")
+            if not active:
+                codes.append(f"UNIT_NOT_ACTIVE_{suffix}")
         row = {
             "schema": "records-golive-evidence-v1", "stage": stage, "kind": "live",
-            "result": "fail" if codes else "pass", "recorded_at": value["observed_at"],
+            "result": "fail" if codes else "pass", "recorded_at": observed_at,
             "engine": None, "actor": "operator", "codes": codes,
             "source": {"schema": _CAPTURE, "sha256": host.digest(raw), "name": name},
         }
@@ -104,14 +109,16 @@ def _rows(raw, value, name, now):
 
 
 def records(receipt_paths, now):
-    """Return rows in input order, evaluating each capture independently.
+    """Return rows in input order without combining captures into one verdict.
 
     ``now`` is a datetime (a naive datetime is interpreted as UTC).
-    A valid journal marker yields no rows; any invalid input raises ValueError.
+    Valid journal markers yield no rows. Invalid input or conflicting states
+    for a tracked unit at the same observed instant raise ValueError.
     """
     if now.tzinfo is None:
         now = now.replace(tzinfo=timezone.utc)
     results = []
+    observed_states = {}
     for receipt in receipt_paths:
         path = Path(receipt)
         try:
@@ -120,7 +127,13 @@ def records(receipt_paths, now):
             value = host.decoded(raw.decode("utf-8"), len(raw))
             schema = value.get("schema") if isinstance(value, dict) else None
             if schema == _CAPTURE:
-                results.extend(_rows(raw, value, path.name, now))
+                units = _capture_units(value, now)
+                observed_at = value["observed_at"]
+                for unit in _TRACKED_UNITS.intersection(units):
+                    state = units[unit]
+                    if observed_states.setdefault((unit, observed_at), state) != state:
+                        raise ValueError("conflicting unit states at same observed_at")
+                results.extend(_rows(raw, observed_at, path.name, units))
             elif schema in (_OPERATION, _MANAGED, control.SCHEMA, _HOLD, _CLOSED):
                 _validate_marker(raw, value)
             else:

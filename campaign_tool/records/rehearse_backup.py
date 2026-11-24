@@ -111,6 +111,12 @@ def _tree_hashes(root):
 
 
 def _compare(project, declared, manifest, source, restored):
+    # Reuse the verifier's metadata-only walk, including the restored root.
+    # Hash only files from that inventory, not entries from a second walk.
+    try:
+        inventory = backup_v2._inventory(restored)
+    except (backup_v2.RecoveryError, OSError):
+        raise _Refused("RESTORE_MISMATCH") from None
     rows = json.loads(manifest.read_bytes())["files"]
     live_paths = {row["source"] for row in rows}
     if len(rows) != len(declared) or live_paths != {str(project / rel) for rel in declared}:
@@ -121,8 +127,11 @@ def _compare(project, declared, manifest, source, restored):
         expected[row["path"]] = declared[rel]
         if _sha(project / rel) != declared[rel]:
             raise _Refused("RESTORE_MISMATCH")
-    if _tree_hashes(source) != expected or _tree_hashes(restored) != expected:
+    restored_hashes = {Path(path).relative_to(restored).as_posix(): None if kind == "directory" else _sha(Path(path))
+                       for path, (kind, _) in inventory.items() if path != str(restored)}
+    if _tree_hashes(source) != expected or restored_hashes != expected:
         raise _Refused("RESTORE_MISMATCH")
+    return {row["path"]: restored_hashes[row["path"]] for row in rows}
 
 
 def run(sandbox):
@@ -133,6 +142,9 @@ def run(sandbox):
     digests = sets / records_backup.DIGESTS
     declared, source, trusted = {}, sets, ""
 
+    def hashed_outputs(*paths):
+        return {path: _sha(path) for path in paths}
+
     def seed():
         nonlocal declared
         _mark_sandbox(sandbox)
@@ -140,7 +152,7 @@ def run(sandbox):
         for directory in (runtime, proc, home):
             directory.mkdir(mode=0o700)
         _capture_units(units)
-        return [sandbox / SANDBOX_MARKER]
+        return hashed_outputs(sandbox / SANDBOX_MARKER)
 
     def quiescence():
         # Substitute only the proc filesystem. Audit still checks the capture,
@@ -152,7 +164,7 @@ def run(sandbox):
         # unchanged so the backup adapter, not the rehearsal, decides admission.
         if status not in (0, 1):
             raise _Refused("QUIESCENCE_AUDIT_FAILED")
-        return [units, evidence]
+        return hashed_outputs(units, evidence)
 
     def backup():
         nonlocal source, trusted
@@ -163,22 +175,23 @@ def run(sandbox):
         if entry["set"] != str(source):
             raise _Refused("BACKUP_FAILED")
         trusted = entry["manifest_sha256"]
-        return [digests, source / "manifest.json"]
+        return hashed_outputs(digests, source / "manifest.json")
 
     def verify():
         report = _backup_command(records_backup.verify_main, ["--set", str(source), "--digests", str(digests)])
         receipt = sandbox / "backup-verify.json"
         _write(receipt, (json.dumps({key: report[key] for key in ("code", "files", "sqlite_snapshots")},
                                      sort_keys=True) + "\n").encode())
-        return [receipt]
+        return hashed_outputs(receipt)
 
     def restore():
         backup_v2.restore_v2(str(source), str(restored), manifest_sha256=trusted)
-        return [restored / "manifest.json"]
+        # restore_v2 already checked the manifest against trusted.
+        return {restored / "manifest.json": trusted}
 
     def compare():
-        _compare(project, declared, source / "manifest.json", source, restored)
-        return []
+        payload_hashes = _compare(project, declared, source / "manifest.json", source, restored)
+        return {restored / path: digest for path, digest in sorted(payload_hashes.items())}
 
     result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
     # Both attended adapters discover off-project roots via the account's home.
@@ -187,7 +200,8 @@ def run(sandbox):
         for name, action in (("seed_project", seed), ("quiescence", quiescence), ("backup", backup),
                              ("backup_verify", verify), ("restore", restore), ("compare", compare)):
             try:
-                outputs = [{"path": path.relative_to(sandbox).as_posix(), "sha256": _sha(path)} for path in action()]
+                outputs = [{"path": path.relative_to(sandbox).as_posix(), "sha256": digest}
+                           for path, digest in action().items()]
                 code = "OK"
             except _Refused as error:
                 code, outputs = str(error), []

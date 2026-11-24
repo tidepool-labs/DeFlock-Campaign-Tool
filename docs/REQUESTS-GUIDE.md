@@ -177,6 +177,8 @@ python3 -m campaign_tool kit-response --directory ../my-campaign --agency ca-exa
 
 `--kind` is `acknowledged`, `extension`, `determination`, `produced`, `denied`, `closed`, `fee_estimate`, `fee_paid`, `fee_waived`, `clarification_requested`, `clarified` or `withdrawn`; a date may not be before the send date or the previous step. `--partial` keeps the request open; the stated production date is the agency's own, not a legal deadline. A fee estimate is a record of what the agency quoted and `fee_paid` records that you paid it elsewhere; the tool pays nothing. A download link the agency gives you is not stored or fetched; record only the date it expires with `--download-expires-on` (the request stays "download pending" until you link the records). Fees and downloads are covered in the [recording section](AGENCY-DISCOVERY.md#recording-a-hand-sent-request) and [expiring links](AGENCY-TIMELINE.md#download-links-that-expire-kit-requests). Other references: [stated production date](AGENCY-TIMELINE.md#stated-production-date-kit-requests), [agency reference number and correspondence](AGENCY-TIMELINE.md#agency-reference-number-kit-requests), [withheld basis](AGENCY-TIMELINE.md#withheld-basis-kit-requests).
 
+**When a reply has arrived but nobody has recorded it.** If you also run the records tool, its request register shows the next action `record answer` for a request whose agency reply (a message or portal notice dated on or after the request's start) has no recorded determination, and its reminder list says `reply arrived; record it first` instead of drafting a reminder. Arrival is only a prompt to look: it is not a determination, extension, production or fulfilment, and our own sent copy never counts. A person records what the reply says, with its date, in the project's tracker or ledger; once a determination date is recorded the prompt clears. `kit-response` above keeps your kit's own steps and does not feed the records register. Details: [replies that have arrived](RECORDS-FOLLOWUP-ENGINE.md#replies-that-have-arrived).
+
 ## 12. Record your own contacts
 
 When you phone the records office, a contact is a note on the request, not a step the agency took, so it never changes a status or date:
@@ -210,6 +212,12 @@ python3 -m campaign_tool today --directory ../my-campaign --as-of 2026-10-30
 ```bash
 python3 -m campaign_tool kit-calendar --directory ../my-campaign --out ../practice-files/open-requests.ics
 ```
+
+The records tool's request register (not `kit-due`) also moves a reminder date past a holiday the custodian lists in the optional `PROJECT/holidays.csv`, the way it already moves past a weekend. The custodian keeps that file; no holiday list ships with the tool, and without it only weekends roll. Dates stay provisional reminders, not legal deadlines. See the [holiday list](RECORDS-FOLLOWUP-ENGINE.md#holiday-list-projectholidayscsv).
+
+A custodian can ask for a proposed tracker with `records tracker-proposals --project P --run-id R --out DIR`. It writes a proposed copy of the tracker and a `proposals.json` into the new directory `DIR` and never touches the live tracker. A person reads `proposals.json`, checks the copy and applies it by hand: see [tracker proposals](RECORDS-FOLLOWUP-ENGINE.md#tracker-proposals).
+
+Recording an answer, applying a tracker proposal and approving and sending every reminder stay with people. The tool sends nothing.
 
 References: [recording a hand-sent request](AGENCY-DISCOVERY.md#recording-a-hand-sent-request), [private calendar](AGENCY-TIMELINE.md#private-calendar-kit-calendar), [expiring links](AGENCY-TIMELINE.md#download-links-that-expire-kit-requests).
 

@@ -2,9 +2,9 @@
 
 Read-only companion of ``/findings/review`` (which lists only findings waiting for a human). Reads the console's own
 ``--analysis-root`` through ``console_findings.load_all``: nothing is locked, created, written, approved or rejected, and no
-journal entry is appended. Counts per review state and hold come first, then one row per finding. The signing payload, the
-finding hash, reasons, quotes and any path are never shown. An approved finding is a completed human review, never clearance
-to publish; every other row says it is review required and not publishable.
+journal entry is appended. Counts per review state and hold cover all readable findings; an optional state filter narrows
+only the displayed rows. The signing payload, the finding hash, reasons, quotes and any path are never shown. An approved
+finding is a completed human review, never clearance to publish; every other row says it is review required and not publishable.
 """
 import re
 import urllib.parse
@@ -84,7 +84,18 @@ def _row(row):
         "%s<br>%s" % (esc(notice), label)))
 
 
-def render_body(doc):
+def _filter_links(selected_state):
+    links = []
+    for state in STATES:
+        current = ' aria-current="page"' if state == selected_state else ""
+        query = urllib.parse.urlencode({"state": state})
+        links.append('<a href="/findings?%s"%s>%s</a>' % (esc(query), current, esc(state.capitalize())))
+    if selected_state is not None:
+        links.append('<a href="/findings">Clear filter</a>')
+    return '<nav aria-label="Finding state filter"><p>Filter rows by review state: %s</p></nav>' % " · ".join(links)
+
+
+def render_body(doc, selected_state=None):
     out = ["<h1>All findings</h1>"]
     if doc is None:
         return "".join(out) + '<p class="diag" role="status">%s.</p>' % esc(NOT_CONFIGURED)
@@ -101,6 +112,7 @@ def render_body(doc):
     if broken:
         out.append('<p class="diag" role="status">%d agency review%s could not be read (finding_inputs_unavailable); its findings are not listed.</p>' % (
             broken, "" if broken == 1 else "s"))
+    out.append(_filter_links(selected_state))
     if not rows:
         if not broken:
             out.append("<p>The analysis root holds no findings.</p>")
@@ -112,21 +124,37 @@ def render_body(doc):
     out.append(_counts("By review state", states, lambda k: STATES.get(k, "unknown")))
     out.append(_counts("By hold", holds, lambda k: HOLDS.get(k) or ("held for an unknown reason" if k == "unknown" else
                                                                     "held for another reason (%s)" % k)))
-    out.append("<table><caption>Every finding</caption><thead><tr>%s</tr></thead><tbody>" % "".join(
+    caption = "Every finding"
+    if selected_state is not None:
+        rows = [row for row in rows if _state(row) == selected_state]
+        if not rows:
+            out.append('<p role="status">No readable findings match this review state.</p>')
+            return "".join(out)
+        caption = "Findings: " + selected_state
+    headings = "".join(
         '<th scope="col">%s</th>' % h for h in ("Agency", "Finding", "Topic", "Claim (first 200 characters)", "Review state", "Hold",
-                                                  "Cited records", "Status")))
+                                              "Cited records", "Status"))
+    out.append("<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (esc(caption), headings))
     out += [_row(r) for r in rows]
     return "".join(out) + "</tbody></table>"
 
 
 def serve(handler):
-    if urllib.parse.urlsplit(handler.path).query:
+    selected_state = None
+    try:
+        query = urllib.parse.urlsplit(handler.path).query
+        if query:
+            [(name, selected_state)] = urllib.parse.parse_qsl(query, keep_blank_values=True, strict_parsing=True,
+                                                              max_num_fields=1, errors="strict")
+            if name != "state" or selected_state not in STATES:
+                raise ValueError("invalid finding state filter")
+    except ValueError:
         handler._fail(400)
         return True
     root = getattr(handler.server, "analysis_root", None)
     try:
         doc = None if root is None else cf.load_all(root)
-        body = render_body(doc)
+        body = render_body(doc, selected_state)
     except (TypeError, KeyError, AttributeError, ValueError):  # a row of an unexpected shape: said, never an empty list
         body = render_body({"state": "unavailable", "code": "finding_rows_invalid"})
     handler._send(200, console_layout.shell("All findings", body, active="Findings"))

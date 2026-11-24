@@ -535,7 +535,7 @@ class FactsAndPolicy(unittest.TestCase):
         self.assertIn("<p>Fact sheets: unknown</p><p>Policy comparison: unknown</p>", self.section())
 
     def test_agency_bytes_unchanged_outside_summary(self):
-        digests = {"alpha-pd": "e6664fa30a41434c4789df8719e397c700b45b64df375149c576a0d378f7f86c", TRACKER: "6a98cf83760dbe5dfaf2212330ee8aa747a6b7e75e5e6cff46424ea24d1cf2ef"}  # pragma: allowlist secret -- SHA-256 of synthetic agency pages before DF1117L-03, not credentials
+        digests = {"alpha-pd": "118e66f90f8e8606c45344aa39818f0086ee3d4c46fa59de6fac099f07e96006", TRACKER: "c34c9c263c0d55e2328cc835d5fabfdcd97443d0e120a693cd88b928fad03440"}  # pragma: allowlist secret -- SHA-256 of synthetic agency pages before DF1117L-03, not credentials
         for agency, digest in digests.items():
             _, body = served_agency(self.project, agency)
             start = body.index('<section aria-label="Facts and policy">')

@@ -43,6 +43,16 @@ def _names(dir_fd):
     return "history_limit" if len(names) > FILE_LIMIT else names
 
 
+def _unique_object(pairs):
+    """Build one JSON object without silently selecting a value for a repeated key."""
+    obj = {}
+    for key, value in pairs:
+        if key in obj:
+            raise ValueError("duplicate_json_key")
+        obj[key] = value
+    return obj
+
+
 def _read_at(dir_fd, name):
     """Bounded, nonblocking, no-follow JSON object read of ``name`` relative to ``dir_fd``; never opens a FIFO or device."""
     fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC, dir_fd=dir_fd)
@@ -53,7 +63,7 @@ def _read_at(dir_fd, name):
     if len(raw) > pipeline_health.MAX_JSON_BYTES:
         raise ValueError("too_large")
     try:
-        data = json.loads(raw)
+        data = json.loads(raw.decode("utf-8"), object_pairs_hook=_unique_object)
     except RecursionError as exc:
         raise ValueError("metadata_json_depth") from exc
     if not isinstance(data, dict):

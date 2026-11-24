@@ -11,9 +11,14 @@ def _row(label, value):
 
 def render(project, send_config=None, drafts_config=None, source=None):
     source = source or console_snapshot.LiveSource(project)
-    out = ['<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>'
-           '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
-               approval_anchor_status.from_source(source), approval_anchor_status.pinned(source)))]
+    intro = '<h1>Settings</h1><p>Read-only. Changes are owner-only steps outside this page.</p>'
+    if isinstance(source, console_snapshot.SnapshotSource):
+        pin = source.pin
+        stamp = pin.exported_at
+        intro += '<p>Pinned export readings: run %s; export time: %s.</p>' % (
+            esc(pin.run_id), esc(stamp if stamp and stamp != 'unknown time' else 'unavailable'))
+    out = [intro + '<p role="status" id="approval-anchor">%s</p>' % esc(approval_anchor_status.paragraph(
+        approval_anchor_status.from_source(source), approval_anchor_status.pinned(source)))]
     config = None
     if send_config is None:
         out.append(_row('Send config', 'not given to the console'))
@@ -53,19 +58,22 @@ def render(project, send_config=None, drafts_config=None, source=None):
                '<code>test_recipient</code>; removing a stop file is G’s step.</p>')
     out.append('<h2>Drafts mailbox</h2><dl>' + _row('Configured', 'yes' if drafts_config else 'no') +
                '</dl><p>Change the console’s <code>records panel --mail-drafts-config ...</code> option.</p>')
-    settings = followup_clock.load_settings(project)
     out.append('<h2>Reminders</h2>')
-    if settings['invalid']:
-        out.append('<p>settings file invalid: all reminders off</p>')
-    out.append('<table><tr><th>Agency</th><th>Autonomy</th><th>Silence after days</th>'
-               '<th>Notice after days</th></tr>')
-    for label, override in [('Default (all other agencies)', {})] + sorted(settings['agencies'].items()):
-        effective = dict(settings['default'], **override)
-        out.append('<tr>' + ''.join('<td>%s</td>' % esc(v) for v in
-                                   (label, effective['autonomy'], effective['silence_after_days'],
-                                    effective['notice_after_days'])) + '</tr>')
-    out.append('</table><p>Edit <code>followup-settings.json</code> (owner-only); '
-               '<code>draft</code> makes reminder drafts, there is no send value.</p>')
+    if getattr(source, 'snapshot', False):
+        out.append('<p>Reminder settings were not observed in this export.</p>')
+    else:
+        settings = followup_clock.load_settings(project)
+        if settings['invalid']:
+            out.append('<p>settings file invalid: all reminders off</p>')
+        out.append('<table><tr><th>Agency</th><th>Autonomy</th><th>Silence after days</th>'
+                   '<th>Notice after days</th></tr>')
+        for label, override in [('Default (all other agencies)', {})] + sorted(settings['agencies'].items()):
+            effective = dict(settings['default'], **override)
+            out.append('<tr>' + ''.join('<td>%s</td>' % esc(v) for v in
+                                       (label, effective['autonomy'], effective['silence_after_days'],
+                                        effective['notice_after_days'])) + '</tr>')
+        out.append('</table><p>Edit <code>followup-settings.json</code> (owner-only); '
+                   '<code>draft</code> makes reminder drafts, there is no send value.</p>')
     for title, switch_state, command, payload in (
             ('Public status lines', source.public_updates_switch, 'public-updates', 'payload'),
             ('Packets', source.packets_switch, 'public-packets', 'switch-payload')):

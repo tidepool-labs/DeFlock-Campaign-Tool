@@ -131,15 +131,19 @@ def _item(row, token, waiting):
 
 def render_body(doc, token, held=frozenset()):
     """The page fragment. token None: the read-only list (no form, button, token or submit URL)."""
-    out = ["<h1>Finding review</h1>"]
+    out = ["<h1>Finding review</h1>", '<p><a href="/findings">All findings</a></p>']
     if doc is None:
         out.append('<p class="diag" role="status">Finding review needs configuration: start the console with --analysis-root ROOT.</p>')
         return "".join(out)
     if doc["state"] != "ok":
         out.append(console_layout.sources_banner([], ["Finding review: unavailable (%s). Nothing is listed; this is not an empty list." % doc["code"]]))
         return "".join(out)
-    out.append('<p role="status">%d finding%s waiting for a human review. %d rejected, %d deferred, %d held for another reason.</p>' % (
-        len(doc["rows"]), "" if len(doc["rows"]) == 1 else "s", doc["rejected"], doc["deferred"], doc["other"]))
+    count = len(doc["rows"])
+    findings = "%d finding%s" % (count, "" if count == 1 else "s")
+    status = ("Queue incomplete. Readable agencies only: %s listed for human review." % findings if doc["broken"]
+              else "%s waiting for a human review." % findings)
+    out.append('<p role="status">%s %d rejected, %d deferred, %d held for another reason.</p>' % (
+        status, doc["rejected"], doc["deferred"], doc["other"]))
     out.append("<p>%s</p>" % esc(NOTE))
     if token is None:
         out.append('<p class="diag" role="status">Read-only: a finding can be decided only from the exported console with a decision journal.</p>')
@@ -149,7 +153,7 @@ def render_body(doc, token, held=frozenset()):
     if doc["broken"]:
         out.append('<p class="diag" role="status">%d agency review%s could not be read (finding_inputs_unavailable); its findings are not listed.</p>' % (
             doc["broken"], "" if doc["broken"] == 1 else "s"))
-    if not doc["rows"]:
+    elif not doc["rows"]:
         out.append("<p>No finding is waiting for a human review.</p>")
     out += [_item(r, token, (r["agency"] + ":" + r["finding_id"], r["finding_sha256"]) in held) for r in doc["rows"]]
     return "".join(out)

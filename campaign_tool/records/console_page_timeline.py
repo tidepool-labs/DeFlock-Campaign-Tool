@@ -138,7 +138,14 @@ def render(model, filters, page_rows=(), total=0):
         out.append("<p>%s</p>" % ("No events match these filters." if any(filters[k] for k in PARAMS[:3])
                                   else "No events are recorded in this run's timeline."))
         return "\n".join(out + [console_layout.END])
-    out.append('<p role="status">%d events, newest first (dates in Pacific time). Page %d of %d.</p>' % (total, filters["page"], pages))
+    page = filters["page"]
+    destinations = [(page - 1, "Previous page"), (page + 1, "Next page")]
+    if page > 2:  # On page 2, Previous page already goes to the first page.
+        destinations.insert(0, (1, "First page"))
+    links = " ".join('<a href="%s">%s</a>' % (esc(_href(filters, n)), text)
+                     for n, text in destinations if 1 <= n <= pages)
+    out.append('<nav aria-label="Timeline pagination"><p role="status">%d events, newest first (dates in Pacific time). '
+               'Page %d of %d.</p>%s</nav>' % (total, page, pages, links))
     out.append("<table><caption>Events across agencies</caption><thead><tr>%s</tr></thead><tbody>" % "".join(
         '<th scope="col">%s</th>' % esc(h) for h in ("Date (Pacific)", "Agency", "Request", "Kind", "What happened", "Basis")))
     for r in page_rows:
@@ -149,8 +156,7 @@ def render(model, filters, page_rows=(), total=0):
         out.append("<tr><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td><td>%s</td></tr>" % (
             esc(r["day"].isoformat() if r["day"] else "undated"), agency, esc(r["request"]), esc(r["kind"]), esc(summary), r["basis"]))
     out.append("</tbody></table>")
-    links = [(n, t) for n, t in ((filters["page"] - 1, "Previous page"), (filters["page"] + 1, "Next page")) if 1 <= n <= pages]
-    out.append('<nav aria-label="Pages">%s</nav>' % " ".join('<a href="%s">%s</a>' % (esc(_href(filters, n)), t) for n, t in links))
+    out.append('<nav aria-label="Pages">%s</nav>' % links)
     return "\n".join(out + [console_layout.END])
 
 

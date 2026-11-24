@@ -16,9 +16,11 @@ from tests.records.test_pipeline_health import NOW
 REJECTED = "run_20261101T000000Z_deadbeef.json"  # filename and report id disagree: never valid
 
 
-def cover(i, out=0, skipped=0, gap=0, ocr=0, portal=0, kind="ok", stub=False):
+def cover(i, out=0, skipped=0, gap=0, ocr=0, portal=0, kind="ok", stub=False, mode="scheduled"):
     """A valid report whose coverage inputs are the arguments; kind warn/fail marks the adoption stage."""
     data = make(i)
+    if mode == "arrival":
+        data.update(mode="arrival", trigger="arrival")
     adoption = next(s for s in data["stages"] if s["name"] == "adoption")
     adoption["counts"].update(output=out, skipped=skipped)
     if kind != "ok":
@@ -104,13 +106,34 @@ class CoveragePage(unittest.TestCase):
             f.unlink()
         self.assertNotIn("Stub run", self.show(cover(2, out=1)))  # no stub item, no label
 
+    def test_trend_marks_require_comparable_adjacent_runs(self):
+        # The oldest arrival run could be (wrongly) reused when the next arrival run follows scheduled runs.
+        # The stub pairs catch a check of only one endpoint, or a check that allows two stubs to compare.
+        html = self.show(cover(0, out=1, mode="arrival"), cover(1, out=2), cover(2, out=3),
+                         cover(3, out=4, mode="arrival"), cover(4, out=5, mode="arrival", stub=True),
+                         cover(5, out=6, mode="arrival", stub=True), cover(6, out=7, mode="arrival"))
+        table = rows(html)
+        self.assertEqual(len(table), 7)  # incomparable runs still occupy their own rows
+        for i, mode, adopted in (
+            (0, "arrival Not comparable to previous run", "7"),  # older stub
+            (1, "arrival Stub run Not comparable to previous run", "6"),  # both stub
+            (2, "arrival Stub run Not comparable to previous run", "5"),  # newer stub
+            (3, "arrival Not comparable to previous run", "4"),  # different real modes
+        ):
+            with self.subTest(row=i):
+                self.assertEqual(table[i][2:7], [adopted, adopted, "0", "0", "0"])  # no up/down/same marks
+                self.assertEqual(table[i][1], mode)
+        self.assertEqual(table[4][1:7], ["scheduled", "3 ↑ up", "3 ↑ up", "0 = same", "0 = same", "0 = same"])
+        self.assertEqual(table[-1][1:7], ["arrival", "1", "1", "0", "0", "0"])  # no older run, no warning
+
     # Fails if the cap counts rejected files, the 31st run is displayed, its role as baseline is lost, a change mark
     # is wrong, or a lone run gets a mark.
     def test_newest_thirty_valid_rows_compare_against_immediately_older_run(self):
         runs = [cover(i, out=i, skipped=5, gap=3, portal=100 - i) for i in range(31)]
         self.show(make(40), name=REJECTED)  # a rejected newer file takes no slot
         html = self.show(*runs)
-        ids = re.findall(r"/run\?id=(run_\w+)", html)
+        trend = re.findall(r"<tbody>(.*?)</tbody>", html, re.S)[0]
+        ids = re.findall(r"/run\?id=(run_\w+)", trend)
         self.assertEqual(ids, [runs[i]["run_id"] for i in range(30, 0, -1)])
         self.assertNotIn(runs[0]["run_id"], html)
         self.assertIn("Older valid runs not listed: 1.", html)
@@ -138,18 +161,23 @@ class CoveragePage(unittest.TestCase):
         for html in (none, missing, empty, rejected):
             self.assertNotIn("<table", html)
             self.assertNotIn("Newest run", html)
+            self.assertNotIn('/run?id=', html)
 
 
 class CoveragePages(Panel):
     # Fails if export and live panels read different archives or render differently, the page is not in More, a query
-    # or POST reaches it, or its detail links do not resolve.
+    # or POST reaches it, or its detail links do not resolve. Distinct counts and URLs catch a missing summary
+    # link or one that opens the older trend baseline instead of the report whose counts the summary displays.
     def test_export_and_project_modes_show_same_coverage(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         reports = Path(tmp.name) / "t" / "reports"
         reports.mkdir(parents=True)
-        for i in range(3):
-            data = cover(i, out=i + 1, skipped=1, gap=1, portal=5, stub=i == 1)
+        older = cover(1, out=2, skipped=1, gap=1, portal=5, stub=True)
+        newest = cover(3, out=4, skipped=1, gap=1, portal=5)
+        older_url = f'/run?id={older["run_id"]}'
+        newest_url = f'/run?id={newest["run_id"]}'
+        for data in (older, newest):
             (reports / (data["run_id"] + ".json")).write_text(json.dumps(data))
         report = str(reports.parent / "run-report.json")
         live = ap.build_server(str(self.live), "run_1", actor="operator", system=False, run_report_path=report)
@@ -164,11 +192,15 @@ class CoveragePages(Panel):
             self.assertEqual(status, 200)
             self.assertEqual(fetch(server, "/coverage?x=1")[0], 404)
             self.assertIn('<a href="/coverage" aria-current="page">Coverage</a>', html)
-            pages.append(re.findall(r"<dl>.*?</dl>|<table.*?</table>", html, re.S))
-        self.assertEqual(len(pages[0]), 2)
+            summary = html.split('<h2>Newest run</h2>', 1)[1].split('<div class="scroll"', 1)[0]
+            trend = re.findall(r"<table.*?</table>", html, re.S)[0]
+            self.assertIn("Adopted: 4", latest(summary))
+            self.assertEqual(rows(trend)[1][2], "2")
+            links = re.findall(r'href="(/run\?id=[^"]+)">([^<]+)</a>', summary)
+            self.assertEqual(links, [(newest_url, "Open newest run details")])
+            self.assertEqual(re.findall(r'href="(/run\?id=[^"]+)"', trend), [newest_url, older_url])
+            self.assertEqual(fetch(server, links[0][0])[0], 200)
+            pages.append((summary, trend))
         self.assertEqual(pages[0], pages[1])
         self.assertIn("Stub run", pages[0][1])
         self.assertNotEqual(self.request("POST", "/coverage", {})[0], 200)
-        for server in (live, self.server):
-            link = re.findall(r'href="(/run\?id=run_\w+)"', fetch(server, "/coverage")[1])[0]
-            self.assertEqual(fetch(server, link)[0], 200)

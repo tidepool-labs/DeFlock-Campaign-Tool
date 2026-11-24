@@ -59,6 +59,8 @@ def main(argv=None):
     parser.add_argument("--evidence", required=True)
     parser.add_argument("--json", action="store_true", help="print the ordered list as JSON")
     parser.add_argument("--owner", help="show only this catalogue owner (exact match)")
+    parser.add_argument("--stage", choices=golive_catalog.STAGES,
+                        help="show only this catalogue stage ID (exact match)")
     args = parser.parse_args(argv)
     now = datetime.now(timezone.utc)
     try:
@@ -71,8 +73,12 @@ def main(argv=None):
     items = plan(golive_ledger.build(reports, evidence, now))
     if args.owner is not None:
         items = [item for item in items if item["owner"] == args.owner]
+    if args.stage is not None:
+        items = [item for item in items if item["stage"] == args.stage]
     if args.json:
         print(json.dumps(items, indent=2))
+    elif args.stage is not None and not items:
+        print(f"No pending step for stage {args.stage}.")
     else:
         for index, item in enumerate(items, start=1):
             stage = item["stage"]

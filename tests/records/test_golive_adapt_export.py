@@ -61,6 +61,46 @@ class ExportEvidenceTests(unittest.TestCase):
         """C1: Matching current export passes both; age alone must not mark it stale."""
         self.assert_records(self.expected("CURRENT"))
 
+    def switch_after_pin(self, target):
+        current = self.root / "current"
+        pin = adapter.snap.Pinner._pin
+
+        def pin_then_switch(pinner):
+            try:
+                return pin(pinner)
+            finally:
+                replacement = self.root / "next-current"
+                replacement.symlink_to(target, target_is_directory=True)
+                replacement.replace(current)
+
+        return patch.object(adapter.snap.Pinner, "_pin", autospec=True, side_effect=pin_then_switch)
+
+    def test_c1_current_switch_after_successful_pin(self):
+        """C1: A later nonmatching current must not make the hashed generation stale."""
+        other_run = report_for(NOW - timedelta(minutes=16))["run_id"]
+        target = Path("exports") / ("20261122T114400Z-" + other_run)
+        other = self.root / target
+        other.mkdir(mode=0o700)
+        manifest = json.loads(self.manifest.read_bytes())
+        manifest.update(run_id=other_run, approval_anchor={"state": "unavailable"})
+        (other / self.manifest.name).write_text(json.dumps(manifest), encoding="utf-8")
+        # Compare the entire row, including the original file's raw digest, not the new current's.
+        with self.switch_after_pin(target) as pin:
+            self.assert_records(self.expected("CURRENT"))
+        pin.assert_called_once()
+
+    def test_c1_current_switch_after_failed_pin(self):
+        """C1: A failed pin stays unreadable with the report digest, even if current recovers."""
+        current = self.root / "current"
+        target = current.readlink()
+        current.unlink()
+        with (self.switch_after_pin(target) as pin,
+              patch.object(adapter.health, "_read_json", wraps=adapter.health._read_json) as read_json):
+            self.assert_records(self.expected("UNREADABLE", "UNKNOWN", from_report=True))
+        pin.assert_called_once()
+        # The old post-hoc veto hid a second read when the replacement matched the report.
+        read_json.assert_not_called()
+
     def test_c1_stale(self):
         """C1: A different run beyond grace fails A2, not the recorded anchor."""
         self.write_report(16)
