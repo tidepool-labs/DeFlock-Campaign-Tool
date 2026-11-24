@@ -15,7 +15,7 @@ from pathlib import Path
 from campaign_tool.records import golive_catalog, golive_diff
 
 STAGES = list(golive_catalog.STAGES)
-SECRET = "SECRET-MARKER-9f3"
+PROBE = "LEAK-PROBE-9f3"
 # Written out here, not imported, so a changed ranking in the module fails.
 EXPECTED_RANK = {"BLOCKED": 0, "BUILT": 1, "REHEARSED": 2, "GATED": 3, "LIVE": 4}
 
@@ -102,13 +102,13 @@ class DiffTests(Base):
         dup["rows"][1] = dict(dup["rows"][0])
         cases["duplicate stage, right count"] = dup
         unknown = doc()
-        unknown["rows"][0]["stage"] = SECRET
+        unknown["rows"][0]["stage"] = PROBE
         cases["unknown stage"] = unknown
         for bad_stage in (None, 3, ["3"], {"a": 1}):
             weird = doc()
             weird["rows"][0]["stage"] = bad_stage
             cases[f"stage {bad_stage!r}"] = weird
-        for bad_state in ("live", "DONE", "", None, 4, True, ["LIVE"], SECRET):
+        for bad_state in ("live", "DONE", "", None, 4, True, ["LIVE"], PROBE):
             weird = doc()
             weird["rows"][2]["state"] = bad_state
             cases[f"state {bad_state!r}"] = weird
@@ -122,7 +122,7 @@ class DiffTests(Base):
                 with self.subTest(case=name, side=side):
                     with self.assertRaises(ValueError) as caught:
                         golive_diff.diff(*args)
-                    self.assertNotIn(SECRET, str(caught.exception))
+                    self.assertNotIn(PROBE, str(caught.exception))
 
 
 class ExpectTests(Base):
@@ -210,18 +210,18 @@ class CliTests(Base):
         # Bug: a traceback, or json's own message quoting the offending text.
         good = self.write("good.json", doc())
         wrong_state = doc()
-        wrong_state["rows"][0]["state"] = SECRET
+        wrong_state["rows"][0]["state"] = PROBE
         short = doc()
         short["rows"] = short["rows"][:-1]
         bad = {
-            "garbage.json": f"{SECRET} not json".encode(),
-            "binary.json": b"\xff\xfe" + SECRET.encode(),
-            "nan.json": b'{"rows": NaN, "x": "' + SECRET.encode() + b'"}',
+            "garbage.json": f"{PROBE} not json".encode(),
+            "binary.json": b"\xff\xfe" + PROBE.encode(),
+            "nan.json": b'{"rows": NaN, "x": "' + PROBE.encode() + b'"}',
             "deep.json": b"[" * 100000,
             "state.json": wrong_state,
             "short.json": short,
             "empty.json": b"",
-            "list.json": [SECRET],
+            "list.json": [PROBE],
         }
         for name, content in bad.items():
             for order in ("before", "after"):
@@ -232,7 +232,7 @@ class CliTests(Base):
                     self.assertEqual((code, out), (2, ""))
                     self.assertEqual(len(err.splitlines()), 1)
                     self.assertTrue(err.startswith("golive_diff: " + order + ":"))
-                    self.assertNotIn(SECRET, err)
+                    self.assertNotIn(PROBE, err)
                     self.assertNotIn("Traceback", err)
         code, _, err = self.run_cli(str(self.root / "absent.json"), good)
         self.assertEqual(code, 2)
