@@ -113,6 +113,8 @@ class RehearseMonitoringTests(unittest.TestCase):
 
         health = [self.read(f"{name}/health.json") for name, _ in groups[1:]]
         healthy, stale, failed, recovered, mail_stale, mail_recovered = health
+        analysis = next(check for check in mail_recovered["checks"] if check["check"] == "analysis")
+        self.assertEqual((analysis["state"], analysis["reason_code"]), ("unknown", "analysis_not_configured"))
         self.assertEqual([(h["schema"], h["state"], h["exit_code"]) for h in health],
                          [("records-health-v1", "ok", 0), ("records-health-v1", "stop", 3),
                           ("records-health-v1", "warn", 1), ("records-health-v1", "ok", 0),
@@ -229,6 +231,36 @@ class RehearseMonitoringTests(unittest.TestCase):
         self.assertEqual(actual["steps"][-1]["outputs"], [self.artifact(f"mail_poll_stale/{path}") for path in
                          ("health.json", f"{STALE}.cleared.json", f"{OUTPUTS}.cleared.json")])
         self.assertFalse((self.sandbox / "mail_poll_recovered").exists())
+
+    def test_mail_poll_recovery_refuses_unknown_configured_peer(self):
+        """C1: A recent poll must not bypass the peer check, even with healthy aggregate and alert readback."""
+        self.sandbox.mkdir(mode=0o700)
+        recovery = self.sandbox / "mail_poll_recovered"
+        write_bytes = Path.write_bytes
+
+        def inject_after_readback(path, data):
+            size = write_bytes(path, data)
+            # This is the last alert copied from the real writer in the recovery step.
+            if path == recovery / f"{OUTPUTS}.cleared.json":
+                report = writer.call_args.args[0]
+                self.assertEqual(report["state"], "ok")
+                checks = {item["check"]: item for item in report["checks"]}
+                mail = checks["mail_poll"]
+                self.assertEqual((mail["state"], mail["reason_code"]), ("ok", "mail_poll_recent"))
+                self.assertEqual(checks["schedule"]["state"], "ok")
+                checks["schedule"].update(state="unknown", reason_code="schedule_unreadable")
+            return size
+
+        with (patch.object(pipeline_health, "write_alerts", wraps=pipeline_health.write_alerts) as writer,
+              patch.object(Path, "write_bytes", inject_after_readback)):
+            actual = driver.run(self.sandbox)
+
+        last = actual["steps"][-1]
+        self.assertTrue(all(entry["code"] == "OK" for entry in actual["steps"][:-1]))
+        self.assertEqual(last["outputs"], [self.artifact(f"mail_poll_recovered/{name}") for name in
+                         ("health.json", f"{STALE}.cleared.json", f"{MAIL}.cleared.json", f"{OUTPUTS}.cleared.json")])
+        self.assertEqual((last["name"], last["code"], actual["codes"]),
+                         ("mail_poll_recovered", "MAIL_POLL_RECOVERED_FAILED", ["MAIL_POLL_RECOVERED_FAILED"]))
 
     def test_run_refuses_invalid_sandboxes(self):
         """C3: Direct run cannot start in a missing, non-private, nonempty, or linked root."""
