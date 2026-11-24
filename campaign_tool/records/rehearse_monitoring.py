@@ -125,9 +125,12 @@ def _observe(sandbox, name, now, finishes, outputs_code, expected_state, expecte
     mail = checks.get("mail_poll", {})
     expected_mail = ("ok", "mail_poll_recent") if refresh_poll else ("warn", "mail_poll_stale")
     mail_matches = (mail.get("state"), mail.get("reason_code")) == expected_mail
-    # Overall warn alone would also allow another configured check to be unknown.
-    peers_healthy = refresh_poll or all(item["state"] == "ok" or item["reason_code"] in pipeline_health.NOT_CONFIGURED
-                                        for check, item in checks.items() if check != "mail_poll")
+    # Mail loss and recovery must both be isolated from other configured check failures.
+    peers_required = not refresh_poll or name == "mail_poll_recovered"
+    peers_healthy = not peers_required or all(
+        item["state"] == "ok" or item["reason_code"] in pipeline_health.NOT_CONFIGURED
+        for check, item in checks.items() if check != "mail_poll"
+    )
     return (report["state"] == expected_state and actual_alerts == expected_alerts
             and mail_matches and peers_healthy), outputs
 
