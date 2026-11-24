@@ -133,14 +133,35 @@ class GoLiveAcceptanceTests(unittest.TestCase):
 
     def test_c1_invalid_rows_raise_value_error(self):
         """C1: Unknown stages and malformed rows fail closed instead of reading as ready."""
-        with self.assertRaises(ValueError):
-            golive_acceptance.evaluate([dict(satisfied("1"), stage="999")])
-        broken = satisfied("3")
-        del broken["gate"]
-        with self.assertRaises(ValueError):
-            golive_acceptance.evaluate([broken])
-        with self.assertRaises(ValueError):
-            golive_acceptance.evaluate([{"stage": "1"}])
+        # Every case starts from a complete, valid ledger and breaks exactly one thing, so the
+        # ValueError must come from that field's own check and not from the missing-stage check.
+        # If a missing or malformed field stopped raising, the matching case would evaluate cleanly.
+        self.assertEqual(golive_acceptance.evaluate(all_satisfied())["blockers"], [])
+
+        def broken(stage, change):
+            rows = all_satisfied()
+            row = next(r for r in rows if r["stage"] == stage)
+            change(row)
+            return rows
+
+        def drop(key):
+            return lambda row: row.pop(key)
+
+        for label, rows in (
+            ("unknown stage", all_satisfied() + [dict(satisfied("1"), stage="999")]),
+            ("row without a stage", all_satisfied() + [{"pipeline": True}]),
+            ("stage 3 without gate", broken("3", drop("gate"))),
+            ("stage 3 without rehearsed", broken("3", drop("rehearsed"))),
+            ("stage 3 gate has no status", broken("3", lambda r: r.update(gate={}))),
+            ("stage 3 gate is not a mapping", broken("3", lambda r: r.update(gate=None))),
+            ("stage 3 without state", broken("3", drop("state"))),
+            ("stage 3 without pipeline flag", broken("3", drop("pipeline"))),
+            ("stage 1 reduced to its stage key", broken("1", lambda r: [r.pop(k) for k in list(r) if k != "stage"])),
+            ("console stage without pipeline flag", broken("A1", drop("pipeline"))),
+        ):
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    golive_acceptance.evaluate(rows)
 
     def test_c1_incomplete_duplicate_or_misclassified_rows_raise(self):
         """C1: A ledger missing a pipeline stage, repeating a stage or misflagging one must not read as ready.
