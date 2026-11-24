@@ -45,7 +45,7 @@ def _future(record):
     return dict(status="missing", recorded_at=record["recorded_at"], reason="FUTURE_DATED")
 
 
-def _check(required, record, newest_live, now, cutoff=None):
+def _check(required, record, newest_live, now, cutoff=None, *, null_engine_ok=False):
     if not required or record is None:
         return dict(status="missing" if required else "not needed", recorded_at=None)
     stamp = record["recorded_at"]
@@ -53,7 +53,9 @@ def _check(required, record, newest_live, now, cutoff=None):
         return _future(record)
     if cutoff is not None and _when(stamp) < cutoff:
         return dict(status="missing", recorded_at=stamp, reason="STALE")
-    if newest_live is not None and record["engine"] != newest_live["engine"]:
+    # A recorded gate GO carries no engine (golive_record.from_gate); it is not an engine mismatch.
+    unattributed = null_engine_ok and record["engine"] is None
+    if newest_live is not None and not unattributed and record["engine"] != newest_live["engine"]:
         return dict(status="missing", recorded_at=stamp, reason="ENGINE_CHANGED")
     return dict(status=record["result"], recorded_at=stamp)
 
@@ -82,6 +84,8 @@ def build(reports, evidence, now):
     the first required column without positive evidence, even if a later
     column already has it. Freshness is relative to the newest live record
     across the ledger; absence of a live record does not establish an engine.
+    A gate record with a null engine (as written by ``golive_record.from_gate``)
+    is not compared with that engine; rehearsals and gates naming an engine are.
     A record dated after ``now`` is FUTURE_DATED: missing, never a pass or a
     failure, never replaced by an older record, and never the newest live engine.
     """
@@ -105,7 +109,8 @@ def build(reports, evidence, now):
     for stage, rule in golive_catalog.STAGES.items():
         rehearsed = _check(rule.needs_rehearsal, golive_evidence.latest(rehearsals, stage, "rehearsal"),
                            newest_live, now, cutoff)
-        gate = _check(rule.needs_gate, golive_evidence.latest(evidence, stage, "gate"), newest_live, now)
+        gate = _check(rule.needs_gate, golive_evidence.latest(evidence, stage, "gate"), newest_live, now,
+                      null_engine_ok=True)
         record = live_records[stage]
         live = _live(stage, rule, record, proofs.get(stage), now)
         if live["status"] != "missing":
