@@ -64,10 +64,24 @@ def _shown(code):
     return code if isinstance(code, str) and _SAFE_CODE.fullmatch(code) else "(not a code)"
 
 
+def _is_driver_crash(receipt):
+    """True for a failed run whose driver crashed: the runner recorded a crash step and the crash code."""
+    steps = receipt.get("steps")
+    return (receipt.get("result") == "fail"
+            and DRIVER_ERROR in (receipt.get("codes") or [])
+            and isinstance(steps, list)
+            and any(isinstance(step, dict) and step.get("code") == DRIVER_ERROR for step in steps))
+
+
 def explain(receipt):
     """Return the plain-words lines for a receipt: verdict, one line per reason, then observed refusals."""
     lines = ["QUALIFIED" if receipt.get("qualified") is True else "NOT QUALIFIED"]
+    # A crash receipt carries only the generic failed-step code in qualify_codes, so the crash is read from the
+    # steps and codes; its specific reason takes the place of the generic failed-step line, never an extra one.
+    crashed = _is_driver_crash(receipt)
     for code in receipt.get("qualify_codes") or []:
+        if crashed and code == _FAILED:
+            code = DRIVER_ERROR
         if isinstance(code, str) and code in _TEXT:
             reason, action = _TEXT[code]
             lines.append(f"reason: {reason}; next: {action}")

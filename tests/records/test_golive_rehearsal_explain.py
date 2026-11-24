@@ -9,6 +9,7 @@ import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from campaign_tool.records import golive_rehearsal_explain as explain_mod
@@ -217,6 +218,45 @@ class RealDriverRuns(Base):
         self.assertEqual(lines[2:], ["observed (expected refusal): PHONE_REPLAY",
                                      "observed (expected refusal): SIGNATURE_REFUSED"])
         self.assertNotIn("REHEARSAL_ENGINE_UNKNOWN", out)
+
+
+class RealDriverCrash(Base):
+    """A driver that raises is recorded by the runner as a step and code REHEARSAL_DRIVER_ERROR."""
+
+    def crash_receipt(self):
+        def boom(sandbox):
+            (sandbox / SANDBOX_MARKER).touch(mode=0o600)  # as a real driver does before it crashes
+            raise RuntimeError("synthetic crash message")
+
+        driver = SimpleNamespace(__name__="rehearse_boom", STAGES=("A6",), TITLE="boom", run=boom)
+        with patch.object(rehearsal_receipt, "engine_identity", return_value=ENGINE):
+            receipt, path = rehearse._run_driver(driver, self.root, ENGINE)
+        return receipt, path
+
+    def test_c2_driver_crash_gets_its_own_reason_not_the_generic_failed_step(self):
+        """C2: a real crash receipt explains the crash. Bug caught: the crash code sits only in steps/codes, so the
+        CLI said only 'a step reported a failure', and the dedicated crash text was unreachable."""
+        receipt, path = self.crash_receipt()
+        self.assertEqual(receipt["qualify_codes"], ["REHEARSAL_FAILED_STEP"])  # the runner's real shape
+        reason, action = explain_mod._TEXT[explain_mod.DRIVER_ERROR]
+        expected = ["NOT QUALIFIED", f"reason: {reason}; next: {action}"]
+        self.assertEqual(explain_mod.explain(receipt), expected)
+        status, out, err = run_cli(path)
+        self.assertEqual((status, out.splitlines(), err), (1, expected, ""))
+        for leak in ("RuntimeError", "synthetic crash message", "REHEARSAL_DRIVER_ERROR", "observed"):
+            self.assertNotIn(leak, out)
+
+    def test_c1_driver_crash_code_is_never_an_expected_refusal(self):
+        """C1: only a passing run has expected refusals. Bug caught: the crash code shown as an observed refusal."""
+        receipt, _ = self.crash_receipt()
+        self.assertEqual(receipt["result"], "fail")
+        self.assertFalse([line for line in explain_mod.explain(receipt) if line.startswith("observed")])
+
+    def test_c2_a_failed_run_without_a_crash_step_keeps_the_generic_reason(self):
+        """C2: the crash text needs a crash step. Bug caught: any failed run with the crash code called a crash."""
+        receipt = self.build(steps=[{"name": SECRET_STEP, "code": "BAD", "outputs": []}], codes=[explain_mod.DRIVER_ERROR])
+        reason, action = explain_mod._TEXT["REHEARSAL_FAILED_STEP"]
+        self.assertEqual(explain_mod.explain(receipt), ["NOT QUALIFIED", f"reason: {reason}; next: {action}"])
 
 
 if __name__ == "__main__":
