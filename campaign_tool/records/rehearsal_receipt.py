@@ -101,9 +101,13 @@ def _validate_shape(receipt):
         raise ValueError("invalid rehearsal receipt schema")
     if not _matches(r"[A-Za-z_][A-Za-z_0-9]*", receipt["module"]):
         raise ValueError("invalid rehearsal module basename")
-    for key in ("stages", "manual_steps"):
-        if not _list_of(receipt[key], lambda item: isinstance(item, str)):
-            raise ValueError("invalid rehearsal string list")
+    stages = receipt["stages"]
+    if not stages or not _list_of(stages, lambda item: isinstance(item, str) and item.strip()):
+        raise ValueError("rehearsal stages must be a nonempty list of nonblank strings")
+    if len(set(stages)) != len(stages):
+        raise ValueError("duplicate rehearsal stage identity")
+    if not _list_of(receipt["manual_steps"], lambda item: isinstance(item, str)):
+        raise ValueError("invalid rehearsal string list")
     if not _list_of(receipt["codes"], _code):
         raise ValueError("invalid rehearsal driver codes")
     if _timestamp(receipt["finished_at"]) < _timestamp(receipt["started_at"]):
