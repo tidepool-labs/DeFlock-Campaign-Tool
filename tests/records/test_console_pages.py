@@ -50,14 +50,16 @@ class ConsolePagesTests(Base):
         view = stub('view', ('/fixture-page', '/fixture-alias'), ('Fixture <view> & more', 10))
         tail = stub('tail', ('/fixture-tail',), ('Last', 20))
         ahead = stub('zed', ('/fixture-ahead',), ('First', 10))
-        tie = stub('aaa', ('/fixture-z',), ('First', 10))
+        tie = stub('aaa', ('/fixture-z',), ('Fixture <view> & More', 10))
+        hidden = stub('hidden', ('/fixture-hidden',))
+        also_hidden = stub('also_hidden', ('/fixture-also-hidden',))
 
         def render(handler):
             handler._send(200, layout.shell('Fixture', '<p>Registered page</p>', active=view.NAV[0]))
             return True
 
         view.serve.side_effect = render
-        registry = self.load_registry(tail, tie, view, ahead)
+        registry = self.load_registry(tail, tie, view, ahead, hidden, also_hidden)
         with mock.patch.object(panel, 'console_pages', registry), \
                 mock.patch.object(pages, '_NAV', registry.nav_links()):
             server = panel.build_server(self.project, RUN, actor='operator-1', as_of=AS_OF, system=False)
@@ -78,6 +80,8 @@ class ConsolePagesTests(Base):
                     for path in ('/fixture-pages', '/fixture-page/', '/%66ixture-page'):
                         self.assertEqual(client.send('GET', path)[0], 404)
                     self.assertEqual(client.send('GET', '/fixture-tail')[0], 404)  # callback declined
+                    for path in ('/fixture-hidden', '/fixture-also-hidden'):
+                        self.assertEqual(client.send('GET', path)[0], 404)  # callback declined
                     self.assertEqual(client.post('/fixture-page', {})[0], 404)
                     self.assertEqual(client.send('GET', '/fixture-page', host='example.invalid')[0], 403)
                 finally:
@@ -88,6 +92,14 @@ class ConsolePagesTests(Base):
         tail.serve.assert_called_once()
         ahead.serve.assert_not_called()
         tie.serve.assert_not_called()
+        hidden.serve.assert_called_once()
+        also_hidden.serve.assert_called_once()
+
+        # The layout above matches active by label. If these two registered links
+        # share a label, they would both be current despite different paths and orders.
+        duplicate = stub('collision', ('/fixture-z',), (view.NAV[0], 30))
+        with self.assertRaisesRegex(ValueError, r"console_page_view: duplicate NAV label 'Fixture <view> & more'$"):
+            self.load_registry(view, duplicate)
 
     def test_registered_get_dispatch_and_reserved_refusals(self):
         good = stub('ok', ('/fixture',))
