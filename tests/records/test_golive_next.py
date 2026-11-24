@@ -241,3 +241,123 @@ class CliTests(unittest.TestCase):
                 self.assertEqual((code, out), (2, ""))
                 self.assertIn("usage:", err)
                 self.assertIn(f"argument --stage: invalid choice: {invalid!r}", err)
+
+
+class CommandsTests(unittest.TestCase):
+    """C1-C4: the optional --commands hint names what to run and never changes default output."""
+
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        root = Path(folder.name).resolve()
+        self.args = ["--reports", str(root / "reports"), "--evidence", str(root / "evidence")]
+        (root / "reports").mkdir()
+        (root / "evidence").mkdir()
+
+    def run_main(self, evidence, *flags):
+        # Patch the ledger so the rows are exact; the hints come from the real driver and gate registries.
+        rows = golive_ledger.build([], evidence, NOW)
+        out, err = io.StringIO(), io.StringIO()
+        with patch.object(golive_next.golive_ledger, "build", return_value=rows), \
+                redirect_stdout(out), patch.object(sys, "stderr", err):
+            code = golive_next.main([*self.args, *flags])
+        return code, out.getvalue(), err.getvalue()
+
+    # A qualified stage-4 rehearsal makes the gate the next step for that stage.
+    GATE_4 = [receipt("4", "rehearsal")]
+
+    def test_c1_default_text_and_json_are_unchanged_by_the_new_flag(self):
+        """C1: Without --commands there is no run: line and no command key.
+
+        Bug caught: hints always printed, which would also change every caller of the plain view.
+        """
+        code, text, err = self.run_main(self.GATE_4, "--stage", "4")
+        self.assertEqual((code, text, err), (0,
+            "1. operator: Check the gate for stage 4 (Portal downloads) — a passing gate receipt is missing.\n", ""))
+        code, out, err = self.run_main(self.GATE_4, "--stage", "4", "--json")
+        self.assertEqual((code, json.loads(out), err), (0, [
+            dict(stage="4", action="gate", owner="operator", reason="GATE_MISSING")], ""))
+        # plan() is what console Home reads; its rows must never carry a command.
+        rows = golive_ledger.build([], [], NOW)
+        self.assertTrue(all("command" not in item for item in golive_next.plan(rows)))
+        # The hinted text is the default text with one indented line after each step.
+        _, plain, _ = self.run_main([], "--owner", "operator")
+        _, hinted, _ = self.run_main([], "--owner", "operator", "--commands")
+        kept = [line for line in hinted.splitlines() if not line.startswith("   run: ")]
+        self.assertEqual("\n".join(kept) + "\n", plain)
+
+    def test_c2_rehearse_names_the_command_only_for_a_covered_stage(self):
+        """C2: Stage 4 has a driver; stage 2 says so instead of printing a command that would fail.
+
+        Bug caught: printing `records rehearse --stage 2` for every stage, which the CLI rejects.
+        """
+        code, out, err = self.run_main([], "--stage", "4", "--commands")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.endswith("\n   run: records rehearse --stage 4 --out <DIR>\n"))
+        code, out, err = self.run_main([], "--stage", "2", "--commands")
+        self.assertEqual((code, err), (0, ""))
+        self.assertTrue(out.endswith("\n   run: no rehearsal driver covers stage 2\n"))
+
+    def test_c2_gate_names_the_covering_pack_or_says_none(self):
+        """C2: Stage 4's gate hint names c5-portal-apply; a stage no pack covers says so.
+
+        Bug caught: a hard-coded or off-by-one lookup that returns another stage's gate.
+        """
+        _, out, _ = self.run_main(self.GATE_4, "--stage", "4", "--commands")
+        self.assertTrue(out.endswith("\n   run: gate pack IDs: c5-portal-apply\n"))
+        # Every real gate stage has a pack today, so show the uncovered case with a registry that omits stage 4.
+        other = {"s5-engine-switch": dict(stages=["15"])}
+        with patch("campaign_tool.records.golive_gate_order.registry", return_value=other):
+            _, out, _ = self.run_main(self.GATE_4, "--stage", "4", "--commands")
+        self.assertTrue(out.endswith("\n   run: no gate pack covers stage 4\n"))
+
+    def test_c2_live_items_point_at_the_evidence_adapter_only(self):
+        """C2: A go-live item gets the fixed pointer, with no invented command.
+
+        Bug caught: a static stage-to-adapter table that drifts from the real adapters.
+        """
+        _, out, _ = self.run_main([], "--stage", "1", "--commands")
+        self.assertTrue(out.endswith("\n   run: see the stage's evidence adapter\n"))
+
+    def test_c2_c4_gate_ids_from_two_packs_keep_registry_order(self):
+        """C2/C4: A stage covered by two packs lists both IDs, in registry (not sorted) order.
+
+        Bug caught: keeping only the first match, sorting the IDs, or reading a fixed table.
+        """
+        registry = {"zz-first": dict(stages=["4"]), "other": dict(stages=["15"]), "aa-second": dict(stages=["4", "15"])}
+        with patch("campaign_tool.records.golive_gate_order.registry", return_value=registry):
+            hints = golive_next.commands([dict(stage="4", action="gate"), dict(stage="15", action="gate")])
+        self.assertEqual(hints, ["gate pack IDs: zz-first, aa-second", "gate pack IDs: other, aa-second"])
+
+    def test_c4_a_new_driver_appears_without_editing_the_module(self):
+        """C4: The covered-stage set comes from rehearse.discover() on every call.
+
+        Bug caught: a cached or literal stage list that misses a driver added later.
+        """
+        item = [dict(stage="2", action="rehearse")]
+        self.assertEqual(golive_next.commands(item), ["no rehearsal driver covers stage 2"])
+        driver = type("Driver", (), {"STAGES": ("2",)})
+        with patch("campaign_tool.records.rehearse.discover", return_value=(driver,)):
+            self.assertEqual(golive_next.commands(item), ["records rehearse --stage 2 --out <DIR>"])
+
+    def test_c3_json_command_key_exists_only_with_the_flag(self):
+        """C3: --json adds one command string per item only with --commands, keeping the other keys.
+
+        Bug caught: adding the key to plan() output, or dropping it in the JSON view.
+        """
+        _, out, _ = self.run_main([], "--stage", "4", "--json")
+        self.assertEqual(json.loads(out), [dict(stage="4", action="rehearse", owner="operator",
+                                                reason="REHEARSAL_MISSING")])
+        _, out, _ = self.run_main([], "--stage", "4", "--json", "--commands")
+        self.assertEqual(json.loads(out), [dict(stage="4", action="rehearse", owner="operator",
+                                                reason="REHEARSAL_MISSING",
+                                                command="records rehearse --stage 4 --out <DIR>")])
+
+    def test_c4_a_broken_driver_is_a_clean_error_not_a_traceback(self):
+        """C4: A driver that fails validation exits 2 with the module's message.
+
+        Bug caught: letting the discover() ValueError escape as a traceback.
+        """
+        with patch("campaign_tool.records.rehearse.discover", side_effect=ValueError("Invalid rehearsal driver x")):
+            self.assertEqual(self.run_main([], "--commands"),
+                             (2, "", "golive_next: Invalid rehearsal driver x\n"))
