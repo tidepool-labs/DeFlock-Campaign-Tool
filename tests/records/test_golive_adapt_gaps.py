@@ -169,6 +169,22 @@ class GapsEvidenceTest(unittest.TestCase):
         self.assertEqual(self.codes({"items": None, "register": None, "timeline": None}),
                          [[], [ITEMS + "MISSING", REG + "MISSING", TL + "MISSING"]])
 
+    def test_c3_rows_without_a_request_identity_do_not_bind_the_register(self):
+        """C3 bug: a register and timeline that both carry request_count=1 and requests=[{}] (or rows missing an
+        agency or request id, or with non-string ids) matched each other and passed stage 12 with no codes."""
+        base_reg, base_tl = register_doc(), timeline_doc()
+        row = dict(base_reg["requests"][0])
+        bad_rows = [{}, {k: v for k, v in row.items() if k != "agency_key"}, {**row, "agency_key": ""},
+                    {k: v for k, v in row.items() if k != "request_id"}, {**row, "request_id": 7},
+                    {**row, "ledger_request_id": 7}, {**row, "ledger_request_id": ""}]
+        for bad in bad_rows:
+            copy = {"register": {**base_reg, "requests": [bad]}, "timeline": {**base_tl, "requests": [bad]}}
+            self.assertEqual(self.codes(copy)[1], [REG + "SCHEMA", TL + "SCHEMA"], bad)
+        # A tracker-only row legitimately has no ledger request id (None); it must still bind.
+        tracker_only = {**row, "ledger_request_id": None}
+        copy = {"register": {**base_reg, "requests": [tracker_only]}, "timeline": {**base_tl, "requests": [tracker_only]}}
+        self.assertEqual(self.codes(copy)[1], [])
+
     def test_c4_source_is_the_sorted_digest_listing_of_the_file_bytes(self):
         """C4 bugs: a digest ignoring file bytes; an invented digest for files never read."""
         root, report = self.build(), self.report()

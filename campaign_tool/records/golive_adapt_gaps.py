@@ -15,9 +15,10 @@ or non-finite numbers):
   an ``items`` list and this run's ``run_id``.
 * ``CURRENT-REQUEST-REGISTER.json`` (stage 12, ``register.write_for_run``): its schema string and at least one
   request. It has no run id, so it must also agree with the timeline (as-of date, ordered agency/request
-  identities); a register copied from another run fails.
+  identities); every row must name its agency and request (a ledger id may be null for a tracker-only row).
+  A register copied from another run fails.
 * ``outcomes/timeline.json`` (stage 12, ``timeline.write_run_timeline``): its schema string, a consistent
-  request count and this run's ``run_id``.
+  request count, a named agency and request per row and this run's ``run_id``.
 
 A stage also fails with its own ``golive_stages.OUTPUT_FAILURES`` code when the run report carries it.
 """
@@ -120,11 +121,18 @@ def _items(doc, run_id):
     return "SCHEMA" if not ok else "OK" if doc["run_id"] == run_id else "RUN"
 
 
+def _named(row, key, optional=False):
+    value = row.get(key)
+    return (optional and value is None) or (type(value) is str and bool(value.strip()))
+
+
 def _shape(doc, schema):
+    """Schema string, a consistent request count and a row identity (agency, request id, ledger id or None) per row."""
     rows = doc.get("requests")
     return (doc.get("schema") == schema and type(rows) is list and type(doc.get("request_count")) is int
-            and doc["request_count"] == len(rows) and all(type(row) is dict for row in rows)
-            and type(doc.get("as_of")) is str)
+            and doc["request_count"] == len(rows) and type(doc.get("as_of")) is str
+            and all(type(row) is dict and _named(row, "agency_key") and _named(row, "request_id")
+                    and _named(row, "ledger_request_id", True) for row in rows))
 
 
 def _register(doc, _run_id):
