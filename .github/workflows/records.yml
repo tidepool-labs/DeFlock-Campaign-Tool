@@ -67,8 +67,11 @@ jobs:
         run: python -B -W error::ResourceWarning tools/ci_affected.py --tier full --shard ${{ matrix.shard }} --shards 3 --jobs 2
   offline:
     # Preserve the required check name, and fail closed on any failed shard.
+    # `!cancelled()` still runs this roll-up when a needed job failed (a skipped
+    # roll-up would read as passing); the first steps check needs.*.result before
+    # any checkout or setup, so a red shard fails in seconds.
     needs: [affected, full]
-    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (always())
+    if: (github.event_name != 'pull_request' || github.event.pull_request.draft == false) && (!cancelled())
     runs-on: ubuntu-latest
     timeout-minutes: 35
     strategy:
