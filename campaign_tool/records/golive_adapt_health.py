@@ -46,7 +46,7 @@ def _check_states(report):
             raise ValueError("invalid pipeline-health check")
         name, state, reason = item.get("check"), item.get("state"), item.get("reason_code")
         if (name not in _CHECKS or name in checks or state not in ("ok", "warn", "stop", "unknown")
-                or not isinstance(reason, str) or not reason):
+                or not isinstance(reason, str) or not reason.strip()):
             raise ValueError("invalid or duplicate pipeline-health check")
         if name == "mail_poll" and state == "ok" and reason == "mail_poll_stale":
             raise ValueError("contradictory mail-poll check")
