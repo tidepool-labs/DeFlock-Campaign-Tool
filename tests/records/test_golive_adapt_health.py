@@ -174,6 +174,22 @@ class HealthCLITests(unittest.TestCase):
             self.assertEqual((status, json.loads(out), err),
                              (2, [expected(value, "fail", ["DISK"], name="partial.json", raw=raw)], ""))
 
+    def test_blank_reason_is_refused(self):
+        # A truthiness check alone lets a whitespace-only reason mint a stage-18
+        # pass when the inventory is complete and all states are OK.
+        value = report()
+        value["checks"][-1]["reason_code"] = " \t\n"
+        with self.subTest(boundary="decoded"):
+            with self.assertRaisesRegex(ValueError, "^invalid or duplicate pipeline-health check$"):
+                adapter.records(value, NOW)
+        with self.subTest(boundary="saved JSON"), tempfile.TemporaryDirectory(dir=".") as tmp:
+            path = Path(tmp) / "capture.json"
+            path.write_text(json.dumps(value))
+            status, out, err = self.invoke(path, "--json")
+            self.assertEqual(status, 2)
+            self.assertEqual(out, "")
+            self.assertEqual(err, "HEALTH_EVIDENCE_BAD_INPUT\n")
+
     def test_c3_bad_input(self):
         """C3: Unreadable, ambiguous or oversized input is refused without leaking its path."""
         with tempfile.TemporaryDirectory(dir=".") as tmp:
