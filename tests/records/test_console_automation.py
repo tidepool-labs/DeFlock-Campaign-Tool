@@ -4,6 +4,7 @@ import os
 import tempfile
 import threading
 import unittest
+from contextlib import nullcontext
 from datetime import timedelta
 from pathlib import Path
 from unittest import mock
@@ -88,22 +89,45 @@ class Automation(unittest.TestCase):
         self.assertIsNone(self.model()["report"]["data"])
 
     def test_open_cleared_and_notify_markers_are_distinguished_without_writes(self):
+        self.data["stages"][4].update(status="warn", error_code="EXTRACT_NOT_ACCEPTED")
+        self.data["overall_status"] = "warn"
+        self.put()
         alerts = self.root / "alerts"
         alerts.mkdir()
         open_alert = {"schema": ca.pipeline_health.ALERT_SCHEMA, "check": "last_run", "reason_code": "no_recent_run",
-                      "state": "stop"}
-        (alerts / "health-last_run-no_recent_run.json").write_text(json.dumps(open_alert))
+                      "state": "warn"}
+        warning = "health-last_run-no_recent_run.json"
+        marker = "notify-failed-run_1.json"
+        (alerts / warning).write_text(json.dumps(open_alert))
         (alerts / "health-last_run-run_recent.cleared.json").write_text("never read me")
-        (alerts / "notify-failed-run_1.json").write_text("CANARY-private-body")
+        (alerts / marker).write_text("CANARY-private-body")
         before = {p.name: p.read_bytes() for p in alerts.iterdir()}
         model = self.model()
-        self.assertEqual(model["alarms"], {"state": "read", "rows": [("last_run", "no_recent_run", "stop")],
+        self.assertEqual(model["alarms"], {"state": "read", "rows": [("last_run", "no_recent_run", "warn")],
                                            "notify_markers": 1})
         page = ca.render(model)
-        self.assertIn("no_recent_run", page)
-        self.assertIn("resolution unknown", page)
+        self.assertIn("Saved health alarms: 1.", page)
+        self.assertIn("<td>last_run</td><td>no_recent_run (warn)</td>", page)
+        self.assertIn("<td>Notify failure markers</td><td>1 (historical; resolution unknown)</td>", page)
         self.assertNotIn("CANARY-private-body", page)
         self.assertEqual(before, {p.name: p.read_bytes() for p in alerts.iterdir()})
+
+        # An invalid matching file after good entries must not leak a partial scan.
+        bad = "health-last_run-invalid.json"
+        (alerts / bad).write_text("{")
+        with os.scandir(alerts) as entries:
+            by_name = {entry.name: entry for entry in entries}
+        ordered = (by_name[warning], by_name[marker], by_name[bad])
+        with mock.patch.object(ca.os, "scandir", return_value=nullcontext(iter(ordered))):
+            model = self.model()
+        page = ca.render(model)
+        self.assertIn("Saved health alarms: UNKNOWN", page)
+        gaps = page.split('<h2>Stages</h2>')[0]
+        self.assertIn("<td>extract</td><td>EXTRACT_NOT_ACCEPTED</td>", gaps)
+        self.assertIn("<td>records-health.timer</td><td>NOT INSTALLED", gaps)
+        self.assertEqual([label for label in ("last_run", "no_recent_run", "Notify failure markers")
+                          if label in page], [], "refused scan rendered partial alarm evidence")
+        self.assertEqual(model["alarms"], {"state": "unknown", "rows": [], "notify_markers": 0})
 
     def test_alarm_missing_invalid_symlink_and_cap_never_zero(self):
         self.assertEqual(self.model()["alarms"]["state"], "unknown")
