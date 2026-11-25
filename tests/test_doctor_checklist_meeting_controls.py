@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -140,16 +141,23 @@ class RealChainTests(unittest.TestCase):
         self.assertEqual(snapshot(self.base), before)
 
     def test_safe_explicit_id_keeps_control_filename_outside_display_scope(self):
-        # Uppercase stem: tempfile's random names use only [a-z0-9_], so a temp path in the
-        # advice (e.g. ".../ci-chunk-0-yzp8oddi/...") can never contain it by chance.
         self.meeting("ODDSTEM\nname", id="safe-id")
         plain = json.loads(self.doctor().stdout)
         self.assertEqual([e["meeting"] for e in plain["stale_comment_kits"]], ["safe-id"])
+        # The advice legitimately names the campaign directory, whose temp parent may contain
+        # any text (CI's ci-chunk-0-yzp8oddi once matched "odd"); remove that known value so the
+        # negative check only sees what the doctor derived from the meeting file.
+        forms = [f for raw in (shlex.quote(str(self.root)), str(self.root)) for f in (raw, json.dumps(raw)[1:-1])]
         for extra in (("--checklist",), ("--checklist", "--json")):
-            done = self.doctor(*extra)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn("--id safe-id --replace", done.stdout)
-            self.assertNotIn("ODDSTEM", done.stdout)
+            with self.subTest(extra=extra):
+                done = self.doctor(*extra)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                self.assertIn("--id safe-id --replace", done.stdout)
+                scoped = done.stdout
+                for form in forms:
+                    scoped = scoped.replace(form, "<campaign>")
+                self.assertIn("<campaign>", scoped)
+                self.assertNotIn("ODDSTEM", scoped)
 
     def test_cli_success_is_unchanged_nonsticky_and_read_only(self):
         self.meeting("m-two")
