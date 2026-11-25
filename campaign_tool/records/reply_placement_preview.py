@@ -23,8 +23,10 @@ refusal code that applies:
 - ``already_placed``: the placement journal already records this exact ID and revision as placed or found.
 - ``target_unresolved``: a reply to an agency message whose stored message cannot be resolved, so the draft would
   have no thread and no recipient; or a thread provenance refusal from ``mail_drafts`` (its own code is listed).
-- ``target_shared``: another approved, not yet placed reply answers the same received item, so the target thread
-  is ambiguous.
+- ``recipient_missing``: the message would have no To address (for example the stored agency message has no usable
+  From/Reply-To address).
+- ``target_shared``: another approved, not yet placed mail row of any kind answers the same agency message (resolved
+  by its Message-ID, so replies to different attachments of one message count), so the target thread is ambiguous.
 
 The preview never grants placement: it is a dry-run contract that a separately authorized exact-ID placement and a
 subsequent seal must still satisfy. Output carries IDs, digests and codes only, never the letter text.
@@ -67,14 +69,25 @@ def _approval_codes(row, revision):
 
 
 def _target(project, row):
-    """(thread, reason, codes): the thread mail_drafts would use for this row, read-only."""
+    """(thread, reason, recipient, codes): the thread and To address mail_drafts would use for this row, read-only.
+    A message without a recipient has no target, whatever its kind."""
     try:
         thread, reason = mail_drafts._thread_for(project, row)
+        if thread is None and row["kind"] in THREAD_REQUIRED_KINDS:
+            return None, reason, "", ["target_unresolved"]
+        if row["kind"] == "correspondence-draft":
+            recipient = mail_drafts.correspondence_envelope(project, row)[0]["to"]
+        else:
+            recipient = (thread or {}).get("reply_to") or ""
     except mail_drafts.MailDraftError as error:
-        return None, error.code, ["target_unresolved", error.code]
-    if thread is None and row["kind"] in THREAD_REQUIRED_KINDS:
-        return None, reason, ["target_unresolved"]
-    return thread, reason, []
+        return None, error.code, "", ["target_unresolved", error.code]
+    return thread, reason, recipient, [] if recipient else ["recipient_missing"]
+
+
+def _parent(project, row):
+    """The agency Message-ID this row would answer, or None (an unresolved row answers no message)."""
+    thread = _target(project, row)[0]
+    return None if thread is None else thread["message_id"]
 
 
 def preview(project, queue_id, revision, *, config=None):
@@ -120,15 +133,14 @@ def preview(project, queue_id, revision, *, config=None):
     out["supersedes_placed_revisions"] = sorted(
         rev for (qid, rev), p in latest.items()
         if qid == row["id"] and rev < row["revision"] and p["state"] in ("placed", "found_existing"))
-    thread, reason, target_codes = _target(project, row)
+    thread, reason, recipient, target_codes = _target(project, row)
     codes += target_codes
-    if any(r["id"] != row["id"] and r["item_id"] == row["item_id"] and r["kind"] in THREAD_REQUIRED_KINDS
-           for r in bulk) and row["kind"] in THREAD_REQUIRED_KINDS:
+    parent = None if thread is None else thread["message_id"]
+    if parent is not None and any(r["id"] != row["id"] and _parent(project, r) == parent for r in bulk):
         codes.append("target_shared")
     out.update(threaded=thread is not None, thread_reason=None if thread is not None else reason,
-               to_domain=None, folder=None, message_id=None, fingerprint=None)
-    if thread is not None and thread.get("reply_to"):
-        out["to_domain"] = thread["reply_to"].rsplit("@", 1)[1]
+               to_domain=recipient.rsplit("@", 1)[1] if recipient else None, folder=None, message_id=None,
+               fingerprint=None)
     if config is not None and not target_codes:
         out["folder"] = config["folder"]
         out["message_id"] = mail_drafts.message_id(row["id"], row["revision"], config["from_addr"])

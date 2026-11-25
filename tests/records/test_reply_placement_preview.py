@@ -92,22 +92,24 @@ class Base(unittest.TestCase):
             tripwire.start()
             self.addCleanup(tripwire.stop)
 
-    def build_ledger(self):
-        """One agency message (EML) with one attached document (DOC); replies answer DOC's received item."""
+    def build_ledger(self, headers=None, extra_docs=()):
+        """One agency message (EML) with attached document DOC (plus ``extra_docs``); replies answer those items."""
         ledger = self.project / "processing-v1" / "ledger.sqlite"
         store.initialize(ledger)
         blob = self.root / "blobs" / EML
         blob.parent.mkdir(exist_ok=True, mode=0o700)
-        blob.write_text("From: Clerk <clerk@agency.example>\r\nReply-To: records-desk@agency.example\r\n"
-                        f"Subject: Your request 4471\r\nMessage-ID: {AGENCY_MID}\r\n\r\nbody\r\n")
+        blob.write_text(headers or ("From: Clerk <clerk@agency.example>\r\nReply-To: records-desk@agency.example\r\n"
+                                    f"Subject: Your request 4471\r\nMessage-ID: {AGENCY_MID}\r\n\r\nbody\r\n"))
         with store.ledger(ledger) as con:
-            for digest in (EML, DOC):
+            for digest in (EML, DOC, *extra_docs):
                 con.execute("INSERT INTO originals(sha256,bytes,mime_detected,first_seen_at,role,scope,"
                             "preservation_status,provenance_json,storage_path) VALUES(?,?,?,?,?,?,?,?,?)",
                             (digest, 10, "x/y", "2026-11-02T18:59:00Z", "agency_original", "in_scope", "verified",
                              "{}", str(blob) if digest == EML else None))
             con.execute("INSERT INTO occurrences VALUES('o1',?,'mail','m',NULL,NULL,'t','{}')", (EML,))
-            con.execute("INSERT INTO occurrences VALUES('o2',?,'attachment','p','o1',NULL,'t','{}')", (DOC,))
+            for index, digest in enumerate((DOC, *extra_docs)):
+                con.execute("INSERT INTO occurrences VALUES(?,?,'attachment','p','o1',NULL,'t','{}')",
+                            ("o%d" % (index + 2), digest))
             con.execute("INSERT INTO mail_messages VALUES('msg-1','acct','INBOX',1,1,?,?,?,?,'x')",
                         (AGENCY_MID, EML, "{}", "2026-11-02T18:59:00Z"))
             con.commit()
@@ -239,6 +241,39 @@ class RefusalTests(Base):
         self.assertEqual(self.preview(appeal)["refusals"], ["target_shared"])
         aq.edit(self.project, appeal["id"], "organizer", "Withdrawn back to pending.\n")
         self.assertEqual(self.preview(reply)["verdict"], rpp.WOULD_PLACE)
+
+    def test_replies_to_different_attachments_or_kinds_of_one_message_share_its_target(self):
+        doc2 = "c" * 64
+        self.build_ledger(extra_docs=(doc2,))
+        reply = self.draft()
+        self.assertEqual(self.preview(reply)["verdict"], rpp.WOULD_PLACE)
+        appeal = self.draft(item=received_items.item_id(doc2), kind="appeal-denial", body="Please reconsider.\n")
+        self.assertEqual(self.preview(reply)["refusals"], ["target_shared"])
+        self.assertEqual(self.preview(appeal)["refusals"], ["target_shared"])
+        aq.edit(self.project, appeal["id"], "organizer", "Back to pending.\n")
+        self.assertEqual(self.preview(reply)["verdict"], rpp.WOULD_PLACE)
+        playbook = aq.add_draft(self.project, item_id="route:synthetic", kind="followup-playbook", agency_id="agency-1",
+                                request_id="req-1", body="Please supply the logs.\n",
+                                evidence={"vehicle": "reply_in_thread", "thread_item_id": received_items.item_id(doc2)},
+                                source_run_id="run-1")
+        playbook = self.approve(playbook["id"])
+        self.assertEqual(self.preview(reply)["refusals"], ["target_shared"])
+        self.assertEqual(self.preview(playbook)["refusals"], ["target_shared"])
+
+    def test_resolved_thread_without_a_usable_address_has_no_target(self):
+        self.build_ledger(headers="From: undisclosed-recipients:;\r\nSubject: Your request 4471\r\n"
+                                  f"Message-ID: {AGENCY_MID}\r\n\r\nbody\r\n")
+        result = self.preview(self.draft())
+        self.assertEqual((result["verdict"], result["refusals"]), (rpp.REFUSED, ["recipient_missing"]))
+        self.assertEqual((result["threaded"], result["to_domain"], result["fingerprint"]), (True, None, None))
+
+    def test_unthreaded_new_request_without_recipient_refuses(self):
+        row = aq.add_draft(self.project, item_id="route:synthetic", kind="followup-playbook", agency_id="alpha-pd",
+                           request_id="OLD-1", body="Please supply the logs.\n",
+                           evidence={"vehicle": "new_request", "thread_item_id": None}, source_run_id="r1")
+        result = self.preview(self.approve(row["id"]))
+        self.assertEqual((result["refusals"], result["threaded"], result["thread_reason"]),
+                         (["recipient_missing"], False, "new_request"))
 
     def test_thread_provenance_refusal_is_listed_with_its_own_code(self):
         row = aq.add_draft(self.project, item_id="route:synthetic", kind="followup-playbook", agency_id="alpha-pd",
