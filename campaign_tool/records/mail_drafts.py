@@ -443,10 +443,38 @@ def _place_one(client, config, row, thread, reason, now):
                 thread_reason=None if thread is not None else reason)
 
 
-def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, dry_run=False):
-    """Place every approved, not yet placed row. Content-free summary; never sends."""
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+
+
+def _exact_row(queue, only_id, only_revision):
+    """The one row an exact (queue ID, revision) request names, or a refusal before anything is opened for writing.
+
+    The revision is the one the reviewer saw (for example in ``reply_placement_preview``). An edit, a re-approval
+    or a cancellation after that review moves the row to another revision, so the request is refused instead of
+    placing text nobody reviewed for placement."""
+    _need(isinstance(only_id, str) and _HEX64.fullmatch(only_id) is not None
+          and type(only_revision) is int and only_revision >= 0, "exact_request_invalid")
+    row = next((r for r in queue if r["id"] == only_id), None)
+    if row is None:
+        raise MailDraftError("exact_id_unknown")
+    _need(row["kind"] not in draft_templates.NON_MAIL_KINDS, "exact_not_mail")
+    _need(row["revision"] == only_revision, "exact_revision_not_current")
+    _need(row["status"] == "approved", "exact_not_approved")
+    return row
+
+
+def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, only_revision=None,
+          dry_run=False):
+    """Place every approved, not yet placed row (or only ``only_id``). Content-free summary; never sends.
+
+    With ``only_revision`` the request is exact: ``only_id`` must be a full queue ID whose current revision is
+    ``only_revision`` and approved, otherwise ``MailDraftError`` is raised and nothing is written or connected.
+    Without it the behaviour is unchanged (``only_id`` alone places whichever revision is approved now)."""
     now = now or _now()
-    rows = [r for r in approval_queue.load_queue(project) if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
+    queue = approval_queue.load_queue(project)
+    if only_revision is not None:
+        queue = [_exact_row(queue, only_id, only_revision)]
+    rows = [r for r in queue if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
             and (only_id is None or r["id"] == only_id)]
     summary = {"placed": 0, "existing": 0, "failed": 0, "skipped": 0}
     with _Journal(project, not dry_run) as journal:
@@ -530,6 +558,9 @@ def main(argv=None):
     place_p.add_argument("--project", required=True)
     place_p.add_argument("--config", required=True, help="owner-only mailbox config with an explicit Drafts folder")
     place_p.add_argument("--dry-run", action="store_true", help="connect nowhere and write nothing")
+    place_p.add_argument("--queue-id", help="place only this exact 64-hex queue ID (requires --revision)")
+    place_p.add_argument("--revision", type=int, help="the exact reviewed revision of --queue-id; refused if the "
+                                                      "row has since been edited, approved again or cancelled")
     list_p = sub.add_parser("list")
     list_p.add_argument("--project", required=True)
     args = parser.parse_args(argv)
@@ -540,8 +571,10 @@ def main(argv=None):
                                                         "thread_reason", "message_id", "fingerprint", "code",
                                                         "superseded_by", "at")}, sort_keys=True))
             return 0
+        _need((args.queue_id is None) == (args.revision is None), "exact_request_invalid")
         config = load_config(args.config)
-        print(json.dumps(place(args.project, config, dry_run=args.dry_run), sort_keys=True))
+        print(json.dumps(place(args.project, config, dry_run=args.dry_run, only_id=args.queue_id,
+                               only_revision=args.revision), sort_keys=True))
     except (MailDraftError, approval_queue.ApprovalQueueError) as error:
         print(error.code, file=sys.stderr)
         return 1
