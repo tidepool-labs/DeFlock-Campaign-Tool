@@ -70,10 +70,16 @@ class SummaryTests(unittest.TestCase):
         moved = [events[0], events[1] | {"request_id": "R-NEW"}, events[2] | {"request_id": "R-NEW"}]
         rows = self.summary(fixture(moved))
         self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
-        self.assertEqual(rows[("alpha", "R-NEW")]["replies"], [])
+        # R-NEW never inherits R-OLD's draft: its own approval/placement with no draft of its own is shown as an
+        # incomplete history with no proof carried, never APPROVED or PLACED.
+        self.assertEqual(rows[("alpha", "R-NEW")]["replies"], [{"queue_id": "q-synthetic", "state": rcs.INCOMPLETE,
+                                                               "revision": 2, "decision_id": None, "message_id": None}])
         for patch in ({"queue_id": "q-other"}, {"agency_id": "beta"}):
             rows = self.summary(fixture([events[0], events[1] | patch, events[2] | patch]))
-            self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
+            replies = {q["queue_id"]: q for q in rows[("alpha", "R-OLD")]["replies"]}
+            self.assertEqual(replies["q-synthetic"]["state"], rcs.PENDING)
+            if "q-other" in replies:
+                self.assertEqual((replies["q-other"]["state"], replies["q-other"]["message_id"]), (rcs.INCOMPLETE, None))
 
     def test_placement_is_never_sent(self):
         data = fixture(chain() + [LINK | {"kind": "mock_send_receipt", "revision": 2, "message_id": "M-test",
@@ -94,8 +100,31 @@ class SummaryTests(unittest.TestCase):
         self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
         rows = self.summary(fixture([events[0], events[1], events[2] | {"decision_id": "other"}]))
         self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.APPROVED)
+        # A malformed approval (wrong from_revision) naming revision 2: revision 2 exists without a valid approval
+        # link, so the history is incomplete (review t_b34fde13), never APPROVED; a following placement changes nothing.
+        rows = self.summary(fixture([events[0], events[1] | {"from_revision": 0}]))
+        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.INCOMPLETE)
         rows = self.summary(fixture([events[0], events[1] | {"from_revision": 0}, events[2]]))
-        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
+        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.INCOMPLETE)
+
+    def test_placement_at_next_revision_without_approval_clears_old_proof(self):
+        # Review t_b34fde13 item 1: draft 1 -> approval 2 -> placement 2 -> placement 3 must not stay PLACED at 2.
+        events = chain()
+        late = LINK | {"kind": "drafts_placement", "revision": 3, "decision_id": "D-test", "message_id": "M-3"}
+        reply = self.summary(fixture(events + [late]))[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["revision"], reply["decision_id"], reply["message_id"]),
+                         (rcs.INCOMPLETE, 3, None, None))
+        # Same boundary from APPROVED (placement one past the approved revision) and from PENDING.
+        reply = self.summary(fixture(events[:2] + [late]))[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["revision"]), (rcs.INCOMPLETE, 3))
+        reply = self.summary(fixture(events[:1] + [late | {"revision": 2}]))[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["revision"]), (rcs.INCOMPLETE, 2))
+        # Evidence at or below the current revision does not disturb a valid placement.
+        for stale in (late | {"revision": 2, "decision_id": "other"}, late | {"revision": 1},
+                      LINK | {"kind": "approval_applied", "from_revision": 0, "revision": 1, "decision_id": "D-old"}):
+            with self.subTest(stale=stale):
+                reply = self.summary(fixture(events + [stale]))[("alpha", "R-OLD")]["replies"][0]
+                self.assertEqual((reply["state"], reply["message_id"]), (rcs.PLACED, "M-test"))
 
     def test_later_non_contiguous_edit_invalidates_placement(self):
         # Review t_ad6b46ca item 1: placed at revision 2, then an edit exported only as revision 4.
