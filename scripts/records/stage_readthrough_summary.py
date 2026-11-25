@@ -16,18 +16,21 @@ the agenda it was made from, and the source index (``stage_source_index.py``) bu
 Then each stage gets exactly one status:
 
   UNREVIEWED        the human fields are blank. Blank is never turned into a finding, a pass or acceptance.
-  FINDING_RECORDED  a person filled every field, the workbook check raised nothing, ``outcome`` is one of
-                    ``matches`` / ``differs`` / ``cannot_tell``, ``checked_on`` is a real ISO date, ``reviewer`` is a
-                    plain name, and every entry of the structured ``cited`` field resolves exactly to the stage's own
-                    LINKED sources. The recorded finding IS those structured fields; still not acceptance.
-  WITHHELD          anything flagged: the workbook check's flags (copied or swapped entry, edited evidence, partial
-                    entry, ...), the stage has no LINKED source (FINDING_WITHOUT_LINKED_SOURCE), a structured field
-                    out of its form (FINDING_OUTCOME_NOT_IN_LIST, FINDING_DATE_NOT_ISO, FINDING_REVIEWER_NOT_A_NAME)
-                    or a citation rule below.
+  FINDING_RECORDED  a person filled every field, the workbook check raised no structural flag, ``outcome`` is one of
+                    ``matches`` / ``differs`` / ``cannot_tell``, ``checked_on`` is a real ISO date, and every entry
+                    of the structured ``cited`` field resolves exactly to the stage's own LINKED sources. The
+                    recorded finding IS ``checked_on`` + ``outcome`` + ``cited``; still not acceptance.
+  WITHHELD          anything flagged: the workbook check's structural flags (swapped, missing, duplicated or edited
+                    entry, evidence not current, partial entry), the stage has no LINKED source
+                    (FINDING_WITHOUT_LINKED_SOURCE), a structured field out of its form (FINDING_OUTCOME_NOT_IN_LIST,
+                    FINDING_DATE_NOT_ISO), the same ``outcome`` + ``cited`` copied from a ``--prior`` run whose
+                    evidence differs (CITED_COPIED_FROM_PRIOR_RUN), or a citation rule below.
 
-The prose ``finding`` is the reviewer's own note. It must be filled (the workbook check treats a blank one as a partial
-entry) but it is NEVER parsed, carried into the summary or used for any status: free text cannot carry a reference
-into a recorded finding because no free text reaches it. Readers open the workbook for the note.
+Free text never reaches a status or the output. The prose ``finding`` (the reviewer's own note) and ``reviewer`` must be
+non-empty (a blank one is a partial entry: presence only), but their content is NEVER parsed, compared or carried into
+the summary. So the workbook check's two content comparisons of the note (SAME_FINDING_UNDER_TWO_STAGES,
+COPIED_FROM_PRIOR_RUN) are ignored here; the structured copy check above replaces the second. Readers open the
+workbook for the note and the reviewer's name.
 
 Citations are read ONLY from ``cited``. ``cited`` is a ``;``-separated list; each entry is exactly one of (keywords
 case-insensitive, single spaces):
@@ -62,16 +65,16 @@ from pathlib import Path
 
 SCHEMA = "stage-readthrough-summary-v2"
 NOTE = ("Summary of an attended read-through of synthetic rehearsal evidence. A FINDING_RECORDED stage shows only "
-        "structured fields a person filled (reviewer, date, outcome and checked citations); the free-text note stays "
-        "in the workbook and is not carried here. Nothing here is acceptance, a signature, a booking or a legal "
-        "conclusion. UNREVIEWED and WITHHELD stages have no finding.")
+        "structured fields a person filled (date, outcome and checked citations); the free-text note and the "
+        "reviewer's name stay in the workbook and are not carried here. Nothing here is acceptance, a signature, a "
+        "booking or a legal conclusion. UNREVIEWED and WITHHELD stages have no finding.")
 OUTCOMES = ("matches", "differs", "cannot_tell")
 _CITE_DOCUMENT = re.compile(r"document ([0-9a-f]{12,64})(?: page ([1-9][0-9]{0,5})| part (\S{1,64}))?",
                             re.IGNORECASE | re.ASCII)
 _CITE_REQUEST = re.compile(r"request (\S{1,128})", re.IGNORECASE | re.ASCII)
 _ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
-_NAME = re.compile(r"[A-Za-z][A-Za-z .']{0,63}")
-CARRIED_FIELDS = ("reviewer", "checked_on", "outcome", "cited")  # never "finding"
+CARRIED_FIELDS = ("checked_on", "outcome", "cited")  # never "finding" or "reviewer": free text is not carried
+PROSE_DERIVED_FLAGS = ("SAME_FINDING_UNDER_TWO_STAGES", "COPIED_FROM_PRIOR_RUN")  # workbook flags that read the note
 
 
 def _load_sibling(name):
@@ -94,7 +97,7 @@ def _canonical(value):
 
 
 def _form_flags(human):
-    """Flags for structured human fields outside their form. The prose ``finding`` is never inspected."""
+    """Flags for structured human fields outside their form. Free-text fields are never inspected."""
     flags = []
     if human["outcome"] not in OUTCOMES:
         flags.append("FINDING_OUTCOME_NOT_IN_LIST")
@@ -104,9 +107,18 @@ def _form_flags(human):
         datetime.date.fromisoformat(human["checked_on"])
     except ValueError:
         flags.append("FINDING_DATE_NOT_ISO")
-    if not _NAME.fullmatch(human["reviewer"]):
-        flags.append("FINDING_REVIEWER_NOT_A_NAME")
     return flags
+
+
+def _structured(human):
+    return human.get("outcome", ""), " ".join(human.get("cited", "").split()).lower()
+
+
+def _human(entry):
+    human = (entry or {}).get("human")
+    if not isinstance(human, dict):
+        return {field: "" for field in wb.HUMAN_FIELDS}
+    return {field: str(human.get(field) or "").strip() for field in wb.HUMAN_FIELDS}
 
 
 def _finding_flags(cited, stage_links, all_links):
@@ -169,10 +181,16 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
     rebuilt = index_mod.build(agenda, agenda_sha)  # same refusals as the index: evidence must still be on disk, unchanged
     if _canonical(rebuilt) != _canonical(index):
         raise Refused("INDEX_NOT_REPRODUCIBLE")
-    flags, states = wb.check(workbook, agenda, prior)
+    flags, _states = wb.check(workbook, agenda, prior)  # refusals and structural flags; note-content flags dropped
     by_stage = {}
     for stage, code in flags:
-        by_stage.setdefault(stage, []).append(code)
+        if code not in PROSE_DERIVED_FLAGS:
+            by_stage.setdefault(stage, []).append(code)
+    expected = {entry["stage"]: entry["evidence_digest"] for entry in wb.make(agenda, "-")["entries"]}
+    prior_by_stage = {}
+    for entry in (prior or {}).get("entries") or []:
+        if isinstance(entry, dict) and entry.get("stage") in wb.STAGES:
+            prior_by_stage.setdefault(entry["stage"], entry)
     entries = {}
     for entry in workbook["entries"]:
         if isinstance(entry, dict) and entry.get("stage") in wb.STAGES:
@@ -181,15 +199,18 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
     stages = []
     for stage in rebuilt["stages"]:
         name = stage["stage"]
-        human = (entries.get(name) or {}).get("human")
-        human = {field: str((human or {}).get(field) or "").strip() for field in wb.HUMAN_FIELDS} \
-            if isinstance(human, dict) else {field: "" for field in wb.HUMAN_FIELDS}
+        human = _human(entries.get(name))
+        filled = any(human.values())
         stage_flags = list(by_stage.get(name, []))
-        if states[name] == "FILLED" and not stage_flags:
+        if filled and not stage_flags:
             stage_flags += _form_flags(human) + _finding_flags(human["cited"], stage["links"], all_links)
+            old = prior_by_stage.get(name)
+            if old is not None and old.get("evidence_digest") != expected[name] \
+                    and all(_structured(_human(old))) and _structured(_human(old)) == _structured(human):
+                stage_flags.append("CITED_COPIED_FROM_PRIOR_RUN")
         if stage_flags:
             status = "WITHHELD"
-        elif states[name] == "FILLED":
+        elif filled:
             status = "FINDING_RECORDED"
         else:
             status = "UNREVIEWED"
@@ -202,7 +223,7 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
                        "linked_sources": linked,
                        "unreviewed_sources": [link for link in stage["links"] if link["status"] != "LINKED"]})
     return {"schema": SCHEMA, "note": NOTE, "accepted": False, "main_commit": agenda["main_commit"],
-            "agenda_sha256": agenda_sha, "workbook_flags": len(flags), "stages": stages}
+            "agenda_sha256": agenda_sha, "workbook_flags": sum(len(codes) for codes in by_stage.values()), "stages": stages}
 
 
 def render(summary):
@@ -212,10 +233,9 @@ def render(summary):
         out.append("## Stage %s: %s%s" % (stage["stage"], stage["status"],
                                           ("  (" + ", ".join(stage["flags"]) + ")") if stage["flags"] else ""))
         if stage["human"]:
-            out += ["Reviewer %s on %s, outcome %s" % (stage["human"]["reviewer"], stage["human"]["checked_on"],
-                                                       stage["human"]["outcome"]),
+            out += ["Checked on %s, outcome %s" % (stage["human"]["checked_on"], stage["human"]["outcome"]),
                     "Cited (each entry checked against the linked sources): " + stage["human"]["cited"],
-                    "Reviewer's note: in the workbook only (free text is not carried or checked here)"]
+                    "Reviewer's name and note: in the workbook only (free text is not carried or checked here)"]
         for title, key in (("Linked sources", "linked_sources"), ("Unreviewed sources", "unreviewed_sources")):
             out.append(title + ":" + ("" if stage[key] else " none"))
             for link in stage[key]:

@@ -59,8 +59,8 @@ class SummaryTest(unittest.TestCase):
     def statuses(self, summary):
         return {s["stage"]: (s["status"], tuple(s["flags"])) for s in summary["stages"]}
 
-    def stage_of(self, stage, finding, cited):
-        summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, finding, cited))
+    def stage_of(self, stage, finding, cited, **extra):
+        summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, finding, cited, **extra))
         return summary, self.statuses(summary)[stage]
 
     def refused(self, code, **kwargs):
@@ -84,8 +84,7 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual(state, ("FINDING_RECORDED", ()))
         self.assertEqual({self.statuses(summary)[s][0] for s in ("10", "12", "13", "14")}, {"UNREVIEWED"})
         eleven = next(s for s in summary["stages"] if s["stage"] == "11")
-        self.assertEqual(eleven["human"], {"reviewer": "R", "checked_on": "2026-11-27", "outcome": "matches",
-                                           "cited": cited})
+        self.assertEqual(eleven["human"], {"checked_on": "2026-11-27", "outcome": "matches", "cited": cited})
         self.assertIn("Cited (each entry checked against the linked sources): " + cited, summ.render(summary))
         self.assertNotIn(OK_PROSE, json.dumps(summary) + summ.render(summary))
         self.assertIs(summary["accepted"], False)
@@ -172,13 +171,37 @@ class SummaryTest(unittest.TestCase):
         for text in ("See req-unknown.", "Matches req-2 as well.", "Message part 2.1 is fine.", "Message part 2-evil.",
                      "See deadbeefdeadbeef.", "See request 1234.", "See request unknown.", "See tickets unknown.",
                      "See cases unknown.", "Alpha's answer differs.", "Item %s fits." % H["stray"][:16]):
-            summary, state = self.stage_of("11", text, cited)
+            # RETURN t_103c1b66 item 1: the reviewer field is free text too, so it is never carried either
+            summary, state = self.stage_of("11", text, cited, reviewer="See request unknown %s" % text)
             self.assertEqual(state, ("FINDING_RECORDED", ()), text)
-            self.assertNotIn(text, json.dumps(summary) + summ.render(summary))
-            self.assertNotIn("finding", next(s for s in summary["stages"] if s["stage"] == "11")["human"])
+            carried = json.dumps(summary) + summ.render(summary)
+            self.assertNotIn(text, carried)
+            self.assertNotIn("See request unknown", carried)
+            self.assertEqual(sorted(next(s for s in summary["stages"] if s["stage"] == "11")["human"]),
+                             ["checked_on", "cited", "outcome"])
         # and an unknown request in the place that IS read, cited, is withheld
         self.assertEqual(self.stage_of("11", "Fine.", cited + "; request unknown")[1],
                          ("WITHHELD", ("FINDING_CITES_UNKNOWN_REQUEST",)))
+
+    def test_note_content_never_changes_a_status(self):
+        # RETURN t_103c1b66 item 2: the workbook check's two note comparisons (the same note under two stages, a note
+        # copied from a prior run) must not decide a status. Same structured fields => same status whatever the note.
+        eleven, twelve = "document %s page 1" % D11, "document %s part 2" % D12
+        same = fill(fill(copy.deepcopy(self.workbook), "11", "All good.", eleven), "12", "all   GOOD.", twelve)
+        self.assertIn(("11", "SAME_FINDING_UNDER_TWO_STAGES"), wb.check(same, self.agenda)[0])
+        summary = self.run_summary(workbook=same)
+        self.assertEqual((self.statuses(summary)["11"], self.statuses(summary)["12"]),
+                         (("FINDING_RECORDED", ()), ("FINDING_RECORDED", ())))
+        self.assertEqual(summary["workbook_flags"], 0)
+        prior = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", "document %s page 3" % H["fee"][:12],
+                     outcome="differs")
+        prior["entries"][3]["evidence_digest"] = "0" * 64
+        current = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", "document %s page 3" % H["fee"][:12])
+        self.assertIn(("13", "COPIED_FROM_PRIOR_RUN"), wb.check(current, self.agenda, prior)[0])
+        self.assertEqual(self.statuses(self.run_summary(workbook=current, prior=prior))["13"], ("FINDING_RECORDED", ()))
+        for note in ("x", "A long note.", "See req-unknown."):
+            varied = fill(copy.deepcopy(self.workbook), "11", note, eleven)
+            self.assertEqual(self.statuses(self.run_summary(workbook=varied))["11"], ("FINDING_RECORDED", ()), note)
 
     def test_structured_fields_out_of_form_are_withheld(self):
         cited = "document %s page 1" % D11
@@ -189,17 +212,16 @@ class SummaryTest(unittest.TestCase):
             (("checked_on", "2026-02-30"),): ("FINDING_DATE_NOT_ISO",),
             (("checked_on", "27 Nov 2026"),): ("FINDING_DATE_NOT_ISO",),
             (("checked_on", "2026-11-27 req-9"),): ("FINDING_DATE_NOT_ISO",),
-            (("reviewer", "req-unknown"),): ("FINDING_REVIEWER_NOT_A_NAME",),
-            (("reviewer", "R 1234"),): ("FINDING_REVIEWER_NOT_A_NAME",),
-            (("reviewer", "x" * 65),): ("FINDING_REVIEWER_NOT_A_NAME",),
+            (("reviewer", ""),): ("PARTIAL_HUMAN_ENTRY",),
+            (("finding", ""),): ("PARTIAL_HUMAN_ENTRY",),
         }
         for edits, codes in cases.items():
-            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited, **dict(edits))
+            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited)
+            workbook["entries"][1]["human"].update(dict(edits))
             state = self.statuses(self.run_summary(workbook=workbook))["11"]
             self.assertEqual(state, ("WITHHELD", codes), edits)
         for outcome in summ.OUTCOMES:
-            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited, outcome=outcome,
-                            reviewer="Ana O'Neil Jr.")
+            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited, outcome=outcome)
             self.assertEqual(self.statuses(self.run_summary(workbook=workbook))["11"], ("FINDING_RECORDED", ()))
 
     def test_a_prefix_fitting_two_linked_documents_is_ambiguous(self):
@@ -243,12 +265,15 @@ class SummaryTest(unittest.TestCase):
         no_cited = fill(copy.deepcopy(self.workbook), "11", OK_PROSE, "")
         self.assertEqual(self.statuses(self.run_summary(workbook=no_cited))["11"], ("WITHHELD", ("PARTIAL_HUMAN_ENTRY",)))
         fee = "document %s page 3; request req-2" % H["fee"][:12]
-        prior = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", fee)
+        prior = fill(copy.deepcopy(self.workbook), "13", "Another note.", fee)
         prior["entries"][3]["evidence_digest"] = "0" * 64
         current = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", fee)
         self.assertEqual(self.statuses(self.run_summary(workbook=current))["13"], ("FINDING_RECORDED", ()))
         state = self.statuses(self.run_summary(workbook=current, prior=prior))
-        self.assertEqual(state["13"], ("WITHHELD", ("COPIED_FROM_PRIOR_RUN",)))
+        self.assertEqual(state["13"], ("WITHHELD", ("CITED_COPIED_FROM_PRIOR_RUN",)))
+        same_evidence = fill(copy.deepcopy(self.workbook), "13", "Another note.", fee)  # a repeat, not a copy
+        self.assertEqual(self.statuses(self.run_summary(workbook=current, prior=same_evidence))["13"],
+                         ("FINDING_RECORDED", ()))
 
     def test_cli_exit_codes_and_private_output(self):
         def write(name, value):
