@@ -221,6 +221,29 @@ class GapsEvidenceTest(unittest.TestCase):
                        {**plain, "register_sha256": "x"}):
             self.assertEqual(self.codes({"timeline": digest})[1], [REG + "RUN"])
 
+    def test_c3_register_differing_only_in_a_timeline_read_field_fails_closed(self):
+        """C3 bug: a same-day register of another run with the same identities, clocks, agency and closed state passed though
+        a field the timeline reads (production date, promised date, determination, extension, issues) differed."""
+        base = register_doc()
+        line = timeline_doc(base)
+        edits = {"production": lambda r: r.update(production_at="2030-01-12"),
+                 "promised": lambda r: r.update(promised={"state": "upcoming", "date": "2030-01-20"}),
+                 "determination": lambda r: r["deadline"].update(determination_at="2030-01-12"),
+                 "issue": lambda r: r.update(issues=["synthetic_issue"])}
+        for label, edit in edits.items():
+            other = json.loads(json.dumps(base))
+            edit(other["requests"][0])
+            expected = [REG + "RUN"]
+            with self.subTest(label):
+                self.assertEqual(self.codes({"register": other, "timeline": line})[1], expected)
+        # The same register passes, and a timeline built from the edited register passes with it (the control is not vacuous).
+        for label, edit in edits.items():
+            other = json.loads(json.dumps(base))
+            edit(other["requests"][0])
+            with self.subTest("consistent " + label):
+                self.assertEqual(self.codes({"register": other, "timeline": timeline_doc(other)})[1], [])
+        self.assertEqual(self.codes({"register": base, "timeline": line})[1], [])
+
     def test_c4_report_file_name_never_becomes_the_source_name(self):
         """C4 bug: with no readable artifact the caller's report basename (which may carry request text) was copied
         into source.name; the name is now fixed and the report digest stays."""
