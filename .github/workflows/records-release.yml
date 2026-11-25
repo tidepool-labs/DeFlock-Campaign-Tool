@@ -29,7 +29,11 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 0
+          # History is read only by release_manifest.source_manifest(): HEAD, status,
+          # `git archive HEAD` and `git tag --points-at HEAD`. A PR is built on a
+          # synthetic merge commit that no tag can point at, so one commit is enough.
+          # Pushes, the nightly schedule and dispatch keep full history and tags.
+          fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0
         with:
           python-version: '${{ matrix.python }}'

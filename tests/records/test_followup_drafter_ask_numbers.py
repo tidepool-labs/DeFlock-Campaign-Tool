@@ -35,18 +35,29 @@ class AskNumberTests(unittest.TestCase):
                     fd.draft(self.book, self.case)
                 self.assertEqual(raised.exception.code, "case_invalid")
 
+    def test_refuses_non_label_numbers(self):
+        # Truthy booleans and containers leak into the preview as labels;
+        # falsey ones must not be silently replaced with a positional number.
+        for number in (True, False, [7], [], {"item": 7}, {}):
+            with self.subTest(number=number):
+                self.case["asks"][1]["number"] = number
+                with self.assertRaises(pb.PlaybookError) as raised:
+                    fd.draft(self.book, self.case)
+                self.assertEqual(raised.exception.code, "case_invalid")
+
     def test_distinct_displayed_numbers_preserve_open_and_dropped_asks(self):
         # A raw-value filter would still conflate 2 and 2.0, despite distinct labels.
-        for dropped_number, open_number in [("7", 2), (2.0, 2)]:
-            with self.subTest(dropped_number=dropped_number):
+        for dropped_number, open_fields in [("7", {}), (2.0, {}), ("7", {"number": None}), ("7", {"number": 0})]:
+            with self.subTest(dropped_number=dropped_number, open_fields=open_fields):
                 self.case["asks"][0]["number"] = dropped_number
+                self.case["asks"][1].update(open_fields)
                 result = fd.draft(self.book, self.case)
                 self.assertEqual(result["dropped"], [
                     {"number": dropped_number, "text": "Completed audits", "reason": "already produced"},
                 ])
                 self.assertIs(type(result["dropped"][0]["number"]), type(dropped_number))
-                self.assertEqual([ask["number"] for ask in result["open_asks"]], [open_number])
+                self.assertEqual([ask["number"] for ask in result["open_asks"]], [2])
                 letter = result["body"].split(fd.NOTES_RULE)[0]
-                self.assertIn(f"Item {open_number} asked for", letter)
+                self.assertIn("Item 2 asked for", letter)
                 self.assertNotIn("Were the audits completed?", letter)
                 self.assertIn("Was the contract signed?", letter)

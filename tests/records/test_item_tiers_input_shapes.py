@@ -8,6 +8,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from campaign_tool.records import console_board, console_outstanding
 from campaign_tool.records import item_tiers as it
 from campaign_tool.records import playbook as pb
 from campaign_tool.records import precedent as pr
@@ -142,6 +143,63 @@ class ShapeTests(unittest.TestCase):
         with self.assertRaises(pb.PlaybookError) as cm:
             it.tier_report({"schema": "x", "requests": []}, self.book)
         self.assertEqual(cm.exception.detail, "schema")
+
+    def test_duplicate_request_identity_refuses_projection(self):
+        rep = good()
+        rep["requests"].append(copy.deepcopy(req(rep)))
+        before = copy.deepcopy(rep)
+        with self.assertRaises(pb.PlaybookError) as cm:
+            it.tier_report(rep, self.book)
+        self.assertEqual((cm.exception.code, cm.exception.detail), ("response_items_invalid", "shape"))
+        self.assertEqual(rep, before)
+
+    def test_outstanding_coverage_refuses_repeated_identified_row(self):
+        rep = mutated(set_ask("rating", "missing"))
+        ask(rep)["evidence"] = []
+        req(rep).update(ledger_request_id="L-1", responses=["item-1"])
+        second = copy.deepcopy(req(rep))
+        rep["requests"].append(second)
+        with tempfile.TemporaryDirectory() as root:
+            outcomes = Path(root) / "run-outputs" / "r1" / "outcomes"
+            outcomes.mkdir(parents=True)
+            path = outcomes / "response-items.json"
+
+            def coverage():
+                path.write_text(json.dumps(rep), encoding="utf-8")
+                return console_outstanding.render_outstanding(console_board.load(root, "r1"))
+
+            second["agency_key"] = "other-pd"
+            healthy = coverage()
+            self.assertIn(" (2)</h3>", healthy)
+            self.assertIn("<td>example-pd</td><td>R-1</td>", healthy)
+            self.assertIn("<td>other-pd</td><td>R-1</td>", healthy)
+
+            # One repeated response row used to inflate the phone's Tier 1 total to two.
+            second["agency_key"] = req(rep)["agency_key"]
+            duplicate = coverage()
+            self.assertIn("Outstanding information: unavailable.", duplicate)
+            self.assertIn("(response_items_invalid)", duplicate)
+            self.assertNotIn("<table>", duplicate)
+            self.assertNotIn("No outstanding items", duplicate)
+
+    def test_unique_and_unidentified_request_rows_still_project(self):
+        for field, value in (("agency_key", "other-pd"), ("request_id", "R-2")):
+            with self.subTest(field=field):
+                rep = good()
+                rep["requests"].append(dict(req(rep), **{field: value}))
+                rows = it.tier_report(rep, self.book)["requests"]
+                self.assertEqual([row[field] for row in rows], [req(rep)[field], value])
+        for field in ("agency_key", "request_id"):
+            for value in (None, "", "  "):
+                with self.subTest(field=field, value=value):
+                    rep = good()
+                    if value is None:
+                        req(rep).pop(field)
+                    else:
+                        req(rep)[field] = value
+                    rep["requests"].append(copy.deepcopy(req(rep)))
+                    rows = it.tier_report(rep, self.book)["requests"]
+                    self.assertEqual([row[field] for row in rows], [value, value])
 
 
 class CliTests(unittest.TestCase):

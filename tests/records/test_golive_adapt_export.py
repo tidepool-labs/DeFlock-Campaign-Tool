@@ -60,6 +60,8 @@ class ExportEvidenceTests(unittest.TestCase):
     def test_c1_current(self):
         """C1: Matching current export passes both; age alone must not mark it stale."""
         self.assert_records(self.expected("CURRENT"))
+        self.write_manifest(exported_at="2026-11-22T13:00:00+01:00", approval_anchor={"state": "ok"})
+        self.assert_records(self.expected("CURRENT"))
 
     def switch_after_pin(self, target):
         current = self.root / "current"
@@ -133,8 +135,20 @@ class ExportEvidenceTests(unittest.TestCase):
 
     def test_c1_unreadable(self):
         """C1: Invalid export bytes cannot be proof; failure binds the real run-report bytes."""
-        for raw in ("{", json.dumps({"run_id": self.latest["run_id"], "schema": "unrecognised"})):
-            with self.subTest(raw=raw):
+        manifest = json.loads(self.manifest.read_bytes())
+        manifest.pop("exported_at")
+        # A matching run alone used to turn even a future export into ledger evidence.
+        cases = {
+            "broken JSON": "{",
+            "wrong schema": json.dumps({"run_id": self.latest["run_id"], "schema": "unrecognised"}),
+            "future timestamp": json.dumps(dict(manifest, exported_at="2026-11-22T12:01:00Z")),
+            "missing timestamp": json.dumps(manifest),
+            "malformed timestamp": json.dumps(dict(manifest, exported_at="not a date")),
+            "timezone-less timestamp": json.dumps(dict(manifest, exported_at="2026-11-20T12:00:00")),
+            "non-string timestamp": json.dumps(dict(manifest, exported_at=None)),
+        }
+        for case, raw in cases.items():
+            with self.subTest(case=case):
                 self.manifest.write_text(raw, encoding="utf-8")
                 self.assert_records(self.expected("UNREADABLE", "UNKNOWN", from_report=True))
 
@@ -159,7 +173,8 @@ class ExportEvidenceTests(unittest.TestCase):
         out, err = io.StringIO(), io.StringIO()
         args = ["--export-root", str(self.root), "--run-report", str(self.report), *flags]
         # Freeze only the clock; exercise the real CLI parser, reader and serializer.
-        with patch.object(adapter, "datetime") as clock, contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+        with (patch.object(adapter, "datetime", wraps=datetime) as clock,
+              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err)):
             clock.now.return_value = NOW
             status = adapter.main(args)
         return status, out.getvalue(), err.getvalue()

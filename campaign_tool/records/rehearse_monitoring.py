@@ -10,6 +10,7 @@ import json
 import runpy
 import stat
 import sys
+from collections.abc import Callable
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -84,7 +85,7 @@ def _add_report(reports, root, finished, outputs_code):
                                                   "run_id": run_id, "links": []})
 
 
-def _observe(sandbox, name, now, finishes, outputs_code, expected_state, expected_alerts):
+def _observe(sandbox, name, now, finishes, outputs_code, expected_state, expected_alerts, refresh_poll):
     runtime = sandbox / "runtime"
     target = runtime / _TARGET
     root = sandbox / "records"
@@ -92,12 +93,12 @@ def _observe(sandbox, name, now, finishes, outputs_code, expected_state, expecte
     reports.mkdir(parents=True, exist_ok=True)
     for finished in finishes:
         _add_report(reports, root, finished, outputs_code)
-    poll = runtime / "mail-poll"
-    poll.mkdir(exist_ok=True)
-    _write_json(poll / "state.json", {"updated_at": now.isoformat()})
+    if refresh_poll:
+        poll = runtime / "mail-poll"
+        poll.mkdir(exist_ok=True)
+        _write_json(poll / "state.json", {"updated_at": now.isoformat()})
     spec = schedule.DEFAULT_SCHEDULE
-    # Schedule and mail health have independent inputs. Keep them healthy even
-    # when the run-report pointer is stale or the outputs history is degraded.
+    # Keep schedule health independent of the run report and mail poll.
     snapshot = target / "schedule-snapshot.json"
     _write_json(snapshot, {"schema": schedule_snapshot.SCHEMA, "generated_at": now.isoformat(),
                            "runs": [{"started_at": slot.isoformat(), "ended_at": slot.isoformat(),
@@ -120,32 +121,53 @@ def _observe(sandbox, name, now, finishes, outputs_code, expected_state, expecte
         copy = observation / alert.name
         copy.write_bytes(body)
         outputs.append(copy)
-    return report["state"] == expected_state and actual_alerts == expected_alerts, outputs
+    checks = {item["check"]: item for item in report["checks"]}
+    mail = checks.get("mail_poll", {})
+    expected_mail = ("ok", "mail_poll_recent") if refresh_poll else ("warn", "mail_poll_stale")
+    mail_matches = (mail.get("state"), mail.get("reason_code")) == expected_mail
+    # Mail loss and recovery must both be isolated from other configured check failures.
+    peers_required = not refresh_poll or name == "mail_poll_recovered"
+    peers_healthy = not peers_required or all(
+        item["state"] == "ok" or item["reason_code"] in pipeline_health.NOT_CONFIGURED
+        for check, item in checks.items() if check != "mail_poll"
+    )
+    return (report["state"] == expected_state and actual_alerts == expected_alerts
+            and mail_matches and peers_healthy), outputs
 
 
 def run(sandbox):
-    """Run the five steps in an existing empty 0700 directory, stopping on error."""
+    """Run the steps in an existing empty 0700 directory, stopping on error."""
     info = sandbox.lstat()
     if not stat.S_ISDIR(info.st_mode) or stat.S_IMODE(info.st_mode) != 0o700 or any(sandbox.iterdir()):
         raise ValueError("sandbox must be an empty mode-0700 directory")
     sandbox = sandbox.resolve()
     (sandbox / run_stages.SANDBOX_MARKER).touch(mode=0o600, exist_ok=False)
     stale_clock = _CLOCK + timedelta(hours=pipeline_health.LIMITS["run_max_hours"], minutes=1)
+    recovered_clock = stale_clock + timedelta(minutes=2)
+    # Advance past the warning threshold without refreshing the last good poll.
+    mail_stale_clock = recovered_clock + timedelta(hours=pipeline_health.LIMITS["mail_poll_warn_hours"], minutes=1)
     streak = pipeline_health.LIMITS["outputs_streak"]
     stale = "health-last_run-no_recent_run"
     failed = "health-outputs-outputs_degraded"
+    mail = "health-mail_poll-mail_poll_stale"
     stale_cleared = {stale + ".cleared.json": ("cleared", None)}
+    recovered_alerts = {**stale_cleared, failed + ".cleared.json": ("cleared", _OUTPUTS_CODE)}
     scenarios = (
-        ("healthy", _CLOCK, [_CLOCK - timedelta(minutes=n) for n in range(streak, 0, -1)], None, "ok", {}),
-        ("stale_run", stale_clock, (), None, "stop", {stale + ".json": ("stop", None)}),
+        ("healthy", _CLOCK, [_CLOCK - timedelta(minutes=n) for n in range(streak, 0, -1)], None, "ok", {}, True),
+        ("stale_run", stale_clock, (), None, "stop", {stale + ".json": ("stop", None)}, True),
         ("failed_outputs", stale_clock + timedelta(minutes=1),
          [stale_clock - timedelta(seconds=n) for n in range(streak, 0, -1)], _OUTPUTS_CODE, "warn",
-         {**stale_cleared, failed + ".json": ("warn", _OUTPUTS_CODE)}),
-        ("recovered", stale_clock + timedelta(minutes=2), [stale_clock + timedelta(minutes=1)], None, "ok",
-         {**stale_cleared, failed + ".cleared.json": ("cleared", _OUTPUTS_CODE)}),
+         {**stale_cleared, failed + ".json": ("warn", _OUTPUTS_CODE)}, True),
+        ("recovered", recovered_clock, [stale_clock + timedelta(minutes=1)], None, "ok", recovered_alerts, True),
+        ("mail_poll_stale", mail_stale_clock, [mail_stale_clock - timedelta(minutes=1)], None, "warn",
+         {**recovered_alerts, mail + ".json": ("warn", None)}, False),
+        ("mail_poll_recovered", mail_stale_clock + timedelta(minutes=1), (), None, "ok",
+         {**recovered_alerts, mail + ".cleared.json": ("cleared", None)}, True),
     )
     result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
-    steps = [("render_units", lambda: (True, _render_units(sandbox)))]
+    steps: list[tuple[str, Callable[[], tuple[bool, list[Path]]]]] = [
+        ("render_units", lambda: (True, _render_units(sandbox))),
+    ]
     steps.extend((scenario[0], lambda scenario=scenario: _observe(sandbox, *scenario)) for scenario in scenarios)
     for name, step in steps:
         try:

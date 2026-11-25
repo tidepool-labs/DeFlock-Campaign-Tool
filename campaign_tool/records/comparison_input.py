@@ -88,7 +88,9 @@ class Compiler:
         spec = cmp.WORKSHEET_FIELDS[name]
         if type(entry) is not dict or set(entry) - FIELD_KEYS:
             raise Refused("unknown_field_key", **where)
-        state, value = entry.get("state"), entry.get("value") or {}
+        state, value = entry.get("state"), entry.get("value")
+        if value is None:
+            value = {}
         if state not in spec["fact"]["state"]["values"]:
             raise Refused("bad_state", **where, key="state")
         for key in ("custodian_attested", "applicability_confirmed"):

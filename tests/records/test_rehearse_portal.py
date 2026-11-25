@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 from urllib.parse import unquote, urlsplit
 
-from campaign_tool.records import rehearse_portal as driver, run_stages
+from campaign_tool.records import rehearse, rehearse_portal as driver, run_stages
 from campaign_tool.records.portal import download, policy
 
 
@@ -164,6 +164,54 @@ class PortalRehearsalTests(unittest.TestCase):
         self.assertEqual(json.loads(out.getvalue()), report(self.sandbox))
         for folder in ("portal-queue/objects", "processing-v1/intake/blobs"):
             self.assertEqual({path.read_bytes() for path in (self.sandbox / folder).iterdir()}, set(DOCUMENTS))
+
+    def test_runner_requires_byte_preserving_enrollment(self):
+        # A same-length corruption of the enrolled copy leaves its filename,
+        # ledger row and fetched object intact. None can prove the copied bytes.
+        real_fetch = driver._Rehearsal.fetch
+        real_bind, real_connect = socket.socket.bind, socket.socket.connect
+        for changed_digest in (None, *DIGESTS):
+            with self.subTest(changed_digest=changed_digest):
+                servers = []
+
+                def bind(sock, address):
+                    self.assertEqual(address, ("127.0.0.1", 0))
+                    real_bind(sock, address)
+                    servers.append(sock)
+
+                def connect(sock, address):
+                    self.assertEqual(len(servers), 1)
+                    self.assertEqual(address, servers[0].getsockname())
+                    real_connect(sock, address)
+
+                def fetch(rehearsal):
+                    paths = real_fetch(rehearsal)
+                    if changed_digest is not None:
+                        blob = rehearsal.blobs / changed_digest
+                        info = blob.lstat()
+                        self.assertTrue(stat.S_ISREG(info.st_mode))
+                        self.assertEqual(info.st_nlink, 1)
+                        body = blob.read_bytes()
+                        self.assertEqual(hashlib.sha256(body).hexdigest(), changed_digest)
+                        mode = stat.S_IMODE(info.st_mode)
+                        blob.chmod(mode | stat.S_IWUSR)
+                        try:
+                            blob.write_bytes(bytes([body[0] ^ 1]) + body[1:])
+                        finally:
+                            blob.chmod(mode)
+                    return paths
+
+                with (patch.object(driver._Rehearsal, "fetch", fetch),
+                      patch.object(socket.socket, "bind", bind),
+                      patch.object(socket.socket, "connect", connect)):
+                    receipt, path = rehearse._run_driver(driver, self.sandbox, "1" * 40)
+
+                self.assertEqual([sock.fileno() for sock in servers], [-1])
+                healthy = changed_digest is None
+                expected = report(path.parent, failed=None if healthy else "ledger")
+                self.assertEqual(receipt["qualified"], healthy)
+                self.assertEqual(receipt["codes"], expected["codes"])
+                self.assertEqual(receipt["steps"], expected["steps"])
 
     def test_c2_cli_refuses_unqualified_sandboxes(self):
         """C2: CLI rejects absent, missing, nonempty, aliased or not owner-only sandboxes."""

@@ -132,7 +132,8 @@ class CoveragePage(unittest.TestCase):
         runs = [cover(i, out=i, skipped=5, gap=3, portal=100 - i) for i in range(31)]
         self.show(make(40), name=REJECTED)  # a rejected newer file takes no slot
         html = self.show(*runs)
-        ids = re.findall(r"/run\?id=(run_\w+)", html)
+        trend = re.findall(r"<tbody>(.*?)</tbody>", html, re.S)[0]
+        ids = re.findall(r"/run\?id=(run_\w+)", trend)
         self.assertEqual(ids, [runs[i]["run_id"] for i in range(30, 0, -1)])
         self.assertNotIn(runs[0]["run_id"], html)
         self.assertIn("Older valid runs not listed: 1.", html)
@@ -160,18 +161,23 @@ class CoveragePage(unittest.TestCase):
         for html in (none, missing, empty, rejected):
             self.assertNotIn("<table", html)
             self.assertNotIn("Newest run", html)
+            self.assertNotIn('/run?id=', html)
 
 
 class CoveragePages(Panel):
     # Fails if export and live panels read different archives or render differently, the page is not in More, a query
-    # or POST reaches it, or its detail links do not resolve.
+    # or POST reaches it, or its detail links do not resolve. Distinct counts and URLs catch a missing summary
+    # link or one that opens the older trend baseline instead of the report whose counts the summary displays.
     def test_export_and_project_modes_show_same_coverage(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         reports = Path(tmp.name) / "t" / "reports"
         reports.mkdir(parents=True)
-        for i in range(3):
-            data = cover(i, out=i + 1, skipped=1, gap=1, portal=5, stub=i == 1)
+        older = cover(1, out=2, skipped=1, gap=1, portal=5, stub=True)
+        newest = cover(3, out=4, skipped=1, gap=1, portal=5)
+        older_url = f'/run?id={older["run_id"]}'
+        newest_url = f'/run?id={newest["run_id"]}'
+        for data in (older, newest):
             (reports / (data["run_id"] + ".json")).write_text(json.dumps(data))
         report = str(reports.parent / "run-report.json")
         live = ap.build_server(str(self.live), "run_1", actor="operator", system=False, run_report_path=report)
@@ -186,11 +192,15 @@ class CoveragePages(Panel):
             self.assertEqual(status, 200)
             self.assertEqual(fetch(server, "/coverage?x=1")[0], 404)
             self.assertIn('<a href="/coverage" aria-current="page">Coverage</a>', html)
-            pages.append(re.findall(r"<dl>.*?</dl>|<table.*?</table>", html, re.S))
-        self.assertEqual(len(pages[0]), 2)
+            summary = html.split('<h2>Newest run</h2>', 1)[1].split('<div class="scroll"', 1)[0]
+            trend = re.findall(r"<table.*?</table>", html, re.S)[0]
+            self.assertIn("Adopted: 4", latest(summary))
+            self.assertEqual(rows(trend)[1][2], "2")
+            links = re.findall(r'href="(/run\?id=[^"]+)">([^<]+)</a>', summary)
+            self.assertEqual(links, [(newest_url, "Open newest run details")])
+            self.assertEqual(re.findall(r'href="(/run\?id=[^"]+)"', trend), [newest_url, older_url])
+            self.assertEqual(fetch(server, links[0][0])[0], 200)
+            pages.append((summary, trend))
         self.assertEqual(pages[0], pages[1])
         self.assertIn("Stub run", pages[0][1])
         self.assertNotEqual(self.request("POST", "/coverage", {})[0], 200)
-        for server in (live, self.server):
-            link = re.findall(r'href="(/run\?id=run_\w+)"', fetch(server, "/coverage")[1])[0]
-            self.assertEqual(fetch(server, link)[0], 200)

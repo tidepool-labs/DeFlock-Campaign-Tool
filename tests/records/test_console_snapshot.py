@@ -240,7 +240,34 @@ class ServedExport(Panel):
     def test_a_tampered_export_file_fails_the_hash_check(self):
         name = self.make_export()
         unlock(self.root)
-        path = self.root / "exports" / name / "console-model" / "queue.json"
+        export = self.root / "exports" / name
+        manifest_path = export / console_export.MANIFEST
+        raw = manifest_path.read_bytes()
+        manifest = json.loads(raw)
+        pinner = console_snapshot.Pinner(str(self.root))
+        with mock.patch.object(pinner, "_verify", wraps=pinner._verify) as verify:
+            good = pinner.pin()
+            self.assertEqual((good.run_id, good.source_project_id, good.name, good.exported_at),
+                             (RUN, self.pid, name, manifest["exported_at"]))
+            self.assertEqual(pinner.historical(name), good)
+            verify.assert_called_once()
+
+        with self.subTest(tampered="manifest digest on a warm cache"):
+            # An in-place rewrite leaves the directory key intact: a directory-only cache
+            # would accept a changed digest claim without checking the unchanged payload.
+            before = export.stat()
+            rel = "console-model/queue.json"
+            digest = manifest["files"][rel]
+            manifest["files"][rel] = ("1" if digest[0] == "0" else "0") + digest[1:]
+            manifest_path.write_text(json.dumps(manifest))
+            after = export.stat()
+            self.assertEqual((before.st_dev, before.st_ino, before.st_mtime_ns),
+                             (after.st_dev, after.st_ino, after.st_mtime_ns))
+            with self.assertRaisesRegex(console_snapshot.SnapshotError, "^export_hash_mismatch$"):
+                pinner.historical(name)
+
+        manifest_path.write_bytes(raw)
+        path = export / "console-model" / "queue.json"
         path.write_text(path.read_text().replace("pending", "approved"))
         pinner = console_snapshot.Pinner(str(self.root))
         with self.assertRaises(console_snapshot.SnapshotError), redirect_stderr(io.StringIO()) as err:

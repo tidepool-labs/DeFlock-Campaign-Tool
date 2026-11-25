@@ -11,6 +11,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+from campaign_tool.records import golive_record
 from campaign_tool.records import rehearsal_receipt as rr
 from campaign_tool.records.run_stages import SANDBOX_MARKER
 
@@ -235,12 +236,20 @@ class ReceiptTests(unittest.TestCase):
 
     def test_c3_round_trip_and_refuse_replacement(self):
         """C3: Commit exact data at the derived owner-only path; never clobber it."""
+        # Literal identities: neither case nor surrounding whitespace is normalized.
+        self.driver["steps"].extend(
+            {"name": name, "code": "OK", "outputs": []} for name in ("Invented step", " invented step ")
+        )
         receipt = self.build()
         path = rr.write(receipt, self.root)
         self.assertEqual(path, self.root / NAME)
         self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
         before = path.read_bytes()
-        self.assertEqual(rr.read(path), receipt)
+        loaded = rr.read(path)
+        self.assertEqual(loaded, receipt)
+        self.assertEqual(loaded["stages"], ["3", "A5"])
+        self.assertEqual(rr.qualify(loaded, now=NOW, target_engine=ENGINE), (True, []))
+        self.assertEqual(golive_record.from_rehearsal(path, "3", NOW)["result"], "pass")
         different = dict(receipt, codes=["SYNTHETIC_ALTERNATE"])
         self.assert_refused(FileExistsError, rr.write, different, self.root)
         self.assertEqual((path.read_bytes(), sorted(p.name for p in self.root.iterdir())),
@@ -301,6 +310,30 @@ class ReceiptTests(unittest.TestCase):
                 path.write_text(json.dumps(candidate), encoding="utf-8")
                 self.assert_refused(ValueError, rr.read, path)
 
+        # A list-of-strings check alone lets an OK rehearsal qualify without
+        # a ledger target, or claim the same stage more than once.
+        for stages in ([], [""], [" \t"], ["3", " \t"], ["3", "A5", "3"]):
+            with self.subTest(stages=stages, boundary="build"):
+                self.driver["stages"] = stages
+                self.assert_refused(ValueError, self.build)
+            with self.subTest(stages=stages, boundary="read"):
+                path.write_text(json.dumps(dict(valid, stages=stages)), encoding="utf-8")
+                self.assert_refused(ValueError, rr.read, path)
+
+        # A repeated OK name can masquerade as a distinct completed checkpoint.
+        # The go-live recorder must also refuse a previously saved malformed receipt.
+        self.driver["stages"] = valid["stages"]
+        for name in (step["name"], "", " \t\n"):
+            steps = [step, {"name": name, "code": "OK", "outputs": []}]
+            with self.subTest(name=name, boundary="build"):
+                self.driver["steps"] = steps
+                self.assert_refused(ValueError, self.build)
+            path.write_text(json.dumps(dict(valid, steps=steps)), encoding="utf-8")
+            with self.subTest(name=name, boundary="read"):
+                self.assert_refused(ValueError, rr.read, path)
+            with self.subTest(name=name, boundary="go-live recorder"):
+                self.assert_refused(ValueError, golive_record.from_rehearsal, path, "3", NOW)
+
     def tampered(self, **changes):
         """A shape-valid receipt whose recorded verdict contradicts its own facts."""
         return dict(self.build(), **changes)
@@ -359,9 +392,12 @@ class ReceiptTests(unittest.TestCase):
                                  (json.dumps(receipt, sort_keys=True, indent=2) + "\n").encode())
                 self.assertEqual(rr.read(path), receipt)
         self.marker.touch(mode=0o600)
+        self.driver["stages"].reverse()  # Preserve driver order, not sorted order.
         receipt = self.build()
         self.assertTrue(receipt["qualified"])
-        self.assertEqual(rr.read(rr.write(receipt, self.root)), receipt)
+        loaded = rr.read(rr.write(receipt, self.root))
+        self.assertEqual(loaded, receipt)
+        self.assertEqual(loaded["stages"], ["A5", "3"])
 
 
 class IdentityTests(unittest.TestCase):

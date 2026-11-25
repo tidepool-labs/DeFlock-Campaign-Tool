@@ -281,6 +281,23 @@ class WorkflowContract(unittest.TestCase):
                         self.assertLessEqual(set(contexts), names)
         self.assertEqual(producers_seen, {(workflow, job) for workflow, jobs in required.items() for job in jobs})
 
+    def test_fetch_depth_zero_never_runs_on_pull_requests(self):
+        # Contract: PR jobs fetch one commit (two only where HEAD^1 is read); full history
+        # and tags are for pushes/schedule alone. Bug caught: an unconditional
+        # `fetch-depth: 0` (full clone on every PR job) creeping back into a workflow.
+        pr_only_full_history = "fetch-depth: ${{ github.event_name == 'pull_request' && 1 || 0 }}"
+        history_readers = {'records.yml', 'workers.yml'}  # git diff HEAD^1 (affected, pin-guard, workers)
+        workflow_dir = ci_affected.ROOT / '.github/workflows'
+        for path in sorted(workflow_dir.glob('*.yml')):
+            with self.subTest(workflow=path.name):
+                depths = re.findall(r'^\s*fetch-depth:\s*(.+?)\s*$', path.read_text(), re.M)
+                for depth in depths:
+                    if depth == pr_only_full_history[len('fetch-depth: '):]:
+                        continue
+                    self.assertIn(depth, ('1', '2'))
+                    if depth == '2':
+                        self.assertIn(path.name, history_readers)
+
     def test_bounded_matrices_coverage_and_gates(self):
         text = (ci_affected.ROOT / '.github/workflows/records.yml').read_text()
         blocks = dict(re.findall(r'^  ([\w-]+):\n(.*?)(?=^  [\w-]+:\n|\Z)', text, re.M | re.S))
@@ -304,12 +321,19 @@ class WorkflowContract(unittest.TestCase):
         for name in ('full', 'offline'):
             with self.subTest(matrix=name):
                 self.assertIn(python_matrix, blocks[name].splitlines())
-        self.assertIn(f'    if: {self.DRAFT_GUARD} && (always())', offline.splitlines())
+        self.assertIn(f'    if: {self.DRAFT_GUARD} && (!cancelled())', offline.splitlines())
+        self.assertNotIn('always()', offline)
         for required in ('needs: [affected, full]', '${{ needs.affected.result }}',
                          '${{ needs.full.result }}', 'tools/check_public_tree.py',
                          'tools/check_pin_guard.py --all', 'tools/ci_affected.py --self-test'):
             self.assertIn(required, offline)
         self.assertEqual(offline.count('run: test "$SHARDS" = success'), 2)
+        # Gate before setup: a red shard must fail the roll-up before any checkout or install.
+        # Bug caught: moving the needs.*.result checks below checkout/setup-python makes every
+        # failed PR pay full job setup before the roll-up turns red.
+        gate_end = offline.index('run: test "$SHARDS" = success', offline.index('needs.full.result'))
+        for setup in ('actions/checkout@', 'actions/setup-python@', 'pip install'):
+            self.assertLess(gate_end, offline.index(setup), setup)
         # Execute the exact unchanged gate: cancelled/expired/stale/skipped/failed cannot pass.
         gate = re.findall(r'run: (test "\$SHARDS" = success)', offline)[0]
         with tempfile.TemporaryDirectory() as directory:

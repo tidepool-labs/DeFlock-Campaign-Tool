@@ -582,6 +582,41 @@ class FactSheetsTests(unittest.TestCase):
         pages = {(r["original_sha256"], r["page"]): r for r in cp.read(self.project, "test-run")["pages"]}
         self.assertEqual((pages[second, 2]["review_state"], pages[first, 2]["review_state"]), ("confirmed", "rejected"))
 
+    def test_cited_pages_refuse_conflicting_gap_proposal_citations(self):
+        # First-seen deduplication used to choose a page (or no page) based on proposal order.
+        first, second = (doc[0] for doc in self.docs)
+        self.write_citations(gaps=[(first, 1), (first, 2), (second, 1)])
+        path = self.project / "run-outputs" / "test-run" / "outcomes" / "gap-proposals.json"
+        gap = json.loads(path.read_bytes())
+        requests = gap["agencies"][0]["requests"]
+        original, other_page, other_item, ledger = requests[0]["proposals"]
+
+        def write_pair(left, right):
+            requests[:] = [{"proposals": [left]}, {"proposals": [right]}]
+            self.private(path, json.dumps(gap).encode())
+
+        write_pair(original, dict(original))
+        result = cp.read(self.project, "test-run")
+        self.assertEqual(result["state"], "ok")
+        pages = result["pages"]
+        assert isinstance(pages, list)
+        page, = pages
+        self.assertEqual((page["original_sha256"], page["page"], page["text"]),
+                         (first, 1, self.fixture["documents"][0]["pages"][0]))
+        self.assertEqual(page["citations"], [{"kind": "gap", "id": original["proposal_id"], "label": "policy_gap"}])
+
+        for field, conflict in (("page", other_page), ("page_type", {**original, "page": True}), ("item_id", other_item),
+                                ("type", {**original, "type": "coverage_gap"}), ("evidence_kind", ledger)):
+            conflict = {**conflict, "proposal_id": original["proposal_id"]}
+            for left, right in ((original, conflict), (conflict, original)):
+                with self.subTest(field=field, original_first=left is original):
+                    write_pair(left, right)
+                    with patch.object(cp.ri, "_current_units", wraps=cp.ri._current_units) as lookup:
+                        result = cp.read(self.project, "test-run")
+                    self.assertEqual((result["state"], result.get("code")), ("unavailable", "cited_pages_citation"))
+                    self.assertEqual(set(result), {"state", "code"})
+                    lookup.assert_not_called()
+
     def test_cited_pages_bounds_are_counted_never_dropped(self):
         # Contract: a page over a bound is listed in not_exported with its reason; text is never truncated and the
         # serialized model never exceeds the total. Bug caught: bytes counted as characters, or a silent drop.

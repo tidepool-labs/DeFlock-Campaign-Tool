@@ -14,7 +14,7 @@ import hashlib
 import json
 import re
 
-from . import finding_review as fr, followup_state as fs
+from . import analysis_config as ac, finding_review as fr, followup_state as fs
 from .outcomes import received_items
 
 KIND = "contradiction"
@@ -81,6 +81,7 @@ def load_reviewed_contradictions(project, run_id, analysis_root):
 
     `valid` False means the finding is approved but its citation or request mapping is not usable; such a descriptor
     carries no facts and makes the route manual. Unreviewed, rejected and signature-refused findings are never listed.
+    An unreadable agency source or invalid profile binding makes the entire read unavailable, not partial.
     """
     try:
         root = fr._admit(analysis_root)
@@ -97,20 +98,15 @@ def load_reviewed_contradictions(project, run_id, analysis_root):
         slugs = collections.defaultdict(list)
         for path in sorted(root.glob("agencies/*/review-config.json")):
             slug = path.parent.name
-            try:
-                agency = json.loads((root / "profiles" / (slug + ".json")).read_text(encoding="utf-8")).get("records_agency_id")
-            except (OSError, ValueError, AttributeError):
-                continue
-            if isinstance(agency, str) and agency:
-                slugs[agency].append(slug)
+            agency = json.loads((root / "profiles" / (slug + ".json")).read_text(encoding="utf-8")).get("records_agency_id")
+            if not isinstance(agency, str) or not ac.AGENCY_ID.fullmatch(agency):
+                raise FindingsUnavailable()
+            slugs[agency].append(slug)
         if any(len(v) > 1 for v in slugs.values()):
             raise FindingsUnavailable()
         out = []
         for agency_key, (slug,) in sorted(slugs.items()):
-            try:
-                rows = fr.list_findings(root, agency=slug)
-            except fr.FindingReviewError:
-                continue
+            rows = fr.list_findings(root, agency=slug)
             out += [_descriptor(agency_key, r, received) for r in rows
                     if r.get("topic") == KIND and r.get("review_state") == "approved" and r.get("hold_code") is None]
         return out

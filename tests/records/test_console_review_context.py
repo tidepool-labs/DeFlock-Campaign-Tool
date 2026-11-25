@@ -123,26 +123,60 @@ class ReviewContextTests(Panel):
                 self.assertIn(mail_preview.REFRESH, mail_preview.context_html(source.review_context(row['id'])))
         self.assertEqual(context['queue_id'], row['id'])
 
-    def test_navigation_leave_and_reject_preserve_other_rows(self):
-        from campaign_tool.records import console_review
+    def three_pending_rows(self):
         self.imported()
-        rows = sorted((r for r in aq.load_queue(self.live) if r['status'] == 'pending'), key=lambda r: r['id'])
-        # Add a third distinct pending identity, then leave the middle item without an event.
-        third = aq.add_draft(self.live, item_id='f' * 64, kind='reply-extension', agency_id='caltrans',
-                             request_id='req-3', body='Third', evidence={'why': 'Separate'}, source_run_id=RUN)
-        rows = sorted([*rows, third], key=lambda r: r['id'])
+        aq.add_draft(self.live, item_id='f' * 64, kind='reply-extension', agency_id='caltrans',
+                     request_id='req-3', body='Third', evidence={'why': 'Separate'}, source_run_id=RUN)
+        return sorted((r for r in aq.load_queue(self.live) if r['status'] == 'pending'), key=lambda r: r['id'])
+
+    def test_previous_pending_draft_uses_sorted_pinned_rows(self):
+        first, middle, last = self.three_pending_rows()
+
+        def reverse_pending(dest):
+            path = dest / 'console-model/queue.json'
+            doc = json.loads(path.read_text())
+            doc['rows'] = [last, middle, first] + [r for r in doc['rows'] if r['status'] != 'pending']
+            path.write_text(json.dumps(doc))
+
+        self.make_export(mutate=reverse_pending)
+        self.up()
+        before = tree_state(self.root)
+        page = self.get('/review?id=' + middle['id'])
+        for label in ('Next', 'Leave pending'):
+            self.assertIn(f'<a href="/review?id={last["id"]}">{label}</a>', page)
+        self.assertIn('<a href="/">Queue index</a>', page)
+        self.assertNotIn('>Previous pending draft</a>', self.get('/review?id=' + first['id']))
+        # Missing backward navigation or using export order instead of sorted IDs breaks this GET link.
+        previous = re.findall(r'<a href="([^"]+)">Previous pending draft</a>', page)
+        self.assertEqual(previous, ['/review?id=' + first['id']])
+        self.assertIn('Draft 1 of 3', self.get(previous[0]))
+        self.assertEqual(tree_state(self.root), before)
+
+    def test_navigation_leave_and_reject_preserve_other_rows(self):
+        rows = self.three_pending_rows()
         first, middle, last = rows
         before = (self.live / 'approvals/queue.jsonl').read_bytes()
-        links = console_review.navigation(middle, rows)
-        self.assertIn('Leave pending', links)
-        self.assertIn('/review?id=' + last['id'], links)
+        # Next can work even when the position is missing, zero-based, or in input order.
+        for current, position, following in ((first, 1, middle), (middle, 2, last), (last, 3, first)):
+            with self.subTest(position=position):
+                links = console_review.navigation(current, reversed(rows))
+                self.assertIn(f'Draft {position} of 3', links)
+                for label in ('Next', 'Leave pending'):
+                    self.assertIn(f'<a href="/review?id={following["id"]}">{label}</a>', links)
+                self.assertIn('<a href="/">Queue index</a>', links)
         self.assertEqual((self.live / 'approvals/queue.jsonl').read_bytes(), before)
         aq.reject(self.live, middle['id'], 'operator', 'Deferred by human')
         after = {r['id']: r for r in aq.load_queue(self.live)}
         self.assertEqual(after[first['id']], first)
         self.assertEqual(after[last['id']], last)
-        self.assertIn('/review?id=' + last['id'], console_review.navigation(after[middle['id']], after.values()))
-        self.assertIn('/review?id=' + first['id'], console_review.navigation(last, after.values()))
+        unknown = {'id': '0' * len(first['id']), 'status': 'pending'}
+        self.assertNotRegex(console_review.navigation(unknown, after.values()), r'Draft \d+ of \d+')
+        links = console_review.navigation(last, [after[middle['id']], last])
+        self.assertIn('Draft 1 of 1', links)
+        self.assertIn('<a href="/">Queue index</a>', links)
+        self.assertIn('No other pending drafts.', links)
+        self.assertNotIn('>Next</a>', links)
+        self.assertNotIn('>Leave pending</a>', links)
         self.make_export()
         self.up()
         home = self.get('/')
@@ -150,5 +184,14 @@ class ReviewContextTests(Panel):
         self.assertIn('/review?id=' + last['id'], home)
         self.assertNotIn('/review?id=' + middle['id'], home)
         page = self.get('/review?id=' + middle['id'])
-        self.assertIn('>Next</a>', page)
+        self.assertIn(f'<a href="/review?id={last["id"]}">Next</a>', page)
         self.assertNotIn('>Leave pending</a>', page)
+        self.assertNotIn('>Previous pending draft</a>', page)
+        self.assertNotRegex(page, r'Draft \d+ of \d+')
+        page = self.get('/review?id=' + last['id'])
+        self.assertIn('Draft 2 of 2', page)
+        self.assertIn(f'<a href="/review?id={first["id"]}">Next</a>', page)
+        self.assertIn(f'<a href="/review?id={first["id"]}">Leave pending</a>', page)
+        page = self.get('/review?id=' + unknown['id'], status=404)
+        self.assertNotRegex(page, r'Draft \d+ of \d+')
+        self.assertNotIn('>Previous pending draft</a>', page)
