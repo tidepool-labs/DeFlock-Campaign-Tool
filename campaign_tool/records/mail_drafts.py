@@ -9,6 +9,7 @@ deleted, and there is no SMTP or HTTP call. Credentials stay in the mailbox conf
 Refusals are stable, content-free codes.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import imaplib
@@ -443,10 +444,76 @@ def _place_one(client, config, row, thread, reason, now):
                 thread_reason=None if thread is not None else reason)
 
 
-def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, dry_run=False):
-    """Place every approved, not yet placed row. Content-free summary; never sends."""
+_HEX64 = re.compile(r"[0-9a-f]{64}")
+_REVISION = re.compile(r"[0-9]{1,9}")  # ASCII digits only; no sign, space or other numeral
+
+
+def _revision_argv(argv):
+    """``argv`` with its single ``--revision`` rewritten as ``--revision=VALUE``, or None if the request is malformed.
+
+    Done before argparse, which would exit 2 with a usage line (and echo the rejected text). Every occurrence counts,
+    including argparse's unambiguous abbreviations (``--rev``): a missing value, a repeated option or a value that
+    is not 1-9 ASCII digits is malformed, so a second occurrence can never overwrite a first one unnoticed. The
+    value is glued on so a leading-dash value is never read as an option."""
+    out, seen, i = [], 0, 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return out + argv[i:]
+        name, eq, value = token.partition("=")
+        if len(name) >= 3 and name.startswith("--") and "--revision".startswith(name):
+            seen += 1
+            if not eq:
+                if i + 1 >= len(argv):
+                    return None
+                i += 1
+                value = argv[i]
+            if seen > 1 or _REVISION.fullmatch(value) is None:
+                return None
+            out.append("--revision=" + value)
+        else:
+            out.append(token)
+        i += 1
+    return out
+
+
+def _exact_row(queue, only_id, only_revision):
+    """The one row an exact (queue ID, revision) request names, or a refusal before anything is opened for writing.
+
+    The revision is the one the reviewer saw (for example in ``reply_placement_preview``). An edit, a re-approval
+    or a cancellation after that review moves the row to another revision, so the request is refused instead of
+    placing text nobody reviewed for placement."""
+    _need(isinstance(only_id, str) and _HEX64.fullmatch(only_id) is not None
+          and type(only_revision) is int and only_revision >= 0, "exact_request_invalid")
+    row = next((r for r in queue if r["id"] == only_id), None)
+    if row is None:
+        raise MailDraftError("exact_id_unknown")
+    _need(row["kind"] not in draft_templates.NON_MAIL_KINDS, "exact_not_mail")
+    _need(row["revision"] == only_revision, "exact_revision_not_current")
+    _need(row["status"] == "approved", "exact_not_approved")
+    return row
+
+
+def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, only_revision=None,
+          dry_run=False):
+    """Place every approved, not yet placed row (or only ``only_id``). Content-free summary; never sends.
+
+    With ``only_revision`` the request is exact: ``only_id`` must be a full queue ID whose current revision is
+    ``only_revision`` and approved, otherwise ``MailDraftError`` is raised and nothing is written or connected.
+    Without it the behaviour is unchanged (``only_id`` alone places whichever revision is approved now)."""
     now = now or _now()
-    rows = [r for r in approval_queue.load_queue(project) if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
+    with contextlib.ExitStack() as hold:
+        if only_revision is None:
+            queue = approval_queue.load_queue(project)
+        else:
+            # The shared queue lock stays held until placement ends, so an edit, a new approval or a cancellation
+            # cannot complete between this validation and the Drafts append: it waits, then gets queue_busy.
+            queue = [_exact_row(hold.enter_context(approval_queue.held_queue(project)), only_id, only_revision)]
+        return _place_rows(project, config, queue, factory, now, only_id, dry_run)
+
+
+def _place_rows(project, config, queue, factory, now, only_id, dry_run):
+    rows = [r for r in queue if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
             and (only_id is None or r["id"] == only_id)]
     summary = {"placed": 0, "existing": 0, "failed": 0, "skipped": 0}
     with _Journal(project, not dry_run) as journal:
@@ -530,8 +597,16 @@ def main(argv=None):
     place_p.add_argument("--project", required=True)
     place_p.add_argument("--config", required=True, help="owner-only mailbox config with an explicit Drafts folder")
     place_p.add_argument("--dry-run", action="store_true", help="connect nowhere and write nothing")
+    place_p.add_argument("--queue-id", help="place only this exact 64-hex queue ID (requires --revision)")
+    place_p.add_argument("--revision", help="the exact reviewed revision of --queue-id; refused if the "
+                                                      "row has since been edited, approved again or cancelled")
     list_p = sub.add_parser("list")
     list_p.add_argument("--project", required=True)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    argv = _revision_argv(argv)
+    if argv is None:  # before argparse can print usage or echo the text; content-free like every other refusal
+        print("exact_request_invalid", file=sys.stderr)
+        return 1
     args = parser.parse_args(argv)
     try:
         if args.action == "list":
@@ -540,8 +615,10 @@ def main(argv=None):
                                                         "thread_reason", "message_id", "fingerprint", "code",
                                                         "superseded_by", "at")}, sort_keys=True))
             return 0
+        _need((args.queue_id is None) == (args.revision is None), "exact_request_invalid")
         config = load_config(args.config)
-        print(json.dumps(place(args.project, config, dry_run=args.dry_run), sort_keys=True))
+        print(json.dumps(place(args.project, config, dry_run=args.dry_run, only_id=args.queue_id,
+                               only_revision=None if args.revision is None else int(args.revision)), sort_keys=True))
     except (MailDraftError, approval_queue.ApprovalQueueError) as error:
         print(error.code, file=sys.stderr)
         return 1
