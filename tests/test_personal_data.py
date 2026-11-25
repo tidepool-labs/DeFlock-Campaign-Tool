@@ -1217,7 +1217,7 @@ MODULE_FUNCTIONS = {
     'records.rehearse_followup_engine': ('_init_project', '_seed_inputs', '_write_json',),
     'records.rehearse_findings': ('_csv_bytes', '_packet_import', '_put', '_seed',),  # sandbox marker, synthetic inputs, outbox move; _csv_bytes builds bytes in memory
     'records.rehearse_packets': ('_Rehearsal.project_approved_change', '_put',),  # synthetic sandbox only
-    'records.rehearse_adoption': ('_flip', '_marker',),  # sandbox marker and one flipped byte of the synthetic export only
+    'records.rehearse_adoption': ('_fenced', '_flip', '_marker',),  # sandbox marker, child audit hook inside the sandbox, one flipped byte of the synthetic export
     'records.review_bundle': ('_locked', '_new',),
     'records.review_retirement': ('arm', 'finish', 'start',),
     'records.run': (
