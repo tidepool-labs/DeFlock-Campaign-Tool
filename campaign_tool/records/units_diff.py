@@ -3,10 +3,10 @@
 Compares every ``records-*`` and ``deflock-console-*`` unit file, plus each file of the
 ``deflockslo-daily-mail.service.d`` drop-in directory, of a rendered tree with the installed user unit directory
 and prints one line per unit: MATCH, DRIFT (changed directive names only), MISSING (rendered, not installed) or
-EXTRA (installed ``records-*`` unit without a rendered counterpart), plus what ``systemctl --user is-enabled``
-reports. Nothing is written, copied, enabled, reloaded or started, a symlink is reported and never followed,
-and no directive value (Environment=, EnvironmentFile=, ExecStart= ...), absolute path or exception text is
-ever printed. Exit 0 when everything matches, 1 on any difference, 2 for unusable input.
+EXTRA (installed ``records-*`` or ``deflock-console-*`` unit without a rendered counterpart), plus what
+``systemctl --user is-enabled`` reports. Nothing is written, copied, enabled, reloaded or started, a symlink is
+reported and never followed, and no directive value (Environment=, EnvironmentFile=, ExecStart= ...), absolute
+path or exception text is ever printed. Exit 0 when everything matches, 1 on any difference, 2 for unusable input.
 """
 import argparse
 import os
@@ -177,7 +177,7 @@ def main(argv=None, enabled=is_enabled):
         print("units-diff: nothing to compare: the rendered tree has no records-*, deflock-console-* or "
               "mail drop-in file", file=sys.stderr)
         return 2
-    names = sorted(set(rendered) | {n for n in installed if n.startswith("records-")})
+    names = sorted(set(rendered) | {n for n in installed if UNIT.fullmatch(n)})
     states, bad = {}, False
     for name in names:
         # a symlinked (or unreadable) drop-in directory stands for each file inside it and is never entered

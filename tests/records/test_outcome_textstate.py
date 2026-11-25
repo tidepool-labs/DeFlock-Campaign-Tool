@@ -165,21 +165,29 @@ class TextStateTests(unittest.TestCase):
         def duplicate():
             self.listing("bad", [self.doc(h(1), "EXTRACTED"), self.doc(h(1), "AWAITING_OCR")])
 
+        def duplicate_outcome():
+            # A last-key-wins decoder would silently label this record text_reviewed.
+            path = self.listing("bad", [self.doc(h(1), "EXTRACTED")])
+            raw = path.read_bytes()
+            path.write_bytes(raw.replace(b'"outcome": "EXTRACTED"',
+                                         b'"outcome": "AWAITING_OCR", "outcome": "EXTRACTED"'))
+
         def oversize():
             self.listing("bad", [self.doc(h(1), "EXTRACTED")])
             patcher = mock.patch.object(ts, "MAX_LIST_BYTES", 16)
             patcher.start()
             self.addCleanup(patcher.stop)
 
-        for index, make in enumerate((missing, wrong_schema, symlinked, not_json, duplicate, oversize)):
+        for index, make in enumerate((missing, wrong_schema, symlinked, not_json, duplicate,
+                                      duplicate_outcome, oversize)):
             with self.subTest(make.__name__):
                 for leftover in (self.processing / "runs").iterdir():
                     leftover.unlink()
                 make()
                 run = f"bad-{index}"
+                list_path = self.processing / "runs" / f"extract-{run}.json"
                 if make is not missing:
-                    os.rename(self.processing / "runs" / "extract-bad.json",
-                              self.processing / "runs" / f"extract-{run}.json")
+                    os.rename(self.processing / "runs" / "extract-bad.json", list_path)
                 code, line = self.stage(run)
                 self.assertEqual((code, line["status"], line["error_code"]), (0, "warn", "OUTPUTS_TEXTSTATE_UNAVAILABLE"))
                 self.assertEqual(line["counts"], {"input": 1, "output": 1, "failed": 0, "skipped": 0})
@@ -190,6 +198,9 @@ class TextStateTests(unittest.TestCase):
                 for name in ts.FILES:
                     self.assertFalse(os.path.lexists(directory / name))
                 self.assertNotIn(str(self.project), json.dumps(line))
+                if make is duplicate_outcome:
+                    with self.assertRaisesRegex(ValueError, "^textstate_duplicate_field$"):
+                        ts.load_list(list_path)
 
     def test_register_warning_keeps_its_own_code(self):
         self.listing("r1", [])
@@ -201,7 +212,9 @@ class TextStateTests(unittest.TestCase):
 
     def test_replay_is_verified_noop_partial_refused_new_run_own_directory(self):
         self.listing("r1", [self.doc(h(1), "EXTRACTED")])
-        ts.write_run_textstate(self.project, "r1")
+        report = ts.write_run_textstate(self.project, "r1")
+        state, words = EXPECTED["EXTRACTED"]
+        self.assertEqual(report["records"], [{"sha256": h(1), "state": state, "words": words}])
         target = self.project / "run-outputs" / "r1" / "text-state.json"
         before = (target.read_bytes(), target.stat().st_ino, target.stat().st_mtime_ns)
         ts.write_run_textstate(self.project, "r1")

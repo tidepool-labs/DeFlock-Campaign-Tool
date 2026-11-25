@@ -76,6 +76,33 @@ class PreviewTests(Base):
         clean = mail_preview.preview(self.project, self.row())
         self.assertEqual((clean["residue"], clean["body_header_lines"]), ([], []))
 
+    def test_context_html_distinguishes_citation_list_states(self):
+        context = mail_preview.review_context(self.project, self.row())
+        self.assertIn("Sources unknown: producer supplied no citation list.",
+                      mail_preview.context_html(context))
+        without_citations = dict(context)
+        without_citations.pop("citations")
+        self.assertEqual(mail_preview.context_html(without_citations), mail_preview.context_html(context))
+
+        empty = mail_preview.context_html({**context, "citations": []})
+        self.assertIn("No citations supplied by producer.", empty)
+        self.assertNotIn("Citations unavailable.", empty)
+
+        populated = mail_preview.context_html({**context, "citations": [{"title": "<Draft & notes>"}]})
+        self.assertIn("<li>title: &lt;Draft &amp; notes&gt;</li>", populated)
+        self.assertNotIn("<Draft & notes>", populated)
+
+        # A malformed export object could render its keys as citations; a falsey
+        # non-list could likewise masquerade as a confirmed empty list.
+        for malformed in ({"invented-key": "invented-value"}, {}, "invented-value", "", 0, 42, False):
+            with self.subTest(malformed=malformed):
+                rendered = mail_preview.context_html({**context, "citations": malformed})
+                self.assertIn("Citations unavailable.", rendered)
+                self.assertNotIn("No citations supplied by producer.", rendered)
+                self.assertNotIn("Sources unknown:", rendered)
+                self.assertNotIn("<li>", rendered)
+                self.assertNotIn("invented-", rendered)
+
     def test_playbook_uses_same_provenance_as_placement(self):
         self.build_ledger()
         row = self.row(kind="followup-playbook", item_id="route:synthetic", evidence={

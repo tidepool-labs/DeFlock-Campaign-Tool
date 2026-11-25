@@ -218,6 +218,22 @@ class CitedPagesReader(ModelBase):
         self.assertEqual(self.read(self.doc(), run="other-run"), bad("console_model_mismatch"))
         self.assertEqual(self.read(self.doc(run_id="other-run")), bad("console_model_invalid"))
 
+    def test_generated_confidence_bands_must_match_page_route(self):
+        # C1: read back the exporter's labels unchanged, but refuse mixed route/band pairs even if both labels are known.
+        cases = [({}, "native", "not_applicable", "not_recorded"),
+                 ({"method": cp.OCR_METHOD}, "ocr", "not_recorded", "not_applicable"),
+                 ({"method": cp.OCR_METHOD, "confidence": 79}, "ocr", "below_80", "not_applicable"),
+                 ({"method": cp.OCR_METHOD, "confidence": 80}, "ocr", "at_least_80", "not_applicable")]
+        for manifest_row, expected_route, expected_band, wrong_band in cases:
+            with self.subTest(route=expected_route, band=expected_band):
+                route, band, review = cp._ocr_state(manifest_row, SHA, 1, dict)
+                self.assertEqual((route, band), (expected_route, expected_band))
+                page = dict(self.page(), route=route, confidence_band=band, review_state=review)
+                doc = self.doc(pages=[page])
+                self.assertEqual(self.read(cp.encode(doc)), doc)
+                page["confidence_band"] = wrong_band
+                self.assertEqual(self.read(cp.encode(doc)), {"state": "unavailable", "code": "console_model_invalid"})
+
     def test_malformed_page_rows_are_refused(self):
         def edit(change):
             doc = self.doc()

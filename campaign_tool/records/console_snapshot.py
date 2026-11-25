@@ -67,8 +67,8 @@ def _sha256(dir_fd, name):
 
 
 class Pinner:
-    """Pins DIR/current to one real export per request. A verified export is cached by directory identity
-    (exports are immutable); a failing pin falls back to the last good one, and to none before any."""
+    """Pins DIR/current to one real export per request. Verification is cached by directory identity and
+    manifest bytes; a failing pin falls back to the last good one, and to none before any."""
 
     def __init__(self, root):
         self.root, self.good, self.verified, self.last_code = root, None, set(), None
@@ -111,14 +111,15 @@ class Pinner:
             info = os.fstat(fd)
             _need(_private_dir(info), "export_unsafe")
             raw = _read_file(fd, ce.MANIFEST, MAX_MANIFEST)
-            _need(raw is not None, "export_manifest_invalid")
+            if raw is None:
+                raise SnapshotError("export_manifest_invalid")
             manifest = aq._strict_load(raw, "export_manifest_invalid")
             run_id, pid, files = manifest["run_id"], manifest["source_project_id"], manifest["files"]
             _need(manifest["schema"] == ce.SCHEMA and isinstance(run_id, str) and ce.RUN_ID.fullmatch(run_id)
                   and name[17:] == run_id and isinstance(pid, str) and PROJECT_ID.fullmatch(pid)
                   and isinstance(files, dict) and all(isinstance(v, str) and ce.HEX.fullmatch(v) for v in files.values()),
                   "export_manifest_invalid")
-            key = (info.st_dev, info.st_ino, info.st_mtime_ns)
+            key = (info.st_dev, info.st_ino, info.st_mtime_ns, hashlib.sha256(raw).digest())
             if key not in self.verified:
                 self._verify(fd, files)
                 self.verified.add(key)

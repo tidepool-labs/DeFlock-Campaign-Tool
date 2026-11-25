@@ -33,6 +33,7 @@ MANAGED = {"schema": "records-systemd-managed-v1"}
 HOLD = {"schema": "records-systemd-hold-v1", "status": "held"}
 CLOSED = dict(BINDING, schema="records-systemd-not-allocated-v1", status="not_allocated")
 ERROR = "invalid systemd receipt or unit status capture"
+NOT_TRACKED = "UNITS_NOT_TRACKED"
 
 
 def unit(name, enabled=True, active=True):
@@ -65,11 +66,17 @@ class AdapterTests(unittest.TestCase):
             "codes": list(codes),
         }
 
-    def assertInvalid(self, path):
+    def assertInvalid(self, *paths):
         with self.assertRaises(ValueError) as caught:
-            adapter.records([path], NOW)
+            adapter.records(paths, NOW)
         self.assertIs(type(caught.exception), ValueError)
         self.assertEqual(str(caught.exception), ERROR)
+
+    def assertUntracked(self, *paths):
+        with self.assertRaises(ValueError) as caught:
+            adapter.records(paths, NOW)
+        self.assertIs(type(caught.exception), adapter.UnitsNotTracked)
+        self.assertEqual(str(caught.exception), NOT_TRACKED)
 
     def test_c1_arrival_both_flags_required(self):
         """C1: Preserve the healthy row and report each failed flag independently."""
@@ -104,7 +111,10 @@ class AdapterTests(unittest.TestCase):
                 path = self.receipt(capture(unit("other.timer"), *reversed(units)))
                 codes = [f"UNIT_{reason}_{suffix}" for suffix, state in zip(suffixes, triple)
                          for reason in reasons[state]]
-                expected = [self.evidence(path, "18", "fail" if codes else "pass", codes)] if units else []
+                if not units:  # nothing tracked: refused, see test_dfs2125_09_c1
+                    self.assertUntracked(path)
+                    continue
+                expected = [self.evidence(path, "18", "fail" if codes else "pass", codes)]
                 self.assertEqual(adapter.records([path], NOW), expected)
 
     def test_c1_two_families_and_evidence_schema(self):
@@ -130,8 +140,34 @@ class AdapterTests(unittest.TestCase):
 
     def test_c1_empty_inputs_and_capture(self):
         """C1: An empty inventory cannot imply that any monitored family was evaluated."""
-        self.assertEqual(adapter.records([self.receipt(capture())], NOW), [])
+        self.assertUntracked(self.receipt(capture()))
         self.assertEqual(adapter.records([], NOW), [])
+
+    def test_c2_same_instant_conflicting_unit_states(self):
+        """C2: Per-file validation alone lets one unit have two states at one instant."""
+        for name, first, second in (
+            (ARRIVAL, (True, True), (False, True)),
+            (CONSOLE, (False, True), (False, False)),
+        ):
+            a = self.receipt(capture(unit(name, *first)), "a.json")
+            b = self.receipt(capture(unit(name, *second)), "b.json")
+            for paths in ((a, b), (b, a)):
+                with self.subTest(unit=name, first=paths[0].name):
+                    self.assertInvalid(*paths)
+
+    def test_c1_compatible_captures_keep_individual_evidence(self):
+        """C1: Agreement does not deduplicate rows, and only tracked units at the same second join."""
+        a = self.receipt(capture(unit(ARRIVAL), unit("other.path")), "a.json")
+        b = self.receipt(capture(unit(ARRIVAL), unit("other.path", False)), "b.json", canonical=True)
+        timers = self.receipt(capture(unit(HEALTH), unit(BACKUP), unit(CONSOLE)), "timers.json")
+        earlier = "2026-01-02T03:04:04Z"
+        old = self.receipt(capture(unit(ARRIVAL, active=False), observed_at=earlier), "old.json")
+        self.assertEqual(adapter.records([a, b, timers, old], NOW), [
+            self.evidence(a, "3", "pass"),
+            self.evidence(b, "3", "pass"),
+            self.evidence(timers, "18", "pass"),
+            self.evidence(old, "3", "fail", ["UNIT_NOT_ACTIVE_RECORDS_ARRIVAL_PATH"], earlier),
+        ])
 
     def test_c2_capture_shape(self):
         """C2: Reject extra, absent, malformed or repeated fields instead of guessing."""
@@ -227,4 +263,50 @@ class AdapterTests(unittest.TestCase):
         """C3: A later bad input exits 2 without emitting earlier evidence or private text."""
         good = self.receipt(capture(unit(ARRIVAL)), "good.json")
         bad = self.receipt(b"not JSON", "bad.json")
-        self.assertEqual(self.cli(str(good), str(bad), "--json"), (2, "", f"golive_adapt_systemd: {ERROR}\n"))
+        expected = (2, "", f"golive_adapt_systemd: {ERROR}\n")
+        self.assertEqual(self.cli(str(good), str(bad), "--json"), expected)
+        conflict = self.receipt(capture(unit(ARRIVAL, active=False)), "conflict.json")
+        for flags in ((), ("--json",)):
+            with self.subTest(flags=flags):
+                self.assertEqual(self.cli(str(good), str(conflict), *flags), expected)
+
+    # DFS1123-2125-09: a capture naming none of the go-live units is refused, not silently empty.
+    # Bug guarded: records() returned [] (CLI exit 0, no output) that reads as "recorded".
+
+    def test_dfs2125_09_c1_untracked_capture_raises_stable_code(self):
+        """C1: No tracked unit (unrelated or empty list) raises UnitsNotTracked, not the generic text."""
+        for label, units in (("unrelated", [unit("unrelated.timer")]), ("empty", []),
+                             ("near-miss", [unit("records-arrival.timer"), unit("records-health.path", False, False)])):
+            with self.subTest(case=label):
+                self.assertUntracked(self.receipt(capture(*units)))
+
+    def test_dfs2125_09_c2_cli_prints_code_and_exits_2(self):
+        """C2: CLI emits exactly the stable stderr line, exit 2, empty stdout, no path or capture content."""
+        path = self.receipt(capture(unit("secret-private-name.timer")), "private-capture-name.json")
+        for flags in ((), ("--json",)):
+            with self.subTest(flags=flags):
+                self.assertEqual(self.cli(str(path), *flags), (2, "", "golive_adapt_systemd: UNITS_NOT_TRACKED\n"))
+        # Healthy control and every other refusal keep their own outcome and the generic text.
+        self.assertEqual(self.cli(str(self.receipt(capture(unit(ARRIVAL)), "ok.json")))[0], 0)
+        self.assertEqual(self.cli(str(self.receipt(b"not JSON", "bad.json"))),
+                         (2, "", f"golive_adapt_systemd: {ERROR}\n"))
+        future = self.receipt(capture(unit(ARRIVAL), observed_at="2999-01-01T00:00:00Z"), "future.json")
+        self.assertEqual(self.cli(str(future)), (2, "", f"golive_adapt_systemd: {ERROR}\n"))
+
+    def test_dfs2125_09_c3_markers_and_partial_captures_unchanged(self):
+        """C3: Markers still exit 0 with no rows; a partial capture still yields UNIT_MISSING_* rows."""
+        marker = self.receipt(INTENT, "intent.json", canonical=True)
+        self.assertEqual(self.cli(str(marker)), (0, "", ""))
+        partial = self.receipt(capture(unit(HEALTH), unit("other.timer")), "partial.json")
+        codes = ["UNIT_MISSING_RECORDS_BACKUP_CHECK_TIMER", "UNIT_MISSING_RECORDS_CONSOLE_CHECK_TIMER"]
+        self.assertEqual(adapter.records([partial], NOW), [self.evidence(partial, "18", "fail", codes)])
+
+    def test_dfs2125_09_c3_mixed_files_refuse_as_a_whole(self):
+        """C3: One untracked capture refuses the whole call in either order, with no partial output."""
+        good = self.receipt(capture(unit(ARRIVAL)), "good.json")
+        empty = self.receipt(capture(unit("unrelated.timer")), "empty.json")
+        for paths in ((good, empty), (empty, good)):
+            with self.subTest(first=paths[0].name):
+                self.assertUntracked(*paths)
+                self.assertEqual(self.cli(*map(str, paths), "--json"),
+                                 (2, "", "golive_adapt_systemd: UNITS_NOT_TRACKED\n"))

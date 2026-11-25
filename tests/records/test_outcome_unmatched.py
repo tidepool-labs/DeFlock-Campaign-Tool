@@ -97,6 +97,24 @@ class UnmatchedTests(unittest.TestCase):
         self.assertEqual(self.run_outputs()[1]["draft_queue_counts"]["message_links"], 0)  # a replay queues none
         self.row()  # still exactly one
 
+        # Appending once per receipt duplicates a work row; deduping by hash alone
+        # instead would hide changed dates and agency/candidate metadata.
+        control_sha = "0" * 64
+        item = {"original_sha256": self.sha, "received_at": "2041-02-03T10:00:00Z", "agency_id": "caltrans"}
+        received = {"items": [item, {**item, "received_at": "2041-02-01T10:00:00Z"},
+                              {**item, "original_sha256": control_sha}, {**item, "agency_id": "other"},
+                              dict(item), {**item, "received_at": "2041-02-03T18:00:00Z"}]}
+        with run_stages.snapshot_ro(self.database) as db:
+            messages = unmatched.collect(db, received, run_id="test-run")["messages"]
+        expected = {**entry, "agency_id": "caltrans"}
+        self.assertEqual(messages, [
+            {**expected, "message_sha256": control_sha, "sender_domain": None},
+            expected,
+            {**expected, "received_date": "2041-02-01"},
+            {**expected, "agency_id": "other",
+             "candidates": [{"request_id": "req-x", "agency_id": "other", "why": "same agency"}]},
+        ])
+
     def test_console_shows_the_decision_and_approval_ties_the_next_run(self):
         self.run_outputs()
         server, http = self.server()

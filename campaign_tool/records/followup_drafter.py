@@ -115,6 +115,9 @@ def _validate(case):
         _need(ask.get("produced") is None or (isinstance(ask["produced"], list) and all(
             isinstance(p, dict) and isinstance(p.get("file"), str) and p["file"].strip() for p in ask["produced"])),
             "case_invalid", "ask.produced")
+        number = ask.get("number")
+        _need(number is None or (isinstance(number, (int, float, str)) and not isinstance(number, bool)),
+              "case_invalid", "ask.number")
         displayed = str(_ask_number(ask, position))
         _need(displayed not in displayed_numbers, "case_invalid", "duplicate displayed ask number")
         displayed_numbers.add(displayed)

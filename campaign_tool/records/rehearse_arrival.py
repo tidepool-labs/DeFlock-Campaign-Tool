@@ -256,27 +256,36 @@ def _burst_stamps(runtime):
     return [_mail_stamp(runtime, label) for label in ("burst-one", "burst-two")]
 
 
-def _dispatch_burst(runtime, pair):
+def _wake_wrapper(runtime):
     root = runtime.parent
+    wake = subprocess.run(["/bin/sh", str(runtime / "run-records.sh"), "--arrival"],
+                          cwd=root, env={"PATH": str(root / "bin"), "HOME": str(root),
+                                         "TMPDIR": str(root), "LC_ALL": "C", "ARRIVAL_QUIET_SECONDS": "0"},
+                          stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
+    _require(wake.returncode == 0)
+
+
+def _arrival_run_id(row):
+    launch = json.loads(row)
+    run_id = launch["run_id"]
+    _require(launch["trigger"] == "arrival" and launch["batch_bound"] is True
+             and arrival.RUN_ID_RE.fullmatch(run_id) is not None)
+    return run_id
+
+
+def _dispatch_burst(runtime, pair):
     trace = runtime / "launches.jsonl"
     _require(not trace.exists() and arrival.pending(runtime) == [stamp for _, stamp in sorted(pair)])
     for _ in range(2):
-        wake = subprocess.run(["/bin/sh", str(runtime / "run-records.sh"), "--arrival"],
-                              cwd=root, env={"PATH": str(root / "bin"), "HOME": str(root),
-                                             "TMPDIR": str(root), "LC_ALL": "C", "ARRIVAL_QUIET_SECONDS": "0"},
-                              stdin=subprocess.DEVNULL, capture_output=True, timeout=30, check=False)
-        _require(wake.returncode == 0)
+        _wake_wrapper(runtime)
     launches = trace.read_text(encoding="ascii").splitlines() if trace.exists() else []
     if not launches:
         raise _NotTriggered
     _require(len(launches) == 1 and len(pair) == 2)
-    launch = json.loads(launches[0])
-    run_id = launch["run_id"]
-    _require(launch["trigger"] == "arrival" and launch["batch_bound"] is True
-             and arrival.RUN_ID_RE.fullmatch(run_id) is not None)
+    run_id = _arrival_run_id(launches[0])
     batch_file = runtime / "TEST" / "work" / f"arrivals-{run_id}.json"
     paths = _claimed_paths(runtime, run_id, pair, json.loads(batch_file.read_bytes()))
-    return run_id, batch_file, [trace, *paths]
+    return run_id, batch_file, paths
 
 
 def run(sandbox):
@@ -286,6 +295,7 @@ def run(sandbox):
     queue = runtime / "arrival"
     target = units / "targets" / "TEST.json"
     lock = runtime / arrival.LOCK_NAME
+    trace = runtime / "launches.jsonl"
 
     def write_stamp():
         _require(not lock.exists() and not arrival.has_work(runtime))
@@ -312,15 +322,51 @@ def run(sandbox):
 
     def coordination_quiet():
         marker = runtime / arrival.MARKER_NAME
+
+        def stamp_state():
+            return queue.stat().st_mtime_ns, {
+                path: None if path.is_dir() else path.read_bytes() for path in queue.rglob("*")
+            }
+
+        def batch_reports():
+            # Include the wrapper's stub reports as well as the rehearsal's
+            # validated reports and both forms of persisted batch.
+            return {path: path.read_bytes()
+                    for pattern in ("*.arrivals.json", "*.report.json", "TEST/work/arrivals-*.json",
+                                    "TEST/reports/*.json")
+                    for path in runtime.glob(pattern)}
+
         _require(not marker.exists())
-        before = queue.stat().st_mtime_ns, set(queue.rglob("*"))
+        before = stamp_state()
         inode = lock.stat().st_ino
         arrival.mark_pending(runtime)
         _require(lock.stat().st_ino == inode and arrival.has_work(runtime)
                  and not arrival.has_work(runtime, stamps_only=True)
-                 and before == (queue.stat().st_mtime_ns, set(queue.rglob("*"))))
-        arrival.parse_seen_at(marker.read_text(encoding="ascii").strip())
-        return [lock, marker]
+                 and before == stamp_state())
+        marker_bytes = marker.read_bytes()
+        arrival.parse_seen_at(marker_bytes.decode("ascii").strip())
+        launch_bytes, outputs = trace.read_bytes(), batch_reports()
+        _wake_wrapper(runtime)
+        _require(trace.read_bytes() == launch_bytes and batch_reports() == outputs
+                 and stamp_state() == before and lock.stat().st_ino == inode
+                 and not arrival.has_work(runtime, stamps_only=True)
+                 and marker.read_bytes() == marker_bytes)
+        # The next claim consumes this marker; it is not a replayable output.
+        return [lock]
+
+    def arrival_after_coordination():
+        earlier = trace.read_bytes()
+        stamp = _mail_stamp(runtime, "after-coordination")
+        _wake_wrapper(runtime)
+        final = trace.read_bytes()
+        launches = final.splitlines()
+        _require(final.startswith(earlier) and len(launches) == 2)
+        run_id = _arrival_run_id(launches[1])
+        _require(run_id not in (_SINGLE, _arrival_run_id(launches[0])))
+        batch_file = runtime / "TEST" / "work" / f"arrivals-{run_id}.json"
+        paths = _claimed_paths(runtime, run_id, [stamp], json.loads(batch_file.read_bytes()))
+        # Only publish the trace digest after the last append.
+        return [trace, batch_file, *paths, _report(runtime, target, fixture, run_id, batch_file)]
 
     stamps = []
     result = {"stages": list(STAGES), "steps": [], "manual_steps": [], "codes": []}
@@ -328,6 +374,7 @@ def run(sandbox):
         ("render_units", lambda: _render(root, runtime, units, fixture)),
         ("write_stamp", write_stamp), ("consume", consume), ("run_report", report),
         ("batch_two", batch_two), ("coordination_quiet", coordination_quiet),
+        ("arrival_after_coordination", arrival_after_coordination),
     ):
         try:
             outputs = [{"path": path.relative_to(root).as_posix(),

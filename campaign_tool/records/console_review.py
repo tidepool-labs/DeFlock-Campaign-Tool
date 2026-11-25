@@ -378,13 +378,23 @@ def render(project, row, history, preview, token, payload, send_config=None, *, 
 
 
 def navigation(row, rows):
-    ids = sorted({r["id"] for r in rows if r["status"] == "pending" and r["id"] != row["id"]})
+    current = row["id"]
+    ids = sorted({r["id"] for r in rows if r["status"] == "pending"})
+    nav = '<nav aria-label="Draft navigation">'
+    if current in ids:
+        index = ids.index(current)
+        if row["status"] == "pending":
+            nav += '<p>Draft %d of %d</p>' % (index + 1, len(ids))
+            if index > 0:
+                previous_url = esc("/review?id=" + urllib.parse.quote(ids[index - 1], safe=""))
+                nav += '<a href="%s">Previous pending draft</a> · ' % previous_url
+        ids.pop(index)
     if not ids:
-        return '<nav aria-label="Draft navigation"><a href="/">Queue index</a> · No other pending drafts.</nav>'
-    ident = next((i for i in ids if i > row["id"]), ids[0])
+        return nav + '<a href="/">Queue index</a> · No other pending drafts.</nav>'
+    ident = next((i for i in ids if i > current), ids[0])
     url = esc("/review?id=" + urllib.parse.quote(ident, safe=""))
     leave = '<a href="%s">Leave pending</a> · ' % url if row["status"] == "pending" else ""
-    return '<nav aria-label="Draft navigation">%s<a href="%s">Next</a> · <a href="/">Queue index</a></nav>' % (leave, url)
+    return nav + '%s<a href="%s">Next</a> · <a href="/">Queue index</a></nav>' % (leave, url)
 
 
 def serve(handler):
