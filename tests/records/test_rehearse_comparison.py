@@ -221,15 +221,28 @@ class HappyRunTests(DriverTestCase):
         """C3: every observed row cites a document of the sandbox ledger that belongs to that agency.
 
         Bug caught: a citation copied from the other agency, or a made-up document id."""
-        ledger = sqlite3.connect("file:%s?mode=ro" % (self.sandbox / "proof/pair/project/processing-v1/ledger.sqlite"), uri=True)
-        known = {r[0] for r in ledger.execute("SELECT sha256 FROM originals")}
-        ledger.close()
+        # The old fixture joined both originals to Valley; the separately seeded comparison still passed.
         pdfs = {a[0]: hashlib.sha256(driver._pdf(a[2])).hexdigest() for a in driver._AGENCIES}
+        project = self.sandbox / "proof/pair/project"
+        with contextlib.closing(sqlite3.connect((project / "processing-v1/ledger.sqlite").as_uri() + "?mode=ro",
+                                                uri=True)) as ledger:
+            rows = ledger.execute("SELECT original_sha256, agency_id, request_id FROM joins WHERE status='typed'")
+            joins = {tuple(row) for row in rows if row[0] in pdfs.values()}
+        self.assertEqual(joins, {(digest, agency, agency + "-req") for agency, digest in pdfs.items()})
+        path = next((project / "run-outputs").glob("run_*/agency-factsheets.json"))
+        sheets = {a["agency_id"]: a for a in json.loads(path.read_text())["agencies"]}
+        for agency, digest in pdfs.items():
+            self.assertEqual(sheets[agency]["document_sha256s"], [digest])
         cited = [r for r in self.rows(self.sandbox) if "observed" in r]
         self.assertEqual({r["agency_id"] for r in cited}, {VALLEY, HARBOR})
         for row in cited:
-            self.assertEqual([c["source_id"] for c in row["evidence"]], ["sha256:" + pdfs[row["agency_id"]]])
-            self.assertIn(pdfs[row["agency_id"]], known)
+            agency = row["agency_id"]
+            field = {"retention": "retention", "sharing_limits": "outside_sharing"}[row["field"]]
+            citations = {(s["citation"]["document_sha256"], s["citation"]["page"])
+                         for s in sheets[agency]["fields"][field]["statements"]}
+            self.assertEqual(citations, {(pdfs[agency], 1)})
+            self.assertEqual([(c["source_id"], c["locator"]) for c in row["evidence"]],
+                             [("sha256:" + pdfs[agency], "page 1")])
 
     def test_04_c4_single_agency_run_has_no_peer(self):
         """C4: with one agency the writer rates only that agency; the other agency appears nowhere.
@@ -346,6 +359,48 @@ class ControlTests(DriverTestCase):
         self.assertStopsAt(self.drive(patch.object(factsheets, "write_run_factsheets"))[0],
                            "write_factsheets", "FACTSHEETS_INVALID")
 
+    def test_12b_fixture_join_controls(self):
+        """Crossed valid targets and incomplete assignments cannot qualify the two-agency exhibit."""
+        real = driver._inputs
+
+        for case, stage, code in (("crossed", "write_factsheets", "FIXTURE_JOIN_MISMATCH"),
+                                  ("incomplete", "save_mail", "FIXTURE_SEED_REFUSED")):
+            def change(base, agencies):
+                documents = real(base, agencies)
+                path = base / "seed.json"
+                seed = json.loads(path.read_bytes())
+                first, second = seed["document_joins"]
+                if case == "crossed":
+                    first["document_sha256"], second["document_sha256"] = second["document_sha256"], first["document_sha256"]
+                else:
+                    seed["document_joins"] = [first]
+                path.write_text(json.dumps(seed))
+                return documents
+
+            with self.subTest(case):
+                result, sandbox = self.drive(patch.object(driver, "_inputs", side_effect=change))
+                self.assertStopsAt(result, stage, code)
+                if case == "incomplete":
+                    proof = json.loads((sandbox / "proof/pair/proof-report.json").read_bytes())
+                    entries = {row["stage"]: row for row in proof["stages"]}
+                    self.assertEqual(entries["seed"]["code"], "SEED_DOCUMENT_SET_MISMATCH")
+                    self.assertEqual(entries["outputs"]["status"], "not_run")
+
+    def test_12c_missing_fact_sheet_page_refuses(self):
+        """A document listed for the right agency is insufficient without the native page citation."""
+        real = factsheets.write_run_factsheets
+
+        def omit_page(processing, output, run_id):
+            real(processing, output, run_id)
+            path = Path(output) / "agency-factsheets.json"
+            report = json.loads(path.read_bytes())
+            harbor = next(row for row in report["agencies"] if row["agency_id"] == HARBOR)
+            harbor["fields"]["retention"]["statements"][0]["citation"].pop("page")
+            path.write_text(json.dumps(report))
+
+        self.assertStopsAt(self.drive(patch.object(factsheets, "write_run_factsheets", side_effect=omit_page))[0],
+                           "write_factsheets", "FACTSHEET_DOCUMENT_PAGE_MISMATCH")
+
     def test_13_comparison_json_control(self):
         """C2: comparison.json that is not strict JSON fails write_comparison.
 
@@ -394,8 +449,12 @@ class ControlTests(DriverTestCase):
             for cite in (c for row in report["rows"] for c in row["evidence"]):
                 cite["source_id"] = "sha256:" + "0" * 64
 
+        def wrong_page(report):
+            next(c for r in report["rows"] if r["agency_id"] == HARBOR for c in r["evidence"])["locator"] = "page 2"
+
         for edit, code in ((uncited, "COMPARISON_ROW_UNCITED"), (swapped, "COMPARISON_CITES_OTHER_AGENCY"),
-                           (invented, "COMPARISON_CITES_OUTSIDE_SANDBOX")):
+                           (invented, "COMPARISON_CITES_OUTSIDE_SANDBOX"),
+                           (wrong_page, "COMPARISON_DOCUMENT_PAGE_MISMATCH")):
             def fake(agencies, edit=edit, **kw):
                 report = real(agencies, **kw)
                 edit(report)
