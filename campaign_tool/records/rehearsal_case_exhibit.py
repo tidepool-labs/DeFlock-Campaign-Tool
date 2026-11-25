@@ -123,7 +123,8 @@ def open_case(comparison, timeline, received, agency_id, field):
                 reasons.append("RECEIVED_ITEM_ID_INVALID")
             else:
                 located = [loc for loc in map(_received_locator, items) if loc is not None]
-                if not located:
+                if not located or len(located) != len(items):
+                    # every received item of the request must carry a valid locator: one without it withholds the case
                     reasons.append("RECEIVED_LOCATOR_MISSING")
                 else:
                     wanted = {loc["item_id"] for loc in located}

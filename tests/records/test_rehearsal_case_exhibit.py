@@ -95,6 +95,34 @@ class OpenCaseTests(unittest.TestCase):
         self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["NO_TIMELINE_EVENT_FOR_ITEM"]))
         self.assertNotIn("item-1", json.dumps(result))
 
+    def test_a_received_item_without_a_locator_withholds_the_whole_case(self):
+        # Contract: every received item of the selected request needs a valid locator. Bug caught: the item without
+        # one is silently dropped, so the other item opens as if the request had only that item.
+        def second_item(docs, **change):
+            second = copy.deepcopy(docs["items"][0])
+            second["item_id"] = "item-2"
+            second.update(change)
+            docs["items"].append(second)
+        def second_event(docs):
+            events = docs["requests"][0]["events"]
+            events.append({"date": "2026-11-26", "type": "response",
+                           "source": {"item_id": "item-2", "kind": "received_item"}})
+        def no_quote(docs):
+            second_item(docs)
+            del docs["items"][1]["kind_basis"]["quote"]
+        def no_hash(docs):
+            second_item(docs, original_sha256="")
+        def no_basis(docs):
+            second_item(docs, kind_basis={})
+        for edit in (no_quote, no_hash, no_basis):
+            result = case(r=edit, t=second_event)
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["RECEIVED_LOCATOR_MISSING"]),
+                             edit.__name__)
+            self.assertNotIn("item-1", json.dumps(result))
+        both = case(r=lambda d: second_item(d), t=second_event)
+        self.assertEqual(both["status"], exhibit.OPEN)
+        self.assertEqual([x["item_id"] for x in both["stage_12_case"]["received_locators"]], ["item-1", "item-2"])
+
     def test_policy_locator_must_be_a_page(self):
         # Contract: the policy citation names a page. Bug caught: any non-empty text ("unknown") passes as a locator.
         for bad in ("unknown", "page", "page 0", "page one", "section 2", "page 1; page 2"):
