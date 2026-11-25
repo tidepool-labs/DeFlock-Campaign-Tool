@@ -124,6 +124,25 @@ class CheckTests(unittest.TestCase):
         self.assertEqual(self.run_check(book)[0], [("11", "ENTRY_FIELDS_ALTERED")])  # digest still current, fields not
         self.assertEqual({code for _, code in self.run_check(built("1"), current=agenda("3"))[0]}, {"EVIDENCE_NOT_CURRENT"})
 
+    def test_every_displayed_evidence_and_instruction_field_is_covered_by_the_digest(self):
+        # Contract: any field WORKBOOK.md shows a person to open or follow is bound to the digest. Believable bug:
+        # digesting only some fields lets receipt name, driver, reference code, readiness or the instruction be edited
+        # (digest left as stamped) with `check` reporting no flags.
+        edits = {
+            "receipt": lambda e: e.update(receipt="other-receipt.json"),
+            "driver_modules": lambda e: e.update(driver_modules=["rehearse_other"]),
+            "reference code": lambda e: e["references"][0].update(code="CHANGED"),
+            "readiness": lambda e: e.update(readiness="CANDIDATE_ONLY"),
+            "next_human_check": lambda e: e.update(next_human_check="skip this check"),
+        }
+        for name, edit in edits.items():
+            book = built()
+            edit(book["entries"][3])
+            self.assertEqual(self.run_check(book)[0], [("13", "ENTRY_FIELDS_ALTERED")], name)
+            edit(book["entries"][3])
+            book["entries"][3]["evidence_digest"] = wb._digest(book["entries"][3])  # digest re-stamped to hide the edit
+            self.assertEqual(self.run_check(book)[0], [("13", "EVIDENCE_NOT_CURRENT")], name)
+
     def test_half_filled_missing_duplicate_unknown_and_shared_findings(self):
         book = built()
         book["entries"][0]["human"]["reviewer"] = "R"

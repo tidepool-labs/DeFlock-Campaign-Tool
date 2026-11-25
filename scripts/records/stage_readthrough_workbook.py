@@ -58,8 +58,9 @@ def _load(path):
 
 def _digest(entry):
     """Digest of the evidence a human is asked to open, never of the human fields."""
-    basis = {key: entry.get(key) for key in ("stage", "engine", "receipt_sha256", "driver_source_sha256", "finished_at")}
-    basis["references"] = [{key: ref.get(key) for key in ("step", "path", "sha256")} for ref in entry.get("references") or []]
+    basis = {key: entry.get(key) for key in ("stage", "readiness", "engine", "driver_modules", "driver_source_sha256",
+                                            "receipt", "receipt_sha256", "finished_at", "next_human_check")}
+    basis["references"] = [{key: ref.get(key) for key in ("step", "code", "path", "sha256")} for ref in entry.get("references") or []]
     return _sha256_hex(json.dumps(basis, sort_keys=True, separators=(",", ":")).encode())
 
 
