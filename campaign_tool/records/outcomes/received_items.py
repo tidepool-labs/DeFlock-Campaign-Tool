@@ -43,6 +43,11 @@ POLICY_FIELDS = frozenset({"usage_policy_published", "authorized_purposes", "aut
                            "retention", "sharing_limits", "audit_process", "custodian",
                            "accuracy_correction", "safeguards"})
 ADMITTED_ROLES = frozenset({"agency_original", "container_child", "original"})
+# REC-MAIL-CITE-1: unpaginated mail text the extraction records with a MIME locator ({mime, part} from the records
+# extraction, {mime, source_part} from mail intake). Its citation is that part, never an invented page.
+MAIL_TEXT_KINDS = frozenset({"email_body", "mime_part"})
+MAIL_LOCATOR_KEYS = frozenset({"mime", "part", "source_part"})
+_PART = re.compile(r"[^\x00-\x1f\x7f-\x9f]{1,256}")
 
 _I = re.I
 PHRASES = {
@@ -135,6 +140,21 @@ def _quoted(line, start):
     return NEGATION.search(line[:start]) is not None
 
 
+def _mail_part(payload):
+    """The MIME part label citing an unpaginated mail text unit, or None (REC-MAIL-CITE-1).
+
+    Only a mail body or MIME part whose locator is exactly a MIME locator (a `mime` string and one part label, no page)
+    qualifies; headers, documents and any locator carrying a page keep the existing page contract."""
+    locator = payload["locator"]
+    if payload["kind"] not in MAIL_TEXT_KINDS or not set(locator) <= MAIL_LOCATOR_KEYS or not isinstance(locator.get("mime"), str):
+        return None
+    labels = [locator[k] for k in ("part", "source_part") if k in locator]
+    if len(labels) != 1:
+        return None
+    label = str(labels[0]) if type(labels[0]) is int and labels[0] >= 0 else labels[0]
+    return label if isinstance(label, str) and _PART.fullmatch(label) and label.strip() else None
+
+
 def _candidates(units):
     """units: [(page, ordinal, unit_id, text)] -> [{kind, page, quote, ...}] in source order."""
     found = []
@@ -153,7 +173,7 @@ def _candidates(units):
                     hit = pattern.search(line)
                     if hit and not _quoted(line, hit.start()):
                         found.append({"kind": kind, "page": page, "quote": line, "unit_id": unit_id,
-                                      "_order": (page, ordinal, number, hit.start())})
+                                      "_order": (page or 0, ordinal, number, hit.start())})
                         break
             if page == 1 and number == 0 and len(line) <= 80 and not line.endswith(".") and TITLE.match(line):
                 found.append({"kind": "records", "page": page, "quote": line, "unit_id": unit_id,
@@ -162,10 +182,17 @@ def _candidates(units):
     return found
 
 
-def classify(units):
-    """-> (kind, basis, candidates, diagnostics). Uncertain stays `other`, never guessed."""
+def classify(units, parts=None):
+    """-> (kind, basis, candidates, diagnostics). Uncertain stays `other`, never guessed.
+
+    `parts` ({unit_id: MIME part}, REC-MAIL-CITE-1) names the unpaginated mail text units: a basis found there is
+    `{page: None, part, quote}`. Any other unit without a positive page still refuses (received_items_basis)."""
+    parts = parts or {}
     found = _candidates(units)
     clean = [{k: v for k, v in c.items() if k != "_order"} for c in found]
+    for c in clean:
+        if c["page"] is None and c["unit_id"] in parts:
+            c["part"] = parts[c["unit_id"]]
     specific = sorted({c["kind"] for c in found if c["kind"] in SPECIFIC})
     if len(specific) > 1:
         return "other", {"page": None, "quote": None}, clean, ["mixed_kind_candidates"]
@@ -173,12 +200,17 @@ def classify(units):
     if chosen is None:
         return "other", {"page": None, "quote": None}, clean, []
     first = next(c for c in found if c["kind"] == chosen)
+    if first["page"] is None and first["unit_id"] in parts:
+        _need(isinstance(first["quote"], str) and first["quote"], "received_items_basis")
+        return chosen, {"page": None, "part": parts[first["unit_id"]], "quote": first["quote"]}, clean, []
     _need(type(first["page"]) is int and first["page"] > 0 and first["quote"], "received_items_basis")
     return chosen, {"page": first["page"], "quote": first["quote"]}, clean, []
 
 
-def deadlines(units, received_at):
-    """Dates an item states for a response/extension/production. Quoted, not computed."""
+def deadlines(units, received_at, parts=None):
+    """Dates an item states for a response/extension/production. Quoted, not computed. A date stated in an
+    unpaginated mail text unit named by `parts` (REC-MAIL-CITE-1) cites `{page: None, part}`."""
+    parts = parts or {}
     anchor = received_at
     out = []
     skip_rest = False
@@ -195,25 +227,27 @@ def deadlines(units, received_at):
                 if not DEADLINE_CONTEXT.search(line) or _quoted(line, hit.start()):
                     continue
                 iso = _date_from_text(hit.group(1), anchor)
-                out.append({"date_text": hit.group(1), "date": iso, "page": page, "quote": line,
+                cite = {"page": page, "part": parts[unit_id]} if page is None and unit_id in parts else {"page": page}
+                out.append({"date_text": hit.group(1), "date": iso, **cite, "quote": line,
                             "unit_id": unit_id, "confidence": "rule_match" if iso else "date_unresolved",
                             "year_inferred": iso is not None and not re.search(r"\d{4}", hit.group(1)),
                             "legal_deadline_calculation": False})
     seen, unique = set(), []
     for item in out:
-        key = (item["date_text"], item["page"], item["quote"])
+        key = (item["date_text"], item["page"], item.get("part"), item["quote"])
         if key not in seen:
             seen.add(key)
             unique.append(item)
     return unique
 
 
-def _current_units(db, processing, subject, paged=True, *, page_rows=False):
+def _current_units(db, processing, subject, paged=True, *, page_rows=False, mail_parts=False):
     """Current extraction units, hash-bound like factsheets.collect.
 
     -> (units, diagnostics, review_status). A missing extraction is a diagnostic;
     a corrupt binding raises ValueError (stable refusal). `page_rows` (DF2307-07) adds the already-checked
-    manifest row of the unit's page as `page_row`; the default result is unchanged.
+    manifest row of the unit's page as `page_row`; the default result is unchanged. `mail_parts` (REC-MAIL-CITE-1)
+    keeps an unpaginated mail body or MIME part (`_mail_part`) with page None and its `part`; the default is unchanged.
     """
     current = db.execute("SELECT i.id,i.manifest_json,i.manifest_sha256 FROM extraction_adapter_current c "
                          "JOIN extraction_adapter_imports i ON i.id=c.import_id AND i.original_sha256=c.original_sha256 "
@@ -253,6 +287,11 @@ def _current_units(db, processing, subject, paged=True, *, page_rows=False):
         text = payload["text"]
         pages = [locator[k] for k in ("page", "page_no") if k in locator]
         if not pages or any(type(p) is not int or p < 1 for p in pages) or len(set(pages)) != 1:
+            part = _mail_part(payload) if mail_parts else None
+            if part is not None:  # REC-MAIL-CITE-1: an unpaginated mail text part is cited by its MIME part, never a page
+                units.append({"page": None, "part": part, "ordinal": ordinal, "unit_id": unit["id"], "text": text,
+                              "text_sha256": unit["text_sha256"], "payload_sha256": digest})
+                continue
             if not paged and payload["kind"] != "email_headers":  # REC-LINK-1: unpaginated mail bodies keep page None
                 units.append({"page": None, "ordinal": ordinal, "unit_id": unit["id"], "text": text,
                               "text_sha256": unit["text_sha256"], "payload_sha256": digest})
@@ -408,13 +447,14 @@ def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None
             diagnostics.append("received_at_unavailable")
         units, extraction_status, review = [], "unavailable", None
         if has_extraction:
-            units, found, review = _current_units(db, processing, subject)
+            units, found, review = _current_units(db, processing, subject, mail_parts=True)
             diagnostics += found
             extraction_status = "current" if "current_extraction_unavailable" not in found else "unavailable"
         else:
             diagnostics.append("current_extraction_unavailable")
         triples = [(u["page"], u["ordinal"], u["unit_id"], u["text"]) for u in units]
-        kind, basis, candidates, extra = classify(triples)
+        parts = {u["unit_id"]: u["part"] for u in units if "part" in u}
+        kind, basis, candidates, extra = classify(triples, parts)
         diagnostics += extra
         if not units and "page_locator_unavailable" not in diagnostics and extraction_status == "current":
             diagnostics.append("no_usable_text")
@@ -424,7 +464,7 @@ def collect(db, processing, comparison_report, *, run_id, comparison_sha256=None
                 "received_at": received_at.isoformat().replace("+00:00", "Z") if received_at else None,
                 "received_at_source": source, "kind": kind, "kind_basis": basis,
                 "kit_equivalent": KIT_CROSSWALK[kind], "candidates": candidates,
-                "deadlines": deadlines(triples, received_at), "decision_source": "rules",
+                "deadlines": deadlines(triples, received_at, parts), "decision_source": "rules",
                 "model_decisions": [], "extraction_status": extraction_status,
                 "ocr_review_status": review, "needs_visual_review_unresolved": review not in (None, "reviewed"),
                 "comparison_status": "unresolved", "findings": [],
