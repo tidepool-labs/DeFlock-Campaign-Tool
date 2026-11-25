@@ -248,6 +248,7 @@ def _choice_lines(options):
 def collect(db, received, *, run_id):
     """Pure read of the ledger + this run's received items -> records-unmatched-v1 report."""
     entries = []
+    seen = set()
     for item in received["items"]:
         if item.get("request_id") is not None:
             continue
@@ -256,10 +257,14 @@ def collect(db, received, *, run_id):
             "SELECT COUNT(*) FROM occurrences WHERE kind='attachment' AND parent_occurrence_id IN "
             "(SELECT id FROM occurrences WHERE original_sha256=?)", (sha,)).fetchone()[0]
         domain = _sender_domain(db, sha)
-        entries.append({"message_sha256": sha, "received_date": (item.get("received_at") or "")[:10] or None,
-                        "sender_domain": domain, "attachment_count": attachments,
-                        "candidates": _candidates(db, item.get("agency_id"), domain, sha),
-                        "agency_id": item.get("agency_id")})
+        entry = {"message_sha256": sha, "received_date": (item.get("received_at") or "")[:10] or None,
+                 "sender_domain": domain, "attachment_count": attachments,
+                 "candidates": _candidates(db, item.get("agency_id"), domain, sha),
+                 "agency_id": item.get("agency_id")}
+        key = _canon(entry)
+        if key not in seen:
+            seen.add(key)
+            entries.append(entry)
     entries.sort(key=lambda e: e["message_sha256"])
     return {"schema": SCHEMA, "run_id": run_id, "review_required": True, "messages": entries}
 

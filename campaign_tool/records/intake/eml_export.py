@@ -132,8 +132,7 @@ def export_message(raw, *, mail_root, account, mailbox, uidvalidity, uid, origin
         wire_plan = mail_delta.wire_intake_plan(bytes(raw))
         candidates = []
     eml_path = base / "message.eml"
-    if not eml_path.exists():
-        _write_private(eml_path, bytes(raw))
+    _ensure_private(eml_path, bytes(raw))
     attachments = []
     for candidate in candidates:
         if not candidate["attachable"]:

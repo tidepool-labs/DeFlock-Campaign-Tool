@@ -86,6 +86,7 @@ class Handler:
 def get_findings(root, path="/findings"):
     handler = Handler(path, root)
     assert page.serve(handler) is True
+    assert handler.sent is not None
     return handler.sent
 
 
@@ -133,6 +134,33 @@ class AllFindings(AnalysisRoot):
         self.assertIn("Waiting claim.", review)
         for absent in ("Approved claim.", "Rejected claim.", "Deferred claim."):
             self.assertNotIn(absent, review)
+
+    def test_state_filter_narrows_only_rows_with_partial_inputs(self):
+        config = Path(self.root) / "agencies/gamma-pd/review-config.json"
+        config.parent.mkdir()
+        config.write_text("{}")
+        with mock.patch.dict(ROWS, {"gamma-pd": OSError("unreadable agency")}):
+            unfiltered = get_findings(self.root)[1]
+            totals = r'<h2>By (?:review state|hold)</h2><ul>.*?</ul>'
+            row_pattern = r'<tr><td>[^<]+</td><td>(N\d+)</td>.*?</tr>'
+            original_rows = {m[1]: m[0] for m in re.finditer(row_pattern, unfiltered)}
+            for state, ids in (("unreviewed", ["N1", "N5", "N6"]), ("approved", ["N2"]),
+                               ("rejected", ["N3"]), ("deferred", ["N4"])):
+                with self.subTest(state=state):
+                    # Follow the advertised link; catch missing links, ignored filters and held rows dropped as non-reviewable.
+                    link = "/findings?state=" + state
+                    self.assertIn(f'href="{link}"', unfiltered)
+                    status, body = get_findings(self.root, link)
+                    self.assertEqual(status, 200)
+                    # Retained rows must keep their exact status/copy, citation and review link (or lack of one).
+                    self.assertEqual([m[0] for m in re.finditer(row_pattern, body)], [original_rows[f] for f in ids])
+                    # Reject totals recomputed from filtered rows or warnings hidden by selection.
+                    self.assertEqual(re.findall(totals, body), re.findall(totals, unfiltered))
+                    self.assertIn("6 findings in every review state", body)
+                    self.assertIn("1 agency review could not be read (finding_inputs_unavailable)", body)
+                    # Reset must clear the query, rather than leaving the user stuck in the selected state.
+                    self.assertIn('<a href="/findings">Clear filter</a>', body)
+                    self.assertNotIn("<form", body)  # selecting a state must not expose a decision form
 
     def test_load_after_the_refactor_equals_its_pre_refactor_output(self):
         # Catches load being rewired to anything but the unfiltered loop plus its own filter and counts, or a changed key order.
@@ -194,8 +222,30 @@ class SourceStates(AnalysisRoot):
             self.assertEqual(cf.load_all(root), {"state": "unavailable", "code": "finding_inputs_unavailable"})
             self.assertIn("finding_inputs_unavailable", get_findings(root)[1])
 
-    def test_a_query_is_refused(self):
-        self.assertEqual(get_findings(self.root, "/findings?state=approved")[0], 400)
+    def test_no_state_match_is_not_an_unavailable_source(self):
+        path = "/findings?state=approved"
+        with mock.patch.dict(ROWS, {"alpha-pd": fr.FindingReviewError("finding_inputs_unavailable")}):
+            status, body = get_findings(self.root, path)
+            # A selection with no readable matches must not hide that other findings exist or that an agency failed.
+            self.assertEqual(status, 200)
+            self.assertIn("No readable findings match this review state", body)
+            self.assertIn("2 findings in every review state", body)
+            self.assertIn("1 agency review could not be read", body)
+            self.assertNotIn("<table", body)
+            with mock.patch.dict(ROWS, {"beta-sheriff": OSError("unreadable agency")}):
+                unavailable = get_findings(self.root, path)[1]
+            # A filter must not turn total input failure into a successful zero-match view.
+            self.assertIn("not an empty list", unavailable)
+            self.assertNotIn("No readable findings match", unavailable)
+
+    def test_invalid_findings_queries_are_refused_before_loading(self):
+        # Catch first/last-wins, blank-as-default or accepted foreign parameters, without loading on a bad query.
+        with mock.patch.object(cf, "load_all") as load:
+            for query in ("state=unknown", "state=", "state", "other=approved", "state=approved&other=1",
+                          "state=unreviewed&state=unreviewed"):
+                with self.subTest(query=query):
+                    self.assertEqual(get_findings(self.root, "/findings?" + query)[0], 400)
+            load.assert_not_called()
 
 
 class RealConsole(FindingConsole):

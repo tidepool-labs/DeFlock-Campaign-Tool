@@ -98,13 +98,20 @@ def _optional_list(value, item_kind):
 
 
 def _check_shapes(report):
-    """Refuse wrongly typed nested items before any tier is computed; fixed detail, no echo."""
+    """Refuse malformed items and repeated identities before computing tiers; no echo."""
     _optional(report.get("run_id"), str)
+    seen = set()
     for req in report["requests"]:
         if not isinstance(req, dict):
             raise _bad_shape()
-        for key in ("agency_key", "request_id"):
-            _optional(req.get(key), str)
+        agency, request_id = req.get("agency_key"), req.get("request_id")
+        _optional(agency, str)
+        _optional(request_id, str)
+        if agency and agency.strip() and request_id and request_id.strip():
+            identity = (agency, request_id)
+            if identity in seen:
+                raise _bad_shape()
+            seen.add(identity)
         _optional_list(req.get("flags"), str)
         asks = req.get("asks")
         _optional(asks, list)

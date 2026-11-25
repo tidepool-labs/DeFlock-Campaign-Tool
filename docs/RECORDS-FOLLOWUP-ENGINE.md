@@ -52,6 +52,49 @@ G must check this date before approving the exact text. Missing request dates al
 remain edit placeholders. The residue and owner-approval/send gates are unchanged.
 Letter wording requires G's approval before merge; no setting is changed here.
 
+## Replies that have arrived
+
+`answer_arrived` (see Reminder text) tells the register and the reminder planner whether an agency reply is waiting to be recorded:
+
+- `none`: no unrecorded agency reply, or a determination date is already recorded. Nothing changes.
+- `arrived_unrecorded`: a bound agency-side delivery (mail or portal notice) dated on or after the clock start has no recorded determination.
+  The next action is `record answer`, with the arrival date in its reason, unless an earlier rule already gives `clarify` (a row issue or a
+  clarification status) or the request is recorded closed.
+- `unknown`: a delivery's direction or time could not be established (issue `arrival_unresolved`); a person checks the source.
+
+The reminder planner (`followup_clock`) skips every `arrived_unrecorded` and `unknown` row: no `reminder-no-response`,
+`reminder-promised-date` or `formal-notice-no-response` draft is queued for it, and the queue summary counts it as `skipped_answer_unrecorded`.
+The Home reminders list shows `reply arrived; record it first` (confirmed) or `Reply status unclear; check the source` (unknown) as that
+request's reason. A draft already queued is never withdrawn or edited; the hold only stops new drafts. Registers written before
+`answer_arrived` existed are unaffected.
+
+What clears it: a person records the determination date in the project's `MASTER-REQUEST-TRACKER.csv` (or the ledger) and the register is
+rebuilt; the state becomes `none` and the clock is read again. An extension or a production date alone does not clear it,
+and `kit-response` does not feed this register.
+
+## Tracker proposals
+
+`records tracker-proposals --project P --run-id R --out DIR` proposes tracker cells from agency replies already received. It reads the run's
+`CURRENT-REQUEST-REGISTER.json` (only rows with `answer_arrived` state `arrived_unrecorded`), `outcomes/received-items.json` and the project's
+`MASTER-REQUEST-TRACKER.csv`, all read-only. `DIR` must not exist; its parent must be owned by you, not group- or world-writable, and outside the
+project. The command writes a new private directory holding two files and prints `proposals=N conflicts=M | private, review-required; nothing applied`;
+a refusal prints `tracker_proposals_<code>` and exits 1. It never writes the live tracker, ledger or stores.
+
+- `MASTER-REQUEST-TRACKER.proposed.csv`: the tracker with only empty cells filled. The command runs `tracker_proposal` on it before publishing.
+- `proposals.json` (`records-tracker-update-proposals-v1`, `applied: false`): per proposed cell the row, request id, column, value and sources
+  (item id, kind, page, a quote of at most 200 characters), plus every conflict.
+
+Mapping: determination date only from a denial or records item (that item's own receipt day, Pacific); production date only from a records
+item; extension `yes` only from an extension item; promised date only from a date the same item states, with page and quote. A filled cell is never
+changed. A cell that already holds the same value is skipped. These are listed as conflicts and never applied: `filled_cell_differs`,
+`replies_differ`, `date_unavailable`, `date_before_request_start`, `date_after_as_of`, `tracker_binding_ambiguous`, `tracker_row_unresolved`,
+`reply_unmatched` and `reply_without_request_id`.
+
+Manual steps, done by a custodian: (1) read `proposals.json`, every proposal and conflict, against the cited item; (2) check the copy again with
+`python3 -m campaign_tool.records.tracker_proposal FILE` (optional `--mail-index` and `--expect-rows`, as in `docs/RECORDS-TRACKER-PROPOSAL.md`);
+a clean result means well formed, not that the facts are right; (3) apply the cells you accept to the live tracker by hand, with the project
+owner's go-ahead, and rebuild the register. Nothing is applied, approved, sent or published by the command.
+
 ## Refusal log
 
 `records denials --project P --run-id R [--json]` reads existing run outputs
@@ -316,3 +359,19 @@ Formal-notice timing remains the approved reminder's `updated_at` day plus
 `notice_after_days`; stale-date reminders never escalate a replacement clock.
 These dates are **on our records; not a legal finding**. Drafting never sends;
 all drafts remain subject to human review. `rows` keeps its existing display.
+
+### Holiday list (`PROJECT/holidays.csv`)
+
+`PROJECT/holidays.csv` is an optional file the custodian keeps; no holiday list ships with the tool or a law package. When it is present and
+valid the register moves the 10-day determination date and the extension limit past listed holidays as well as weekends. Header exactly `date,name,source`; each row is a `YYYY-MM-DD` date, a non-empty name and a
+non-empty source, with no repeated date, at most 1000 rows and 64 KiB. One bad row makes the whole file invalid: none of it is used, only
+weekends roll, the register adds the gap `holiday_list_invalid` and the same issue on every request row, and the reminder planner skips those rows
+until the file is fixed. With a file, each register row and the register report carry `holiday_list` (`used` or `invalid`) and a 12-character
+hash prefix of the file; without one nothing is added and the output is unchanged. `records deadlines` names the custodian's list in its caveat.
+Dates stay provisional reminders: receipt and extension-notice requirements are not checked and the list is the custodian's, not the law
+package's. Not a legal finding.
+
+### What stays human
+
+Recording an answer, checking and applying a tracker proposal, keeping `holidays.csv`, and approving and sending every reminder are people's
+steps. The tool sends nothing and publishes nothing; sends and publication stay G-approved.

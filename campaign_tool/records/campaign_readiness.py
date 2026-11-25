@@ -112,28 +112,36 @@ def _config(project, issues):
     """campaign.json v1 field states and the validated config (or None)."""
     fields = dict.fromkeys(FIELDS, "missing")
     try:
-        doc = _json(_read(os.path.join(project, "campaign.json"), 64 * 1024))
+        raw = _read(os.path.join(project, "campaign.json"), 64 * 1024)
     except _Missing:
         _issue(issues, "READINESS_CONFIG_MISSING", "campaign.json", "human",
                "create P/campaign.json with records project-init (a new project) or by hand, then " + _JSON % "campaign.json")
         return fields, None
     except _Bad:
-        doc = None
+        raw = None
     try:
         config = campaign_config.load(project)
     except ValueError:
         config = None
-    if config is None:
+    doc = None
+    if raw is not None:
+        try:
+            # Match the canonical loader's byte decoding for validated configs;
+            # keep the existing field inventory for invalid configs.
+            doc = json.loads(raw) if config is not None else _json(raw)
+        except (_Bad, ValueError, RecursionError):
+            pass
+    if config is None or not isinstance(doc, dict):
         for key in (doc if isinstance(doc, dict) else FIELDS):
             if key in fields:
                 fields[key] = "invalid"
         _issue(issues, "READINESS_CONFIG_INVALID", "campaign.json", "human",
                "correct P/campaign.json to schema_version 1 and the documented keys: " + _JSON % "campaign.json")
         return fields, None
-    for key in doc:
-        fields[key] = "present"
     for key in FIELDS:
-        if fields[key] == "missing":
+        if key in doc:
+            fields[key] = "present"
+        else:
             _issue(issues, "READINESS_CAMPAIGN_FIELD_MISSING", "campaign." + key, "human",
                    "add %s to P/campaign.json if this campaign needs it (docs/MULTI-CAMPAIGN.md), then " % key + _JSON % "campaign.json")
     return fields, config

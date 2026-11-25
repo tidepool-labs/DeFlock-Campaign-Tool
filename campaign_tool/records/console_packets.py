@@ -4,7 +4,7 @@ import urllib.parse
 
 from . import console_journal, public_packets as pp
 from .console_oversight import _journal_actor
-from .console_snapshot import LiveSource
+from .console_snapshot import LiveSource, SnapshotSource
 from .outcomes.reading import BANNER, esc
 from . import console_layout
 
@@ -16,10 +16,15 @@ def render(project, token, source=None):
     source = source or LiveSource(project)
     rows = source.packets_pending()
     switch = source.packets_status()["switch"]
+    pinned_read_only = token is None and isinstance(source, SnapshotSource)
     out = [console_layout.start("Update packets"), '<h1>Update packets</h1>',
            '<p>Packets switch: %s. Approve records G\'s signed decision only. '
            'Nothing is sent, published or written to site-changes. Writing remains a separate CLI step.</p>' % esc(switch)]
-    if not rows:
+    if pinned_read_only:
+        out.append('<p>Pending packets from the pinned export (not the live queue).</p>')
+        if not rows:
+            out.append('<p>No pending packets were listed in this export.</p>')
+    elif not rows:
         out.append('<p>No packets pending.</p>')
     for row in rows:
         out.append('<section><h2>%s</h2><dl>%s</dl>' % (esc(row['title']), ''.join(
@@ -50,7 +55,10 @@ def serve(handler):
     try:
         page = render(handler.options['project'], handler.csrf_token(), handler.options['source'])
     except (pp.PacketError, OSError, ValueError, KeyError, TypeError):
-        handler._fail(503)
+        handler._send(503, console_layout.shell(
+            'Update packets', '<h1>Update packets</h1>'
+            '<p class="diag" role="status">Pending packet evidence could not be read. '
+            'This does not mean the queue is empty.</p>', active='Packets'))
     else:
         handler._send(200, page)
     return True

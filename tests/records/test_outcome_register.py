@@ -86,6 +86,8 @@ class RegisterTests(unittest.TestCase):
         self.assertEqual(len(first["sources"]), 2)
         self.assertEqual(first["sources"][0], {"table": "requests", "id": "r1"})
         self.assertEqual(first["sources"][1]["row"], 2)
+        tracker_only = rows[("Quartz Town Clerk", "QT-09")]
+        self.assertEqual(tracker_only["submitted_at"], "2030-01-01")
         self.assertEqual(self.gaps, [])
 
     def test_calendar_ten_plus_fourteen_and_date_boundaries(self):
@@ -157,12 +159,19 @@ class RegisterTests(unittest.TestCase):
                     self.assertEqual(("holiday_list" in row, "holiday_list" in out), (bool(days),) * 2)
 
     def test_receipt_not_send_proxy_and_no_production_deadline(self):
-        issues = []
-        clock = register.deadline({"received_at": "2030-01-03", "submitted_at": "2030-01-01",
-                                   "production_at": "2030-01-05"}, register._day(TODAY), issues)
-        self.assertEqual(clock["due"], "2030-01-14")
-        self.assertEqual(clock["basis"], "recorded_receipt")
-        self.assertTrue(clock["running"], "production alone never proves determination")
+        # Receipt must still drive the clock, but must never supply the submitted date
+        # or hide a future submission. The UTC timestamp lands on Jan 1 in Pacific time.
+        for sent, expected in (("2030-01-02T01:00:00Z", "2030-01-01"),
+                               (None, None), ("2030-02-01", None)):
+            with self.subTest(sent=sent):
+                self.data["requests"] = [request(received_at="2030-01-03", submitted_at=sent,
+                                                 production_at="2030-01-05")]
+                row = register.build_register(self.data, as_of=TODAY)["requests"][0]
+                self.assertEqual(row["submitted_at"], expected)
+                self.assertEqual(row["request_date"], "2030-01-03")
+                self.assertEqual(row["deadline"]["due"], "2030-01-14")
+                self.assertEqual(row["deadline"]["basis"], "recorded_receipt")
+                self.assertTrue(row["deadline"]["running"], "production alone never proves determination")
         determined = register.deadline({"submitted_at": "2030-01-01", "determination_at": "2030-01-10"},
                                        register._day(TODAY), [])
         self.assertEqual(determined["state"], "determined")
@@ -186,6 +195,13 @@ class RegisterTests(unittest.TestCase):
                 result = register.build_register(source, rows, as_of=TODAY)["requests"][0]
                 self.assertIn(issue, result["issues"])
                 self.assertEqual(result["next_action"], "clarify")
+                if field == "submitted_at":
+                    self.assertIsNone(result["submitted_at"])
+                    # Filtering the new field must not rewrite legacy request_date or its clock.
+                    legacy = (None, None, "unknown") if value == "bad" else (
+                        "2030-02-01", "2030-02-11", "not_started")
+                    self.assertEqual((result["request_date"], result["deadline"]["due"],
+                                      result["deadline"]["state"]), legacy)
         self.assertIsNone(register._day("2030-01-01garbage"))
         self.assertEqual(register._day("2030-01-02T01:00:00Z").isoformat(), "2030-01-01")
         self.assertEqual(register._day("1/2/2030").isoformat(), "2030-01-02")
@@ -200,6 +216,8 @@ class RegisterTests(unittest.TestCase):
             self.assertIn("Unknown", row["missing"])
         self.data["requests"][0]["submitted_at"] = "2029-12-01"
         row = self.report()["requests"][0]
+        self.assertIsNone(row["submitted_at"])
+        self.assertEqual(row["request_date"], "2029-12-01")
         self.assertEqual(row["deadline"]["base_due"], "2029-12-11")
         self.assertIn("source_conflict:submitted_at", row["issues"])
         self.assertEqual(row["next_action"], "clarify")
@@ -322,10 +340,13 @@ class RegisterTests(unittest.TestCase):
         report = register.build_register(self.data, rows, as_of=TODAY)
         self.assertEqual(report["request_count"], 4)
         self.assertIn("source_conflict:asked", report["requests"][0]["issues"])
-        bad = {"agency": "", "request_id": "", "source": {"file": "fixture.csv", "row": 99}}
+        self.assertEqual(report["requests"][0]["submitted_at"], "2030-01-01")
+        bad = {"agency": "", "request_id": "", "submitted_at": "2030-01-01",
+               "source": {"file": "fixture.csv", "row": 99}}
         report = register.build_register(data(), [bad], as_of=TODAY)
         self.assertEqual(report["request_count"], 4)
         self.assertIn("tracker_identity_unresolved", report["requests"][-1]["issues"])
+        self.assertIsNone(report["requests"][-1]["submitted_at"])
         empty = {table: [] for table in register.correspondence.TABLES}
         self.assertEqual(register.build_register(empty, as_of=TODAY)["request_count"], 0)
 

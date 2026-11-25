@@ -99,9 +99,11 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(doc["ocr_pages_pending"], [2])
 
     def test_malformed_input_is_refused(self):
-        for bad in (None, [], {"documents": "x"}, {"documents": [1]}):
+        # A missing or unrelated header must not turn an empty list into a clean report.
+        for bad in (None, [], {**body(), "documents": "x"}, body(1),
+                    {"documents": []}, {**body(), "schema": "records-extract-failures-v1"}):
             with self.subTest(bad=bad):
-                with self.assertRaises(ValueError):
+                with self.assertRaisesRegex(ValueError, r"^extract_list_invalid$"):
                     ef.build_manifest(bad)
 
     def test_empty_run(self):
@@ -129,6 +131,12 @@ class WriteTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         (self.root / "runs").mkdir(mode=0o700)
+
+    def test_written_outcomes_schema_matches_manifest_reader(self):
+        # A producer header change must not silently break the manifest reader.
+        native_extract.write_private_list(self.root, "schema-drift", [row("EXTRACT_ERROR")])
+        written = json.loads((self.root / "runs" / "extract-schema-drift.json").read_text(encoding="utf-8"))
+        self.assertEqual(written["schema"], ef.OUTCOMES_SCHEMA)
 
     def test_failures_prefix_run_id_cannot_collide_with_manifest_name(self):
         out = native_extract.write_private_list(self.root, "failures-x", [])

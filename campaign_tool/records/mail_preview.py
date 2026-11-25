@@ -115,6 +115,8 @@ def context_html(context):
     citations = context.get("citations")
     if citations is None:
         out.append('<p>Sources unknown: producer supplied no citation list.</p>')
+    elif not isinstance(citations, list):
+        out.append('<p>Citations unavailable.</p>')
     elif not citations:
         out.append('<p>No citations supplied by producer.</p>')
     else:
