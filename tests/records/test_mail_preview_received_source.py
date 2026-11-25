@@ -79,6 +79,8 @@ class ReceivedSourceTests(Panel):
             "bool page": {"page": True, "quote": "We deny it."},
             "extra key": {"page": 1, "quote": "We deny it.", "url": "https://example.test"},
             "smuggled item id": {"page": 1, "quote": "We deny it.", "item_id": "c" * 64},
+            "part without page key": {"part": "1", "quote": "We deny it."},
+            "quote only": {"quote": "We deny it."},
             "not a dict": "page 1",
         }
         self.assertTrue(mail_preview._received_ok(mail_preview.received_source(good)))
@@ -94,11 +96,13 @@ class ReceivedSourceTests(Panel):
                 self.assertNotIn("Sources unknown", rendered)
         # a hand-edited export object is re-checked at render time, not trusted
         for forged in ({"item_id": "b" * 64, "page": None, "quote": "x"}, {"item_id": "b" * 64, "page": 3},
-                       ["b" * 64, 3, "x"], "page 3"):
+                       {"item_id": "b" * 64, "part": "3", "quote": "x"}, ["b" * 64, 3, "x"], "page 3"):
             with self.subTest(forged=forged):
                 rendered = mail_preview.context_html({"received_source": forged, "citations": None})
                 self.assertIn("Received-item citation unavailable", rendered)
+                self.assertNotIn("This reply answers", rendered)
                 self.assertNotIn("page 3", rendered)
+                self.assertNotIn("message part 3", rendered)
 
     def test_supplied_citation_list_is_still_shown_beside_the_received_item(self):
         context = {"received_source": {"item_id": "d" * 64, "page": 4, "quote": "Fee: $4."},

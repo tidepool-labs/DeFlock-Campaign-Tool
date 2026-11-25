@@ -92,7 +92,10 @@ def received_source(evidence):
 
 
 def _received_ok(source):
-    if not isinstance(source, dict) or set(source) - {"item_id", "page", "part", "quote"}:
+    # Exactly a paged {item_id, page, quote} or a part {item_id, page: None, part, quote}: an absent "page" key is
+    # never read as None, so a hand-edited object cannot pass as a part citation.
+    if not isinstance(source, dict) or set(source) not in ({"item_id", "page", "quote"},
+                                                           {"item_id", "page", "part", "quote"}):
         return False
     item_id = source.get("item_id")
     return (isinstance(item_id, str) and draft_templates._SHA.fullmatch(item_id) is not None
