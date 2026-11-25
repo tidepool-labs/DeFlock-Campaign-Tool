@@ -43,12 +43,23 @@ class SiteRecordsTests(unittest.TestCase):
                 self.assertEqual(row, expected(text.encode(), result, codes))
                 self.assertIsNone(golive_evidence.validate(row))
 
-    def test_c1_no_vacuous_evidence(self):
-        """C1: A missing expected roster cannot certify coverage."""
-        with self.assertRaises(ValueError) as cm:
-            site.records("alpha\t200\n", [], NOW)
-        self.assertIs(type(cm.exception), ValueError)
-        self.assertEqual(str(cm.exception), "campaign has no agency slugs")
+    def test_c1_refuses_invalid_expected_rosters(self):
+        """C1: Missing, duplicate and malformed expected identities cannot certify coverage."""
+        # A direct set conversion collapses the repeated alpha and falsely passes.
+        cases = (
+            ((), "campaign has no agency slugs"),
+            (("alpha", "alpha"), "duplicate expected agency slug"),
+            (("alpha", "Beta"), "invalid expected agency slug"),
+            (("alpha", ""), "invalid expected agency slug"),
+            (("alpha", 42), "invalid expected agency slug"),
+            (("alpha", []), "invalid expected agency slug"),
+        )
+        for roster, reason in cases:
+            with self.subTest(roster=roster):
+                with self.assertRaises(ValueError) as cm:
+                    site.records("alpha\t200\n", iter(roster), NOW)
+                self.assertIs(type(cm.exception), ValueError)
+                self.assertEqual(str(cm.exception), reason)
 
     def test_c1_timestamp_requires_instant(self):
         """C1: A local timestamp must not silently produce UTC evidence."""
@@ -84,13 +95,19 @@ class SiteCliTests(unittest.TestCase):
         ]), encoding="utf-8")
         self.capture = self.root / "operator-capture.tsv"
 
+    def snapshot(self):
+        return {path.relative_to(self.root): None if path.is_dir() else path.read_bytes()
+                for path in self.root.rglob("*")}
+
     def run_cli(self, raw=None, *flags):
         if raw is not None:
             self.capture.write_bytes(raw)
+        before = self.snapshot()
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err), patch.object(site, "datetime") as clock:
             clock.now.return_value = NOW
             status = site.main([str(self.capture), str(self.root), *flags])
+        self.assertEqual(self.snapshot(), before)
         return status, out.getvalue(), err.getvalue()
 
     def test_c3_json_success(self):
