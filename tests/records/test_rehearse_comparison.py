@@ -13,6 +13,8 @@ import smtplib
 import socket
 import sqlite3
 import stat
+import subprocess
+import sys
 import tempfile
 import unittest
 import urllib.request
@@ -32,11 +34,64 @@ VALLEY, HARBOR = "ca-valley-pd", "ca-harbor-pd"
 needs_parsers = unittest.skipIf(native_extract.missing_parsers(), "UNSUPPORTED_RUNTIME: pypdf/openpyxl missing")
 
 
-class Fence:
-    """Record every write, socket connect and send-capable call made while the driver runs."""
+# Runs first in every child interpreter the fence starts (found through PYTHONPATH): it appends one JSON line per start, write-
+# capable open or file-system change, socket use and process start to the audit file, so a child cannot act unseen.
+AUDIT_HOOK = """
+import json, os, sys
+_log = os.environ.get("FENCE_AUDIT")
+if _log:
+    _fd = os.open(_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+    _mask = os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND
+    _paths = {"os.mkdir": (0,), "os.rename": (0, 1), "os.remove": (0,), "os.rmdir": (0,), "os.link": (0, 1),
+              "os.symlink": (1,), "shutil.copyfile": (1,), "shutil.move": (1,)}
+    _spawns = ("subprocess.Popen", "os.exec", "os.fork", "os.forkpty", "os.posix_spawn", "os.system")
 
-    def __init__(self, sandbox):
+    def _emit(kind, value=None):
+        os.write(_fd, (json.dumps([kind, value, os.getcwd()]) + "\\n").encode())
+
+    def _hook(event, args):
+        if event == "open" and not isinstance(args[0], int):
+            if (args[2] or 0) & _mask or any(flag in (args[1] or "") for flag in "wax+"):
+                _emit("write", os.fsdecode(args[0]))
+        elif event in _paths:
+            for index in _paths[event]:
+                if isinstance(args[index], (str, bytes, os.PathLike)):
+                    _emit("write", os.fsdecode(args[index]))
+        elif event in ("socket.connect", "socket.bind", "socket.getaddrinfo"):
+            _emit("socket", [event, str(args[1:2])])
+        elif event in _spawns:
+            _emit("spawn", event)
+
+    _emit("start", sys.argv[:3])
+    sys.addaudithook(_hook)
+"""
+
+
+class Fence:
+    """Record every write, socket connect and send-capable call made while the driver runs.
+
+    With ``audit_dir`` (an existing directory outside the sandbox) every child process started through ``subprocess.Popen``
+    also runs under AUDIT_HOOK, so ``child_events`` shows what the children wrote, connected to and started."""
+
+    def __init__(self, sandbox, audit_dir=None):
         self.sandbox, self.writes, self.outside, self.connects, self.sends = sandbox, [], [], [], []
+        self.audit_dir, self.children = audit_dir, []
+        if audit_dir:
+            (Path(audit_dir) / "sitecustomize.py").write_text(AUDIT_HOOK, encoding="utf-8")
+
+    def child_events(self):
+        log = Path(self.audit_dir) / "children.jsonl"
+        return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
+
+    def child_outside(self):
+        """Writes by children whose resolved path is neither under the sandbox nor the null device."""
+        result = []
+        for kind, value, cwd in self.child_events():
+            if kind == "write" and value != os.devnull:
+                target = Path(os.path.realpath(os.path.join(cwd, value)))
+                if not target.is_relative_to(os.path.realpath(self.sandbox)):
+                    result.append(str(target))
+        return result
 
     def write(self, path, fd=None):
         target = Path(os.fsdecode(path))
@@ -81,6 +136,18 @@ class Fence:
                 return real(*args, **kwargs)
             return patch.object(owner, name, wrapper)
 
+        audited, real_popen = self, subprocess.Popen
+
+        class Child(real_popen):  # start the real child, but under the audit hook when the fence has an audit directory
+            def __init__(self, args, *rest, **kwargs):
+                audited.children.append(list(args) if isinstance(args, (list, tuple)) else args)
+                if audited.audit_dir:
+                    env = dict(kwargs.get("env") or os.environ)
+                    env.update(PYTHONPATH=os.pathsep.join(filter(None, (audited.audit_dir, env.get("PYTHONPATH")))),
+                               FENCE_AUDIT=os.path.join(audited.audit_dir, "children.jsonl"))
+                    kwargs["env"] = env
+                super().__init__(args, *rest, **kwargs)
+
         senders = [patch.object(owner, name, side_effect=AssertionError) for owner, name in (
             (smtplib, "SMTP"), (smtplib, "SMTP_SSL"), (outbox.Outbox, "send"), (mail_send, "send_one"),
             (run_orchestrator, "cmd_notify_fallback"), (urllib.request, "urlopen"))]
@@ -88,7 +155,7 @@ class Fence:
             for fence in (patch.object(io, "open", file_open), patch.object(builtins, "open", file_open),
                           patch.object(os, "open", fd_open), patch.object(socket.socket, "connect", connect),
                           patch.object(sqlite3, "connect", database), watch(os, "mkdir"), watch(os, "replace", 1),
-                          watch(os, "link", 1)):
+                          watch(os, "link", 1), patch.object(subprocess, "Popen", Child)):
                 stack.enter_context(fence)
             self.sends = [stack.enter_context(sender) for sender in senders]
             yield self
@@ -113,7 +180,8 @@ class HappyRunTests(DriverTestCase):
         cls.addClassCleanup(cls.parent.cleanup)
         cls.sandbox = Path(cls.parent.name).resolve() / "sandbox"
         cls.sandbox.mkdir(mode=0o700)
-        cls.fence, cls.touched, touch = Fence(cls.sandbox), [], Path.touch
+        audit = cls.enterClassContext(tempfile.TemporaryDirectory())  # outside the sandbox, made before the fence is up
+        cls.fence, cls.touched, touch = Fence(cls.sandbox, audit), [], Path.touch
 
         def first_touch(path, *args, **kwargs):
             cls.touched.append((path, sorted(p.name for p in cls.sandbox.iterdir())))
@@ -185,6 +253,20 @@ class HappyRunTests(DriverTestCase):
         self.assertTrue(self.fence.connects and all(a[0] in ("127.0.0.1", "::1") for a in self.fence.connects))
         self.assertEqual([sender.call_count for sender in self.fence.sends], [0] * 6)
 
+    def test_05b_c5_child_processes_write_only_in_the_sandbox_and_never_connect_or_spawn(self):
+        """C5: the extract stage starts child interpreters; they are audited too, so the fence covers them as well.
+
+        Bug caught: a child (or its own child) writing outside the sandbox, opening a socket, or starting a process
+        while the parent-only spy stays green."""
+        events = self.fence.child_events()
+        starts = [e for e in events if e[0] == "start"]
+        self.assertGreater(len(self.fence.children), 0)  # the replay really starts children
+        self.assertEqual(len(starts), len(self.fence.children))  # and every one ran under the audit hook
+        self.assertTrue(all(e[1][1] == "_worker" for e in starts))  # the extraction worker, nothing else
+        self.assertTrue(any(e[0] == "write" for e in events))  # the hook saw real child writes, not nothing
+        self.assertEqual(self.fence.child_outside(), [])
+        self.assertEqual([e for e in events if e[0] in ("socket", "spawn")], [])
+
     def test_06_receipt_qualifies_and_the_runner_selects_the_driver(self):
         """C1: a receipt built from this run qualifies, and `records rehearse --stage 10` selects this driver.
 
@@ -206,6 +288,22 @@ class FenceTests(DriverTestCase):
             (sandbox.parent / "outside.txt").write_text("x")
             (sandbox / "inside.txt").write_text("x")
         self.assertEqual(fence.outside, [sandbox.parent / "outside.txt"])
+
+    def test_08_fence_flags_a_child_that_writes_outside_connects_or_spawns(self):
+        """C5 meta: the child audit must fail loudly on an outside write, a socket and a grandchild; otherwise test 05b proves nothing."""
+        sandbox = self.sandbox_dir()
+        audit = self.enterContext(tempfile.TemporaryDirectory())
+        outside = sandbox.parent / "child-outside.txt"
+        code = ("import socket, subprocess, sys; open(%r, 'w').close(); open(%r, 'w').close();"
+                "s = socket.socket(); s.settimeout(0.2); s.connect_ex(('127.0.0.1', 9)); s.close();"
+                "subprocess.run([sys.executable, '-B', '-c', 'pass'])" % (str(outside), str(sandbox / "inside.txt")))
+        with Fence(sandbox, audit)() as fence:
+            subprocess.run([sys.executable, "-B", "-c", code], check=True)
+        self.assertEqual(fence.child_outside(), [str(outside)])
+        kinds = [e[0] for e in fence.child_events()]
+        self.assertIn("socket", kinds)
+        self.assertIn("spawn", kinds)
+        self.assertEqual(kinds.count("start"), 2)  # the child and its grandchild: the hook and its variables are inherited
 
 
 @needs_parsers
