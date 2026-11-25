@@ -18,7 +18,7 @@ _spec.loader.exec_module(idx)
 wb = idx.wb
 
 MAIN = "c" * 40
-SECRET = "Synthetic quote that must never be copied"
+QUOTE_CANARY = "Synthetic quote that must never be copied"
 H = {name: hashlib.sha256(name.encode()).hexdigest() for name in ("harbor", "valley", "denial", "part", "nopage",
                                                                     "stray", "fee", "unmatched", "followup")}
 
@@ -39,19 +39,19 @@ def stage_outputs():
                 {"agency_id": "ag-valley", "field": "deadline", "request_id": "ag-valley-req", "evidence": []}]}),
             "pair/factsheets.json": json.dumps({"run_id": "run_a", "agencies": [
                 {"agency_id": "ag-harbor", "fields": {"retention": {"statements": [
-                    {"citation": {"document_sha256": H["harbor"], "page": 2}, "quote": SECRET}]}}}]}),
-            "pair/inbox/00.eml": "Subject: synthetic\n\n" + SECRET + "\n",
+                    {"citation": {"document_sha256": H["harbor"], "page": 2}, "quote": QUOTE_CANARY}]}}}]}),
+            "pair/inbox/00.eml": "Subject: synthetic\n\n" + QUOTE_CANARY + "\n",
         },
         "11": {
             "replay/gap-proposals.json": json.dumps({"run_id": "run_b", "agencies": [{"agency_id": "ag-valley", "requests": [
                 {"request_id": "req-1", "proposals": [{"agency_id": "ag-valley", "item_id": H["denial"],
-                                                       "source_id": H["denial"], "page": 1, "quote": SECRET,
+                                                       "source_id": H["denial"], "page": 1, "quote": QUOTE_CANARY,
                                                        "request_id": "req-1"}]}]}]}),
         },
         "12": {
             "replay/received-items.json": json.dumps({"run_id": "run_c", "items": [
                 {"agency_id": "ag-valley", "request_id": "req-1", "item_id": H["part"],
-                 "kind_basis": {"page": None, "part": 2, "quote": SECRET}},
+                 "kind_basis": {"page": None, "part": 2, "quote": QUOTE_CANARY}},
                 {"agency_id": "ag-valley", "request_id": "req-1", "item_id": H["nopage"],
                  "kind_basis": {"page": None, "quote": None}}]}),
             "replay/timeline.json": json.dumps({"run_id": "run_c", "requests": [
@@ -62,9 +62,9 @@ def stage_outputs():
         "13": {
             "replay/queue.jsonl": _jsonl(
                 {"event": "draft", "snapshot": {"agency_id": "ag-valley", "request_id": "req-2", "item_id": H["fee"],
-                                                "source_run_id": "run_d", "body": SECRET,
+                                                "source_run_id": "run_d", "body": QUOTE_CANARY,
                                                 "evidence": {"item_id": H["fee"],
-                                                             "kind_basis": {"page": 3, "quote": SECRET}}}},
+                                                             "kind_basis": {"page": 3, "quote": QUOTE_CANARY}}}},
                 {"event": "draft", "snapshot": {"agency_id": "unmatched", "request_id": "unmatched",
                                                 "source_run_id": "run_d", "evidence": {"item_id": H["unmatched"]}}},
                 {"event": "draft", "snapshot": {"agency_id": "ag-valley", "request_id": "req-3",
@@ -177,7 +177,7 @@ class SourceIndexTest(unittest.TestCase):
         outputs["12"]["replay/timeline.json"] = json.dumps(timeline)
         sheets = json.loads(outputs["10"]["pair/factsheets.json"])
         sheets["agencies"][0]["fields"]["retention"]["statements"].append(
-            {"citation": {"document_sha256": H["valley"], "page": 1}, "quote": SECRET})
+            {"citation": {"document_sha256": H["valley"], "page": 1}, "quote": QUOTE_CANARY})
         outputs["10"]["pair/factsheets.json"] = json.dumps(sheets)
         index = self.build(outputs)
         part = by_doc(index, "12")[H["part"]]
@@ -310,8 +310,8 @@ class SourceIndexTest(unittest.TestCase):
         agenda_path = write_case(self.root)
         first, second = idx.build(*load(agenda_path)), idx.build(*load(agenda_path))
         self.assertEqual(first, second)
-        self.assertNotIn(SECRET, json.dumps(first))
-        self.assertNotIn(SECRET, idx.render(first))
+        self.assertNotIn(QUOTE_CANARY, json.dumps(first))
+        self.assertNotIn(QUOTE_CANARY, idx.render(first))
 
     def test_index_binds_each_stage_to_the_workbook_evidence_digest(self):
         agenda, digest = load(write_case(self.root))

@@ -202,7 +202,7 @@ class SummaryTest(unittest.TestCase):
         for name in ("summary.json", "SUMMARY.md"):
             self.assertEqual(stat.S_IMODE((out / name).stat().st_mode), 0o600)
         self.assertIs(json.loads((out / "summary.json").read_text())["accepted"], False)
-        self.assertNotIn(case.SECRET, (out / "SUMMARY.md").read_text())
+        self.assertNotIn(case.QUOTE_CANARY, (out / "SUMMARY.md").read_text())
         withheld = write("withheld.json", fill(copy.deepcopy(self.workbook), "11", "See req-2."))
         run = subprocess.run([sys.executable, "-B", str(SCRIPT), withheld, str(self.agenda_path), index_path],
                              capture_output=True, text=True)
