@@ -221,6 +221,31 @@ class GapsEvidenceTest(unittest.TestCase):
                        {**plain, "register_sha256": "x"}):
             self.assertEqual(self.codes({"timeline": digest})[1], [REG + "RUN"])
 
+    def test_c3_register_differing_in_an_issue_or_an_unread_field_fails_and_the_real_writer_joins(self):
+        """C3 bug (RETURN 3): a register with one issue fewer than the timeline holds, or one differing in a field the timeline
+        never reads, passed against the original timeline. Join: the timeline write_run_timeline leaves on disk must be accepted
+        with the register file it read (any layout), or every real run fails closed."""
+        carrying = json.loads(json.dumps(register_doc()))
+        carrying["requests"][0]["issues"] = ["synthetic_issue"]
+        line = timeline_doc(carrying)
+        removed, unread = json.loads(json.dumps(carrying)), json.loads(json.dumps(carrying))
+        removed["requests"][0]["issues"] = []
+        unread["requests"][0]["field_no_reader_has"] = "x"
+        self.assertEqual(self.codes({"register": carrying, "timeline": line})[1], [])
+        for label, other in (("an issue removed", removed), ("a field the timeline never reads", unread)):
+            self.assertEqual(self.codes({"register": other, "timeline": line})[1], [REG + "RUN"], label)
+        project = self.tmp / "proj"
+        run_dir = project / "run-outputs" / RUN
+        (run_dir / "outcomes").mkdir(parents=True)
+        for directory in (project, project / "run-outputs", run_dir, run_dir / "outcomes"):
+            os.chmod(directory, 0o700)
+        raw = (json.dumps(carrying, indent=4) + "\n").encode()  # not the layout the other fixtures use
+        (run_dir / adapter.REGISTER).write_bytes(raw)
+        tl.write_run_timeline(project, RUN)
+        written = (run_dir / "outcomes" / adapter.TIMELINE).read_bytes()
+        self.assertEqual(self.codes({"register": raw, "timeline": written})[1], [])
+        self.assertEqual(self.codes({"register": removed, "timeline": written})[1], [REG + "RUN"])
+
     def test_c3_register_differing_only_in_a_timeline_read_field_fails_closed(self):
         """C3 bug: a same-day register of another run with the same identities, clocks, agency and closed state passed though
         a field the timeline reads (production date, promised date, determination, extension, issues) differed."""
