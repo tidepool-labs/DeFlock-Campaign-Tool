@@ -1606,7 +1606,12 @@ class RendererTests(unittest.TestCase):
                 "CONTAINER_PYTHON": "/usr/bin/python3", "CONTAINER_PROJECT_DIR": "/srv/project"}
         for label, panel, wrapper in (("different", "/srv/decisions-panel", "/srv/decisions"),
                                       ("sibling prefix", "/srv/decisions", "/srv/decisions2"),
-                                      ("nested", "/srv/decisions/sub", "/srv/decisions")):
+                                      ("nested", "/srv/decisions/sub", "/srv/decisions"),
+                                      # Review t_d3f15cb2: lexically equal is not enough; `..` after a symlinked
+                                      # component can address another directory, so only the identical path passes.
+                                      ("dotdot via other dir", "/srv/decisions", "/srv/link/../decisions"),
+                                      ("trailing slash", "/srv/decisions", "/srv/decisions/"),
+                                      ("double slash", "/srv/decisions", "/srv//decisions")):
             with self.subTest(label):
                 out = self.tmp / ("mismatch-" + label.replace(" ", "-"))
                 self.assert_refused("differs from DECISIONS_DIR",

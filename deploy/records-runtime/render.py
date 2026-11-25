@@ -194,12 +194,15 @@ def check_decisions_pairing(values, console):
 
     The panel appends approvals to `<console_decisions_dir>/decisions.jsonl`; the wrapper's apply step replays
     `$DECISIONS_DIR/decisions.jsonl` and returns quietly when that file is absent. Two different directories would
-    record approvals that are never applied. Either one alone is unchanged (staged roll-out)."""
+    record approvals that are never applied. The comparison is exact: the console value is already normalised, so a
+    DECISIONS_DIR that only normalises to it (`..`, `.`, `//`, trailing slash) is refused too, because `..` after a
+    symlinked component can name another directory than the lexical result. Either one alone is unchanged (staged
+    roll-out)."""
     panel = (console or {}).get("CONSOLE_DECISIONS_DIR")
     wrapper = values.get("DECISIONS_DIR")
-    if panel is not None and wrapper is not None and os.path.normpath(panel) != os.path.normpath(str(wrapper)):
-        raise RenderError("console_decisions_dir: differs from DECISIONS_DIR; approvals the panel records would "
-                          "never be applied by the wrapper")
+    if panel is not None and wrapper is not None and panel != wrapper:
+        raise RenderError("console_decisions_dir: differs from DECISIONS_DIR (must be the identical normalised "
+                          "path); approvals the panel records would never be applied by the wrapper")
 
 
 def check_console_listener(port, files):
