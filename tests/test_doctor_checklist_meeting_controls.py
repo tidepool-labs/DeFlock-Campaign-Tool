@@ -28,6 +28,18 @@ def stale(*meetings):
                                    for m in meetings]}
 
 
+def decoded_strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from decoded_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from decoded_strings(value)
+
+
 def snapshot(root):
     return {str(p.relative_to(root)): (p.stat().st_mode, p.stat().st_mtime_ns, p.read_bytes() if p.is_file() else None)
             for p in [root, *sorted(root.rglob("*"))]}
@@ -145,17 +157,16 @@ class RealChainTests(unittest.TestCase):
         plain = json.loads(self.doctor().stdout)
         self.assertEqual([e["meeting"] for e in plain["stale_comment_kits"]], ["safe-id"])
         # The advice legitimately names the campaign directory, whose temp parent may contain
-        # any text (CI's ci-chunk-0-yzp8oddi once matched "odd"); remove that known value so the
-        # negative check only sees what the doctor derived from the meeting file.
-        forms = [f for raw in (shlex.quote(str(self.root)), str(self.root)) for f in (raw, json.dumps(raw)[1:-1])]
+        # any text (CI's ci-chunk-0-yzp8oddi once matched "odd"). Compare decoded text, never
+        # escaped JSON, and remove that known value so the negative check only sees what the
+        # doctor derived from the meeting file.
         for extra in (("--checklist",), ("--checklist", "--json")):
             with self.subTest(extra=extra):
                 done = self.doctor(*extra)
                 self.assertEqual(done.returncode, 0, done.stderr)
-                self.assertIn("--id safe-id --replace", done.stdout)
-                scoped = done.stdout
-                for form in forms:
-                    scoped = scoped.replace(form, "<campaign>")
+                text = "\n".join(decoded_strings(json.loads(done.stdout))) if "--json" in extra else done.stdout
+                self.assertIn("--id safe-id --replace", text)
+                scoped = text.replace(shlex.quote(str(self.root)), "<campaign>").replace(str(self.root), "<campaign>")
                 self.assertIn("<campaign>", scoped)
                 self.assertNotIn("ODDSTEM", scoped)
 
