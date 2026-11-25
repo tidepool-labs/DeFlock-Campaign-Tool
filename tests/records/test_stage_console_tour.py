@@ -13,7 +13,8 @@ assert _spec is not None and _spec.loader is not None
 tour_mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tour_mod)
 
-OWN = {"10": "ag-ten", "11": "prop-eleven-0001", "12": "item-twelve-001", "13": "draftthirteen1"}
+OWN = {"10": "ag-ten", "11": "prop-eleven-0001", "12": "aaaa-twelve-001", "13": "draftthirteen1"}
+OWN12_SECOND = "bbbb-twelve-002"
 
 
 def write(path, doc):
@@ -32,7 +33,7 @@ def fake_project(root, stage, drop=()):
         write(run / "outcomes" / "gap-proposals.json", {"agencies": [{"requests": [{"proposals": [
             {"proposal_id": OWN["11"], "quote": "eleven passage", "question": "eleven question?"}]}]}]})
     elif stage == "12":
-        items = [] if "items" in drop else [{"item_id": OWN["12"] + "-long-tail"}]
+        items = [] if "items" in drop else [{"item_id": OWN["12"] + "-long-tail"}, {"item_id": OWN12_SECOND + "-tail"}]
         write(run / "outcomes" / "received-items.json", {"items": items})
         write(run / "outcomes" / "timeline.json", {"requests": [{"request_id": "REQ-12"}]})
     else:
@@ -66,7 +67,7 @@ def stage_sites():
     """Each stage's own console shows only that stage's exhibits (stage 11 has no page for its proposal id)."""
     return {"10": {"/comparison": "<p>ag-ten</p>", "/facts": "<p>ten quote text</p>"},
             "11": {"/documents": "<p>eleven passage</p><p>eleven question?</p>"},
-            "12": {"/documents": "<p>item-twelve-001-long-tail</p>", "/timeline": "<p>REQ-12</p>"},
+            "12": {"/documents": "<p>aaaa-twelve-001 bbbb-twelve-002</p>", "/timeline": "<p>REQ-12</p>"},
             "13": {"/drafts": "<p>draftthirteen1</p>"}}
 
 
@@ -87,6 +88,24 @@ class ClassifyTests(unittest.TestCase):
         self.assertEqual(tour_mod.classify(self.exhibit(["target-id"]), pages)["status"], tour_mod.NAVIGABLE)
         self.assertEqual(tour_mod.classify(self.exhibit(["script-id"]), pages)["status"], tour_mod.MISSING)
         self.assertEqual(tour_mod.classify(self.exhibit(["not found"]), pages)["status"], tour_mod.MISSING)
+
+    def test_links_and_ids_inside_script_and_style_are_neither_followed_nor_shown(self):
+        # Contract: only real document links are traversed and only visible text is searched. Bug caught: an href-like
+        # string inside <script>/<style> became a link to follow and its target counted as displayed.
+        asked = []
+        body = ('<a href="/real">go</a><script>document.write(\'<a href="/from-script">x</a>\')</script>'
+                '<SCRIPT type="x">var u = "<a href=\\"/from-upper\\">y</a>"</SCRIPT><style>a{background:url(href="/from-style")}</style>')
+        pages = {"/": body, "/real": "<p>real-id</p>", "/from-script": "<p>script-only-id</p>",
+                 "/from-upper": "<p>upper-id</p>", "/from-style": "<p>style-id</p>"}
+
+        def fetch(path):
+            asked.append(path)
+            return (200, pages[path]) if path in pages else (404, "")
+        crawled = tour_mod.crawl(fetch)
+        self.assertEqual(sorted(asked), ["/", "/real"])
+        self.assertEqual(tour_mod.classify(self.exhibit(["real-id"]), crawled)["status"], tour_mod.NAVIGABLE)
+        for hidden in ("script-only-id", "upper-id", "style-id", "/from-script", "/from-upper", "/from-style"):
+            self.assertEqual(tour_mod.classify(self.exhibit([hidden]), crawled)["status"], tour_mod.MISSING, hidden)
 
     def test_all_tokens_must_be_on_the_same_page_and_empty_tokens_never_match(self):
         pages = tour_mod.crawl(site({"/a": "<p>one</p>", "/b": "<p>two</p>"}))
@@ -129,11 +148,28 @@ class TourTests(unittest.TestCase):
 
     def test_swapped_run_cannot_pass(self):
         # Bug caught: another stage's console (or the stage 12 run served as stage 10) satisfying this stage.
-        receipt = self.run_tour(self.sites(**{"10": {**stage_sites()["10"], "/documents": "<p>item-twelve-001-long-tail</p>"}}))
+        receipt = self.run_tour(self.sites(**{"10": {**stage_sites()["10"], "/documents": "<p>aaaa-twelve-001 bbbb-twelve-002</p>"}}))
         control = receipt["controls"]["swap_into_stage_10"]
         self.assertEqual(control["result"], "FAIL")
         self.assertEqual(control["foreign_unique_ids_shown"], [["12", "received item: its own item id"]])
+        self.assertEqual(self.status(receipt, "12", "item id"), tour_mod.NAVIGABLE)
         self.assertEqual((receipt["result"], receipt["failed"]), ("FAIL", ["swap_into_stage_10"]))
+
+    def test_a_foreign_id_leaks_even_when_only_one_of_several_is_shown_or_they_are_on_separate_pages(self):
+        # Contract: one foreign unique id on any reachable page fails the swap control. Bug caught: the control asked
+        # for ALL of a foreign stage's ids on ONE page, so a partial or split leak passed.
+        one = {**stage_sites()["10"], "/documents": "<p>bbbb-twelve-002</p>"}
+        split = {**stage_sites()["10"], "/documents": "<p>aaaa-twelve-001</p>", "/other": "<p>bbbb-twelve-002</p>"}
+        for leak in (one, split):
+            receipt = self.run_tour(self.sites(**{"10": leak}))
+            self.assertEqual(receipt["controls"]["swap_into_stage_10"]["result"], "FAIL")
+            self.assertEqual((receipt["result"], receipt["failed"]), ("FAIL", ["swap_into_stage_10"]))
+
+    def test_own_id_present_needs_only_one_own_id_shown(self):
+        sites = self.sites(**{"12": {"/documents": "<p>bbbb-twelve-002</p>", "/timeline": "<p>REQ-12</p>"}})
+        receipt = self.run_tour(sites)
+        self.assertEqual(receipt["controls"]["own_id_present"], {"11: gap proposal: its own proposal id": "ABSENT"})
+        self.assertEqual(self.status(receipt, "12", "item id"), tour_mod.MISSING)
 
     def test_unknown_draft_must_not_open_any_draft(self):
         good = site(stage_sites()["13"])

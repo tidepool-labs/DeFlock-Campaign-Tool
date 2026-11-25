@@ -176,9 +176,18 @@ def make_fetch(port):
     return fetch
 
 
+def _markup(body):
+    """The page without script and style bodies: text inside them is neither shown nor a link."""
+    return re.sub(r"<(script|style)\b[^>]*>.*?</\1\s*>", " ", body, flags=re.S | re.I)
+
+
+def _links(body):
+    return [html.unescape(h) for h in HREF.findall(_markup(body))]
+
+
 def _norm(body):
-    text = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", body, flags=re.S)
-    links = " ".join(html.unescape(h) for h in HREF.findall(body))  # an id shown only as a link target counts as shown
+    text = _markup(body)
+    links = " ".join(_links(body))  # an id shown only as a link target counts as shown
     return re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", text))) + " " + links
 
 
@@ -194,8 +203,7 @@ def crawl(fetch, wanted=(), limit=PAGE_LIMIT):
         pages[path] = (status, _norm(body), depth)
         if status != 200:
             continue
-        for link in HREF.findall(body):
-            link = html.unescape(link)
+        for link in _links(body):
             if link.startswith("/") and not link.startswith("//") and not link.startswith(SKIP) and link not in pages:
                 queue.append((link, depth + 1))
     for path in wanted:
@@ -208,6 +216,11 @@ def crawl(fetch, wanted=(), limit=PAGE_LIMIT):
 def where(tokens, pages):
     return [(path, depth) for path, (status, text, depth) in sorted(pages.items())
             if status == 200 and tokens and all(t in text for t in tokens)]
+
+
+def shown_any(tokens, pages):
+    """True when ANY one token is shown on ANY reachable page (a leak does not need the whole set on one page)."""
+    return any(status == 200 and t in text for status, text, _ in pages.values() for t in tokens)
 
 
 def classify(exhibit, pages):
@@ -236,7 +249,7 @@ def tour(stage_projects, fetchers):
                                     "exhibits": [classify(e, pages[key]) for e in found], "human_finding": None}
     for stage in ("10", "11", "12", "13"):  # a swapped run cannot pass: foreign unique ids must be absent
         leaks = [[other, e["label"]] for other in ("11", "12", "13") if other != stage
-                 for e in own[other][0] if e["unique"] and where(e["tokens"], pages[stage])]
+                 for e in own[other][0] if e["unique"] and shown_any(e["tokens"], pages[stage])]
         receipt["controls"]["swap_into_stage_%s" % stage] = {"foreign_unique_ids_shown": leaks,
                                                             "result": "PASS" if not leaks else "FAIL"}
         if leaks:
@@ -244,7 +257,7 @@ def tour(stage_projects, fetchers):
     absent = {}
     for stage in ("11", "12", "13"):  # without its own id shown, the swap control proves nothing for that stage
         for e in own[stage][0]:
-            if e["unique"] and not where(e["tokens"], pages[stage]):
+            if e["unique"] and not shown_any(e["tokens"], pages[stage]):
                 absent["%s: %s" % (stage, e["label"])] = "ABSENT"
     receipt["controls"]["own_id_present"] = absent
     status, body = fetchers["13"]("/review?id=" + UNKNOWN_DRAFT)
