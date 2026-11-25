@@ -11,8 +11,9 @@ refuses to make a workbook unless all five stages are READY_FOR_HUMAN_CHECK on t
 
 ``cited`` (new in v2) is where the reviewer writes every reference, ``;``-separated, e.g.
 ``document 0a1b2c3d4e5f page 2; request req-7``; ``stage_readthrough_summary.py`` checks each entry against the
-stage's linked sources and never reads references out of the prose finding. A v1 workbook has no ``cited`` field and
-is not read as current; a v1 workbook is still accepted as ``--prior`` for copy detection.
+stage's linked sources, takes ``outcome`` only from matches / differs / cannot_tell, and never reads or carries the
+prose finding (the reviewer's own note). A v1 workbook has no ``cited`` field and is not read as current; a v1
+workbook is still accepted as ``--prior`` for copy detection.
 
 ``check`` reads a (partly) filled workbook against the current agenda and prints flags; it never fills a field and never
 says a stage is accepted. Flags: a stage missing, duplicated or unknown, an entry whose evidence is not the current
@@ -123,7 +124,8 @@ def render(workbook):
         out += ["  - %s %s: %s  sha256 %s" % (ref["step"], ref["code"], ref["path"], ref["sha256"][:12])
                 for ref in entry["references"]]
         out += ["Next human check: " + str(entry["next_human_check"]),
-                "Reviewer: ____   Date: ____   Outcome: ____", "Finding: ____",
+                "Reviewer: ____   Date (YYYY-MM-DD): ____   Outcome (matches | differs | cannot_tell): ____",
+                "Note (your own words; stays in this workbook, never read as a citation): ____",
                 "Cited (document <hex> [page N | part P]; request <id>): ____", ""]
     return "\n".join(out)
 
