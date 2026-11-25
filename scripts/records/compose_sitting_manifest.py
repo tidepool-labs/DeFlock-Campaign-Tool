@@ -40,6 +40,9 @@ NOTE = ("Unsigned offline composition. READY only permits an independent review 
         "never a booking, signature, installation, phone release or live run.")
 _COMMIT = re.compile(r"[0-9a-f]{40}\Z")
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_TOKEN = re.compile(r"[A-Z0-9_]{1,64}\Z")
+_NAME = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
+_REVIEWER = re.compile(r"[A-Za-z0-9][A-Za-z0-9 _.@-]{0,63}\Z")
 
 
 class InputError(Exception):
@@ -79,6 +82,19 @@ def _obj(value):
     return value if isinstance(value, dict) else {}
 
 
+def _commit_or_none(value):
+    return value if _is_commit(value) else None
+
+
+def _digest_or_none(value):
+    return value if _is_digest(value) else None
+
+
+def _token(value):
+    """An upper-case status/code token copied from an input, or MALFORMED; free text is never copied out."""
+    return value if isinstance(value, str) and _TOKEN.match(value) else "MALFORMED"
+
+
 def kit_section(render):
     """Engine and wrapper from the repin render receipt."""
     holds = []
@@ -94,9 +110,14 @@ def kit_section(render):
         holds.append("KIT_WRAPPER_MISSING")
         wrapper = None
     contains = render.get("contains")
-    if not isinstance(contains, dict) or not contains or not all(v is True for v in contains.values()):
+    required = {}
+    if not isinstance(contains, dict) or not contains:
         holds.append("KIT_REQUIRED_CHANGE_MISSING")
-    return {"engine": engine, "wrapper_sha256": wrapper, "required_changes": contains}, holds
+    else:
+        required = {name: value is True for name, value in contains.items() if _NAME.match(name)}
+        if len(required) != len(contains) or not all(required.values()):
+            holds.append("KIT_REQUIRED_CHANGE_MISSING")
+    return {"engine": engine, "wrapper_sha256": wrapper, "required_changes": required}, holds
 
 
 def driver_section(run, engine):
@@ -114,8 +135,9 @@ def driver_section(run, engine):
             holds.append("STAGE_MISSING:%s" % stage)
             rows[stage] = None
             continue
-        rows[stage] = {"driver": DRIVERS[stage], "driver_sha256": row.get("driver_source_sha256"),
-                       "receipt_sha256": row.get("receipt_sha256"), "engine": row.get("engine")}
+        rows[stage] = {"driver": DRIVERS[stage], "driver_sha256": _digest_or_none(row.get("driver_source_sha256")),
+                       "receipt_sha256": _digest_or_none(row.get("receipt_sha256")),
+                       "engine": _commit_or_none(row.get("engine"))}
         if (row.get("modules") != [DRIVERS[stage]] or row.get("code") != "QUALIFIED_SAME_ENGINE"
                 or row.get("qualified") is not True or not _is_digest(row.get("driver_source_sha256"))
                 or not _is_digest(row.get("receipt_sha256"))):
@@ -142,12 +164,23 @@ def d8_section(report, set_sha, engine, drivers):
         holds.append("D8_FOR_OTHER_SET")
     inputs = _obj(d8.get("stage_inputs"))
     case = _obj(_obj(d8.get("cases")).get(D8_GATE_CASE))
-    listed = case.get("stages") if isinstance(case.get("stages"), list) else []
-    by_stage = {row.get("stage"): row for row in listed if isinstance(row, dict)}
+    listed = case.get("stages")
+    if not isinstance(listed, list):
+        listed = []
+    by_stage, seen = {}, []
+    for row in listed:
+        stage = row.get("stage") if isinstance(row, dict) else None
+        if not isinstance(stage, str) or stage not in STAGES:
+            holds.append("D8_GATE_UNEXPECTED_ROW")
+            continue
+        seen.append(stage)
+        by_stage[stage] = row
     codes = {}
     for stage in STAGES:
         ours, theirs, verdict = drivers.get(stage), _obj(inputs.get(stage)), _obj(by_stage.get(stage))
-        codes[stage] = verdict.get("code", "STAGE_ABSENT")
+        codes[stage] = _token(verdict.get("code", "STAGE_ABSENT"))
+        if seen.count(stage) > 1:
+            codes[stage] = "STAGE_DUPLICATE"
         if ours is None or any(theirs.get(k) != ours[k] for k in ("driver", "driver_sha256", "receipt_sha256")) \
                 or verdict.get("receipt_sha256") != ours["receipt_sha256"]:
             holds.append("D8_STAGE_INPUT_MISMATCH:%s" % stage)
@@ -155,8 +188,8 @@ def d8_section(report, set_sha, engine, drivers):
             holds.append("D8_STAGE_NOT_MATCH:%s:%s" % (stage, codes[stage]))
     if case.get("status") != "READY_FOR_REVIEW":
         holds.append("D8_GATE_NOT_READY")
-    return {"status": status, "gate_case": D8_GATE_CASE, "gate_status": case.get("status"), "stage_codes": codes,
-            "d8_head": report.get("d8_head")}, holds
+    return {"status": _token(status), "gate_case": D8_GATE_CASE, "gate_status": _token(case.get("status")),
+            "stage_codes": codes, "d8_head": _commit_or_none(report.get("d8_head"))}, holds
 
 
 def _has_exact_revision_placement(source):
@@ -210,18 +243,21 @@ def window_section(window, review, core_sha, engine, wrapper, now):
         holds.append("WINDOW_INVALID")
     elif end <= now:
         holds.append("WINDOW_EXPIRED")
-    section = {"window": "PRESENT", "window_sha256": window_sha, "start": body.get("start"), "end": body.get("end")}
+    section = {"window": "PRESENT", "window_sha256": window_sha,
+               "start": start.isoformat() if start else None, "end": end.isoformat() if end else None}
     if review is None:
         holds.append("WINDOW_UNREVIEWED")
         section["review"] = "ABSENT"
         return section, holds
     verdict, review_sha = review
-    section.update(review="PRESENT", review_sha256=review_sha, reviewer=verdict.get("reviewer"))
+    reviewer = verdict.get("reviewer")
+    reviewer = reviewer.strip() if isinstance(reviewer, str) and _REVIEWER.match(reviewer.strip()) else None
+    section.update(review="PRESENT", review_sha256=review_sha, reviewer=reviewer)
     if verdict.get("window_sha256") != window_sha or verdict.get("manifest_sha256") != core_sha:
         holds.append("WINDOW_UNREVIEWED:REVIEW_FOR_OTHER_DIGEST")
     elif verdict.get("verdict") != "APPROVE":
         holds.append("WINDOW_UNREVIEWED:REVIEW_NOT_APPROVE")
-    elif not isinstance(verdict.get("reviewer"), str) or not verdict["reviewer"].strip():
+    elif reviewer is None:
         holds.append("WINDOW_UNREVIEWED:REVIEWER_UNNAMED")
     return section, holds
 

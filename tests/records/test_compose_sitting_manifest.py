@@ -309,6 +309,71 @@ class ComposeTests(Fixture):
         odd["d8"]["stage_inputs"]["10"] = ["not", "an", "object"]
         self.assertIn("D8_STAGE_INPUT_MISMATCH:10", self.compose(kit, run, packed(odd))["holds"])
 
+    def test_d8_stage_rows_must_be_unique_expected_strings(self):
+        kit, run, report = self.inputs()
+        for bad in (["11"], {"stage": "11"}, 11, None, "15"):
+            with self.subTest(stage=bad):
+                odd = copy.deepcopy(report[0])
+                odd["d8"]["cases"][csm.D8_GATE_CASE]["stages"].append(
+                    {"stage": bad, "code": "EVIDENCE_MATCH", "receipt_sha256": "0" * 64})
+                got = self.compose(kit, run, packed(odd))
+                self.assertIn("D8_GATE_UNEXPECTED_ROW", got["holds"])
+                self.assertEqual(got["disposition"], csm.HOLD)
+        not_a_row = copy.deepcopy(report[0])
+        not_a_row["d8"]["cases"][csm.D8_GATE_CASE]["stages"].append(["11"])
+        self.assertIn("D8_GATE_UNEXPECTED_ROW", self.compose(kit, run, packed(not_a_row))["holds"])
+
+    def test_a_duplicate_d8_stage_cannot_mask_an_earlier_failure(self):
+        kit, run, report = self.inputs()
+        window = self.window()
+        dup = copy.deepcopy(report[0])
+        rows = dup["d8"]["cases"][csm.D8_GATE_CASE]["stages"]
+        rows[1] = dict(rows[1], code="EVIDENCE_FAILED")
+        rows.append(dict(rows[1], code="EVIDENCE_MATCH"))
+        dup_packed = packed(dup)
+        got = self.compose(kit, run, dup_packed, window=window,
+                           review=self.reviewed(kit, run, dup_packed, window))
+        self.assertEqual(got["d8"]["stage_codes"]["11"], "STAGE_DUPLICATE")
+        self.assertEqual(got["holds"], ["D8_STAGE_NOT_MATCH:11:STAGE_DUPLICATE"])
+        self.assertEqual(got["disposition"], csm.HOLD)
+
+    def test_free_text_planted_in_inputs_is_never_copied_to_the_manifest(self):
+        planted = "/home/someone/private/originals/request-17.pdf"
+        kit = render(self.engine)
+        kit["contains"][planted] = True
+        run = five(self.engine)
+        run["stages"]["12"]["engine"] = planted
+        run["stages"]["13"]["receipt_sha256"] = planted
+        run["stages"]["10"]["driver_source_sha256"] = planted
+        run_packed = packed(run)
+        report = d8(self.engine, run_packed, status=planted)
+        report["d8_head"] = planted
+        report["d8"]["cases"][csm.D8_GATE_CASE]["status"] = planted
+        report["d8"]["cases"][csm.D8_GATE_CASE]["stages"][0]["code"] = planted
+        window = packed({"engine": self.engine, "wrapper_sha256": WRAPPER, "start": planted, "end": planted})
+        review = packed({"verdict": "APPROVE", "reviewer": planted, "window_sha256": window[1],
+                         "manifest_sha256": "0" * 64})
+        got = self.compose(packed(kit), run_packed, packed(report), window=window, review=review)
+        text = json.dumps(got)
+        self.assertNotIn("/home", text)
+        self.assertNotIn("private", text)
+        self.assertEqual(got["disposition"], csm.HOLD)
+        self.assertIn("KIT_REQUIRED_CHANGE_MISSING", got["holds"])
+        self.assertIn("D8_STAGE_NOT_MATCH:10:MALFORMED", got["holds"])
+        self.assertEqual((got["d8"]["status"], got["d8"]["gate_status"], got["d8"]["d8_head"]),
+                         ("MALFORMED", "MALFORMED", None))
+        self.assertEqual((got["window"]["start"], got["window"]["end"], got["window"]["reviewer"]), (None, None, None))
+        self.assertEqual((got["stages"]["12"]["engine"], got["stages"]["13"]["receipt_sha256"],
+                          got["stages"]["10"]["driver_sha256"]), (None, None, None))
+
+    def test_window_times_are_written_normalized(self):
+        kit, run, report = self.inputs()
+        window = packed({"engine": self.engine, "wrapper_sha256": WRAPPER,
+                         "start": "2026-11-26T10:00:00-08:00", "end": "2026-11-26T12:00:00-08:00"})
+        got = self.compose(kit, run, report, window=window)
+        self.assertEqual((got["window"]["start"], got["window"]["end"]),
+                         ("2026-11-26T10:00:00-08:00", "2026-11-26T12:00:00-08:00"))
+
     def test_manifest_digest_does_not_depend_on_the_clock(self):
         kit, run, report = self.inputs()
         first = csm.compose(kit, run, report, repo=self.repo, now=NOW)
