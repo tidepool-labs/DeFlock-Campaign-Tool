@@ -108,6 +108,34 @@ class ExactRevisionTests(Base):
         self.refused("exact_revision_not_current", only_id=reply["id"], only_revision=reply["revision"],
                      dry_run=True)
 
+    def test_edit_or_cancel_cannot_complete_while_the_reviewed_revision_is_placed(self):
+        # Contract: validation and the Drafts append see one queue state. Bug caught: the queue lock was released
+        # after validation, so an edit/cancel completing before the append still left the stale revision in Drafts.
+        self.build_ledger()
+        reply = self.draft()
+        attempts = []
+
+        class Racing(FakeIMAP):
+            def append(inner, folder, flags, date, raw):
+                with mock.patch.object(aq, "LOCK_SECONDS", 0.05):
+                    for name, call in (("edit", lambda: aq.edit(self.project, reply["id"], "organizer", "Late.\n")),
+                                       ("reject", lambda: aq.reject(self.project, reply["id"], "organizer", "late"))):
+                        with self.assertRaises(aq.ApprovalQueueError) as caught:
+                            call()
+                        attempts.append((name, caught.exception.code))
+                return super().append(folder, flags, date, raw)
+
+        racing = Racing()
+        self.assertEqual(md.place(self.project, self.config, factory=racing.factory, now=NOW, only_id=reply["id"],
+                                  only_revision=reply["revision"]), PLACED_ONE)
+        self.assertEqual(attempts, [("edit", "queue_busy"), ("reject", "queue_busy")])
+        (row,) = md.placements(self.project)
+        self.assertEqual(row["revision"], reply["revision"])
+        self.assertEqual([r["revision"] for r in aq.load_queue(self.project) if r["id"] == reply["id"]],
+                         [reply["revision"]])
+        # the lock is released afterwards: the edit now goes through (and is a new revision, never placed)
+        self.assertGreater(aq.edit(self.project, reply["id"], "organizer", "Late.\n")["revision"], reply["revision"])
+
     def test_bulk_placement_is_unchanged(self):
         self.build_ledger()
         self.draft()
@@ -138,6 +166,19 @@ class ExactRevisionCommandLineTests(Base):
                                         "--dry-run")
         self.assertEqual(code, 1)
         self.assertEqual(out, "")
+        self.assertFalse(self.journal_path().exists())
+
+    def test_malformed_revision_is_a_code_only_refusal_that_never_echoes_the_value(self):
+        # Contract: a bad --revision is exact_request_invalid, exit 1, code-only stderr. Bug caught: argparse type=int
+        # exited 2 and printed the rejected text (possibly draft text) to stderr; a leading-dash value hit the same.
+        self.build_ledger()
+        reply = self.draft()
+        blocked = mock.patch.object(mail_poll, "connect", side_effect=AssertionError("connect"))
+        with blocked:
+            for bad in (CANARY, "-" + CANARY, "abc", "-1", "+1", "1.5", " 1", "1 ", "\uff11", "", "1" * 10, "0x1"):
+                with self.subTest(revision=bad):
+                    code, out, err = self.run_cli("--queue-id", reply["id"], "--revision", bad)
+                    self.assertEqual((code, out, err), (1, "", "exact_request_invalid\n"))
         self.assertFalse(self.journal_path().exists())
 
     def test_exact_cli_places_one_row_through_the_fake_mailbox(self):

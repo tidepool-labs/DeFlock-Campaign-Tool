@@ -9,6 +9,7 @@ deleted, and there is no SMTP or HTTP call. Credentials stay in the mailbox conf
 Refusals are stable, content-free codes.
 """
 import argparse
+import contextlib
 import fcntl
 import hashlib
 import imaplib
@@ -444,6 +445,7 @@ def _place_one(client, config, row, thread, reason, now):
 
 
 _HEX64 = re.compile(r"[0-9a-f]{64}")
+_REVISION = re.compile(r"[0-9]{1,9}")  # ASCII digits only; no sign, space or other numeral
 
 
 def _exact_row(queue, only_id, only_revision):
@@ -471,9 +473,17 @@ def place(project, config, *, factory=mail_poll.default_connect, now=None, only_
     ``only_revision`` and approved, otherwise ``MailDraftError`` is raised and nothing is written or connected.
     Without it the behaviour is unchanged (``only_id`` alone places whichever revision is approved now)."""
     now = now or _now()
-    queue = approval_queue.load_queue(project)
-    if only_revision is not None:
-        queue = [_exact_row(queue, only_id, only_revision)]
+    with contextlib.ExitStack() as hold:
+        if only_revision is None:
+            queue = approval_queue.load_queue(project)
+        else:
+            # The shared queue lock stays held until placement ends, so an edit, a new approval or a cancellation
+            # cannot complete between this validation and the Drafts append: it waits, then gets queue_busy.
+            queue = [_exact_row(hold.enter_context(approval_queue.held_queue(project)), only_id, only_revision)]
+        return _place_rows(project, config, queue, factory, now, only_id, dry_run)
+
+
+def _place_rows(project, config, queue, factory, now, only_id, dry_run):
     rows = [r for r in queue if r["status"] == "approved" and r["kind"] not in draft_templates.NON_MAIL_KINDS
             and (only_id is None or r["id"] == only_id)]
     summary = {"placed": 0, "existing": 0, "failed": 0, "skipped": 0}
@@ -559,10 +569,15 @@ def main(argv=None):
     place_p.add_argument("--config", required=True, help="owner-only mailbox config with an explicit Drafts folder")
     place_p.add_argument("--dry-run", action="store_true", help="connect nowhere and write nothing")
     place_p.add_argument("--queue-id", help="place only this exact 64-hex queue ID (requires --revision)")
-    place_p.add_argument("--revision", type=int, help="the exact reviewed revision of --queue-id; refused if the "
+    place_p.add_argument("--revision", help="the exact reviewed revision of --queue-id; refused if the "
                                                       "row has since been edited, approved again or cancelled")
     list_p = sub.add_parser("list")
     list_p.add_argument("--project", required=True)
+    argv = list(sys.argv[1:] if argv is None else argv)
+    for i in range(len(argv) - 1):  # glue the value on so argparse never reads a leading-dash value as an option
+        if argv[i] == "--revision":
+            argv[i:i + 2] = ["--revision=" + argv[i + 1]]
+            break
     args = parser.parse_args(argv)
     try:
         if args.action == "list":
@@ -572,9 +587,11 @@ def main(argv=None):
                                                         "superseded_by", "at")}, sort_keys=True))
             return 0
         _need((args.queue_id is None) == (args.revision is None), "exact_request_invalid")
+        # Parsed here, not by argparse type=int: argparse would exit 2 and echo the rejected text to stderr.
+        _need(args.revision is None or _REVISION.fullmatch(args.revision) is not None, "exact_request_invalid")
         config = load_config(args.config)
         print(json.dumps(place(args.project, config, dry_run=args.dry_run, only_id=args.queue_id,
-                               only_revision=args.revision), sort_keys=True))
+                               only_revision=None if args.revision is None else int(args.revision)), sort_keys=True))
     except (MailDraftError, approval_queue.ApprovalQueueError) as error:
         print(error.code, file=sys.stderr)
         return 1
