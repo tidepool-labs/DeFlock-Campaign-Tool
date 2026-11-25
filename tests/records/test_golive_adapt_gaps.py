@@ -8,7 +8,7 @@ import re
 import sqlite3
 import tempfile
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import closing, redirect_stderr, redirect_stdout
 from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
@@ -36,7 +36,8 @@ def gap_doc(run=RUN, proposals=1, quote="Data is kept 5 years."):
 
 
 def items_doc(run=RUN):
-    return ri.collect(sqlite3.connect(":memory:"), Path("."), None, run_id=run)
+    with closing(sqlite3.connect(":memory:")) as con:
+        return ri.collect(con, Path("."), None, run_id=run)
 
 
 def register_doc(ref="SYN-1", as_of="2030-01-12", **extra):
