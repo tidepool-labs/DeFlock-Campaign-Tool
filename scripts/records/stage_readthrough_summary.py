@@ -40,7 +40,8 @@ exactly one of (keywords case-insensitive, single spaces):
   FINDING_CITES_UNKNOWN_REQUEST     a request that appears nowhere in this run
   FINDING_PROSE_HAS_CITATION        the prose names a known request, uses a locator word (page/part, p/pp) or has
                                     any token that is not a plain ASCII word or a number of at most four digits
-                                    (identifiers such as ``req-unknown``, digests, ``2.1``, dates). Hyphenated
+                                    (identifiers such as ``req-unknown``, digests, ``2.1``, dates), or is all hex
+                                    digits over six characters (``deadbeef``). Hyphenated
                                     words are withheld too: write ``follow up``. Put every reference in ``cited``.
 
 Sources that are not LINKED (no locator, unattributed, cross-agency, cross-request) are listed as unreviewed for every
@@ -64,6 +65,7 @@ _CITE_DOCUMENT = re.compile(r"document ([0-9a-f]{12,64})(?: page ([1-9][0-9]{0,5
                             re.IGNORECASE | re.ASCII)
 _CITE_REQUEST = re.compile(r"request (\S{1,128})", re.IGNORECASE | re.ASCII)
 _PROSE_WORD = re.compile(r"[A-Za-z]+(?:'[A-Za-z]+)?|[0-9]{1,4}")
+_PROSE_HEX = re.compile(r"[0-9a-fA-F]{7,}")  # an all-hex word as long as a short commit id reads as a digest
 _PROSE_EDGE = ".,;:!?()\"'"
 _LOCATOR_WORDS = {"page", "pages", "part", "parts", "p", "pp"}
 
@@ -92,13 +94,15 @@ def _prose_flags(text, known_requests):
 
     Fail closed by token, not by guessing what an identifier looks like: every whitespace-separated token, after
     removing ordinary sentence punctuation at its edges, must be a plain ASCII word (an inner apostrophe allowed) or a
-    number of at most four digits, must not be a locator word and must not equal a request of this run.
+    number of at most four digits, must not be all hex digits over six characters long (``deadbeef`` reads as a
+    digest even though it is alphabetic), must not be a locator word and must not equal a request of this run.
     """
     for raw in text.split():
         token = raw.strip(_PROSE_EDGE)
         if not token or set(token) == {"-"}:  # punctuation alone, or a dash between words
             continue
-        if not _PROSE_WORD.fullmatch(token) or token.lower() in _LOCATOR_WORDS or token.lower() in known_requests:
+        if not _PROSE_WORD.fullmatch(token) or _PROSE_HEX.fullmatch(token) or token.lower() in _LOCATOR_WORDS \
+                or token.lower() in known_requests:
             return ["FINDING_PROSE_HAS_CITATION"]
     return []
 

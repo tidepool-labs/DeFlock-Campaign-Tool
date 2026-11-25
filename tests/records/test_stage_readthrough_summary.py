@@ -167,10 +167,14 @@ class SummaryTest(unittest.TestCase):
         for text in ("See req-unknown.", "Matches req-2 as well.", "Message part 2.1 is fine.",
                      "Message part 2-evil fits.", "The denial is on page 5.", "Item %s fits." % D11,
                      "Checked on 2026-11-27.", "Fine, see the follow-up.", "Fine \u2013 nothing else.",
-                     "\u0405ee the denial.", "Same as req-1.", "Quoted at p 1.", "Value 12345 differs."):
+                     "\u0405ee the denial.", "Same as req-1.", "Quoted at p 1.", "Value 12345 differs.",
+                     # RETURN t_49c6a30f: an alphabetic digest is not a plain word
+                     "See deadbeefdeadbeef.", "See DEADBEEF.", "Item cafebabe matches.", "Commit abcdefa.",
+                     "See %s." % "".join(c for c in H["denial"] if c.isalpha())[:12]):
             self.assertEqual(self.stage_of("11", text, cited)[1], ("WITHHELD", ("FINDING_PROSE_HAS_CITATION",)), text)
         for text in ("Proposal quotes the denial; it's stored as written (no change)!", "Matches - nothing else.",
-                     "Read 2 rows in 2026.", '"Exactly" as stored: yes.'):
+                     "Read 2 rows in 2026.", '"Exactly" as stored: yes.', "A decade old facade, fine.",
+                     "Bead and cafe."):
             self.assertEqual(self.stage_of("11", text, cited)[1], ("FINDING_RECORDED", ()), text)
 
     def test_a_prefix_fitting_two_linked_documents_is_ambiguous(self):
