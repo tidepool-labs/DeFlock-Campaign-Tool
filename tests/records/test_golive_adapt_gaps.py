@@ -181,9 +181,64 @@ class GapsEvidenceTest(unittest.TestCase):
             copy = {"register": {**base_reg, "requests": [bad]}, "timeline": {**base_tl, "requests": [bad]}}
             self.assertEqual(self.codes(copy)[1], [REG + "SCHEMA", TL + "SCHEMA"], bad)
         # A tracker-only row legitimately has no ledger request id (None); it must still bind.
-        tracker_only = {**row, "ledger_request_id": None}
-        copy = {"register": {**base_reg, "requests": [tracker_only]}, "timeline": {**base_tl, "requests": [tracker_only]}}
+        tracker_only, tracker_line = {**row, "ledger_request_id": None}, {**base_tl["requests"][0], "ledger_request_id": None}
+        copy = {"register": {**base_reg, "requests": [tracker_only]}, "timeline": {**base_tl, "requests": [tracker_line]}}
         self.assertEqual(self.codes(copy)[1], [])
+
+    def test_c3_register_from_another_run_with_the_same_identities_fails_closed(self):
+        """C3 bug: a same-day register of another run passed because its request identities matched, though its deadlines,
+        agency name or closed status differed from this run's timeline."""
+        base = register_doc()
+        row = base["requests"][0]
+        changes = (lambda r: r["deadline"].update(due="2031-01-01"), lambda r: r["deadline"].update(basis="submission_proxy"),
+                   lambda r: r.update(agency="Another Agency"), lambda r: r.update(status="closed"),
+                   lambda r: r.pop("deadline"))
+        for change in changes:
+            other = json.loads(json.dumps(base))
+            change(other["requests"][0])
+            with self.subTest(change=change.__code__.co_names):
+                self.assertEqual(self.codes({"register": other})[1], [REG + "RUN"])
+        self.assertEqual(self.codes({"register": json.loads(json.dumps(base))})[1], [])
+        closed = json.loads(json.dumps(base))
+        closed["requests"][0]["status"] = "closed"
+        self.assertEqual(self.codes({"register": closed, "timeline": timeline_doc(closed)})[1], [])
+        self.assertEqual(row["status"], "open")
+
+    def test_c4_report_file_name_never_becomes_the_source_name(self):
+        """C4 bug: with no readable artifact the caller's report basename (which may carry request text) was copied
+        into source.name; the name is now fixed and the report digest stays."""
+        report = self.report()
+        named = report.with_name(f"{LEAK_MARKER}.json")
+        report.rename(named)
+        rows = self.rows(self.build(gaps=None, items=None, register=None, timeline=None), named)
+        for row in rows:
+            self.assertEqual(row["source"], {"schema": "records-run-report-v1", "name": adapter.REPORT_LABEL,
+                                             "sha256": hashlib.sha256(named.read_bytes()).hexdigest()})
+        self.assertNotIn(LEAK_MARKER, json.dumps(rows))
+
+    def test_c3_received_items_entries_must_be_writer_shaped(self):
+        """C3 bug: an items list holding null or other non-writer entries counted as healthy stage 12 evidence; an
+        empty list still passes."""
+        good = {**items_doc(), "items": [{"item_id": ri.item_id("1" * 64), "original_sha256": "1" * 64, "agency_id": None,
+                                          "request_id": None, "kind": "response"}]}
+        self.assertEqual(self.codes({"items": good})[1], [])
+        self.assertEqual(self.codes({"items": items_doc()})[1], [])
+        entry = good["items"][0]
+        for bad in (None, 7, "x", [], {}, {**entry, "item_id": "f" * 64}, {**entry, "original_sha256": "xyz"},
+                    {**entry, "agency_id": 3}, {**entry, "kind": None}):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.codes({"items": {**good, "items": [entry, bad]}})[1], [ITEMS + "SCHEMA"])
+
+    def test_c5_exponent_overflow_is_a_non_finite_number(self):
+        """C5 bug: 1e999 decodes to infinity without reaching parse_constant and passed in an unchecked numeric field."""
+        for key, want in (("gaps", GAP), ("items", ITEMS), ("register", REG), ("timeline", TL)):
+            doc = {"gaps": gap_doc(), "items": items_doc(), "register": register_doc(), "timeline": timeline_doc()}[key]
+            raw = encode(FILES[key], doc)
+            spoiled = raw.replace(b"{", b'{"zz":1e999,', 1)
+            self.assertNotEqual(spoiled, raw)
+            with self.subTest(key=key):
+                codes = self.codes({key: spoiled})
+                self.assertEqual(codes[0 if key == "gaps" else 1], [want + "INVALID"])
 
     def test_c4_source_is_the_sorted_digest_listing_of_the_file_bytes(self):
         """C4 bugs: a digest ignoring file bytes; an invented digest for files never read."""
@@ -200,7 +255,7 @@ class GapsEvidenceTest(unittest.TestCase):
         path.write_bytes(path.read_bytes().replace(b"5 years", b"6 years"))
         self.assertNotEqual(self.rows(root, report)[0]["source"]["sha256"], rows[0]["source"]["sha256"])
         self.assertEqual(self.rows(self.build(gaps=None), report)[0]["source"],
-                         {"schema": "records-run-report-v1", "name": report.name,
+                         {"schema": "records-run-report-v1", "name": adapter.REPORT_LABEL,
                           "sha256": hashlib.sha256(report.read_bytes()).hexdigest()})
 
     def test_c4_rows_carry_codes_only_never_request_text(self):

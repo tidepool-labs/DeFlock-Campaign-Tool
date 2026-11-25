@@ -3,20 +3,20 @@
 OUTPUTS_DIR is an owner-only, non-symlink copy of ``run-outputs/<run_id>/`` named exactly like the run id of
 RUN_REPORT (a valid, finished, non-test, non-stub run report; otherwise OUTPUTS_RUN_UNBOUND). A pass is
 machine-valid, review-required metadata, never acceptance of any proposal, date or request; only file
-bytes are read and no request text is echoed.
+bytes are read and no request text is echoed (the source name is the run id, or a fixed label when no file is read).
 
 Positive for each file (all: regular, owner-only, single link, bounded, strict JSON object, no duplicate keys
-or non-finite numbers):
+or non-finite numbers, including overflowing exponents such as 1e999):
 
 * ``outcomes/gap-proposals.json`` (stage 11, ``gap_proposals.write_run_gap_proposals``): valid against
   ``schemas/records-gap-proposals-v1.json``, confidence counts equal the proposal total, the review list names
   only listed proposals, and ``run_id`` is this run's. Zero proposals passes only with that run id.
 * ``outcomes/received-items.json`` (stage 12, ``received_items.write_run_received_items``): its schema string,
-  an ``items`` list and this run's ``run_id``.
+  an ``items`` list of writer-shaped entries (an empty list passes) and this run's ``run_id``.
 * ``CURRENT-REQUEST-REGISTER.json`` (stage 12, ``register.write_for_run``): its schema string and at least one
-  request. It has no run id, so it must also agree with the timeline (as-of date, ordered agency/request
-  identities); every row must name its agency and request (a ledger id may be null for a tracker-only row).
-  A register copied from another run fails.
+  request. It has no run id, so it must also agree with the timeline (as-of date, and per ordered row the
+  agency/request identities, agency name, deadline clocks and closed state); every row must name its agency and
+  request (a ledger id may be null for a tracker-only row). A register copied from another run fails closed.
 * ``outcomes/timeline.json`` (stage 12, ``timeline.write_run_timeline``): its schema string, a consistent
   request count, a named agency and request per row and this run's ``run_id``.
 
@@ -26,6 +26,7 @@ A stage also fails with its own ``golive_stages.OUTPUT_FAILURES`` code when the 
 import argparse
 import hashlib
 import json
+import math
 import os
 import re
 import stat
@@ -41,6 +42,10 @@ from .outcomes import gap_proposals, received_items, register, timeline
 UNBOUND = "OUTPUTS_RUN_UNBOUND"
 MAX_BYTES = received_items.MAX_OUTPUT_BYTES
 RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}")
+SHA256 = re.compile(r"[0-9a-f]{64}")
+REPORT_LABEL = "run-report"  # a fixed label: the caller's file name may carry request text
+CLOCKS = ("basis", "state", "base_due", "extended_due", "due", "recorded_due", "determination_at")
+CLOSED = ("complete", "completed", "closed", "withdrawn", "fulfilled")
 GAPS, ITEMS, REGISTER, TIMELINE = gap_proposals.OUTPUT, gap_proposals.INPUT, "CURRENT-REQUEST-REGISTER.json", "timeline.json"
 GAPS_SCHEMA, REGISTER_SCHEMA = "records-golive-gaps-files-v1", "records-golive-register-files-v1"
 
@@ -116,8 +121,17 @@ def _gaps(doc, run_id):
     return "SCHEMA" if not ok else "OK" if doc["run_id"] == run_id else "RUN"
 
 
+def _item(item):
+    """One entry of the writer's ``items`` list: an object whose id is the digest of its original and whose tie is named or null."""
+    sha = item.get("original_sha256") if type(item) is dict else None
+    return (type(sha) is str and SHA256.fullmatch(sha) is not None and item.get("item_id") == received_items.item_id(sha)
+            and all(item.get(key) is None or type(item[key]) is str for key in ("agency_id", "request_id"))
+            and type(item.get("kind")) is str)
+
+
 def _items(doc, run_id):
-    ok = doc.get("schema") == received_items.SCHEMA and type(doc.get("items")) is list and type(doc.get("run_id")) is str
+    ok = (doc.get("schema") == received_items.SCHEMA and type(doc.get("items")) is list and type(doc.get("run_id")) is str
+          and all(_item(item) for item in doc["items"]))
     return "SCHEMA" if not ok else "OK" if doc["run_id"] == run_id else "RUN"
 
 
@@ -145,8 +159,38 @@ def _timeline(doc, run_id):
 
 
 def _identity(doc):
-    return doc["as_of"], [[row.get(key) for key in ("agency_key", "ledger_request_id", "request_id")]
+    """As-of date and, per row, the identity, agency name and deadline clocks both writers derive from the same register row."""
+    def clocks(row):
+        clock = row.get("deadline") or row.get("clocks")
+        return [clock.get(key) for key in CLOCKS] if type(clock) is dict else None
+    return doc["as_of"], [[row.get(key) for key in ("agency_key", "ledger_request_id", "request_id", "agency")] + [clocks(row)]
                           for row in doc["requests"]]
+
+
+def _closed_agrees(register_doc, timeline_doc):
+    """A register row recorded closed is closed on the timeline; a timeline closed without a closed event needs that status."""
+    for held, line in zip(register_doc["requests"], timeline_doc["requests"]):
+        by_status = str(held.get("status", "")).casefold() in CLOSED
+        events = line.get("events")
+        by_event = type(events) is list and any(type(e) is dict and e.get("type") == "closed" and not e.get("superseded")
+                                                for e in events)
+        if line.get("closed") is not (by_status or by_event):
+            return False
+    return True
+
+
+def _finite(value):
+    """False for any decoded non-finite float (``1e999`` overflows to infinity without passing parse_constant)."""
+    pending = [value]
+    while pending:
+        node = pending.pop()
+        if type(node) is float and not math.isfinite(node):
+            return False
+        if type(node) is dict:
+            pending.extend(node.values())
+        elif type(node) is list:
+            pending.extend(node)
+    return True
 
 
 def _read(dir_fd, absent, name, check, run_id):
@@ -158,7 +202,7 @@ def _read(dir_fd, absent, name, check, run_id):
             doc = aq._strict_load(raw, "json")
         except aq.ApprovalQueueError:
             pass
-        state = check(doc, run_id) if type(doc) is dict else "INVALID"
+        state = check(doc, run_id) if type(doc) is dict and _finite(doc) else "INVALID"
     return state, raw, doc
 
 
@@ -166,7 +210,7 @@ def _row(stage, schema, own, states, raws, run_id, now, report_raw, report_name)
     codes = list(own) + [f"{label}_{state}" for label, state in states if state != "OK"]
     hashed = "".join(f"{name}\t{_sha(raw)}\n" for name, raw in sorted(raws.items()) if raw is not None)
     source = ({"schema": schema, "sha256": _sha(hashed.encode()), "name": run_id} if hashed else
-              {"schema": "records-run-report-v1", "sha256": _sha(report_raw), "name": report_name})
+              {"schema": "records-run-report-v1", "sha256": _sha(report_raw), "name": REPORT_LABEL})
     row = {"schema": "records-golive-evidence-v1", "stage": stage, "kind": "live", "result": "fail" if codes else "pass",
            "recorded_at": now.isoformat(timespec="seconds").replace("+00:00", "Z"), "engine": None, "source": source,
            "actor": "pipeline", "codes": codes}
@@ -202,7 +246,7 @@ def records(outputs_dir, run_report_path, now):
         os.close(root)
         if outcomes is not None:
             os.close(outcomes)
-    if reg[0] == line[0] == "OK" and _identity(reg[2]) != _identity(line[2]):
+    if reg[0] == line[0] == "OK" and (_identity(reg[2]) != _identity(line[2]) or not _closed_agrees(reg[2], line[2])):
         reg = ("RUN", reg[1], reg[2])
     own = {stage: [c for c in golive_stages.OUTPUT_FAILURES[stage] if c in report_codes] for stage in ("11", "12")}
     common = (run_id, now, report_raw, report_name)
