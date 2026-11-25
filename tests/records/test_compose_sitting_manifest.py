@@ -34,6 +34,8 @@ NEW_PLACE = '''import argparse
 
 
 def place(project, config, *, factory=None, now=None, only_id=None, only_revision=None):
+    if only_revision is not None and only_id is None:
+        raise ValueError("exact_request_invalid")
     return []
 
 
@@ -43,6 +45,36 @@ def build_parser():
     parser.add_argument("--revision", help="exact reviewed revision")
     return parser
 '''
+# Right parameter names and flag, but the revision is never read: the reviewer's no-op case.
+NOOP_PLACE = '''import argparse
+
+
+def place(project, config, *, factory=None, now=None, only_id=None, only_revision=None):
+    return []
+
+
+def build_parser():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--queue-id")
+    parser.add_argument("--revision", help="exact reviewed revision")
+    return parser
+'''
+
+
+def placement_receipt(engine, **change):
+    """A D32 exact-revision placement rehearsal receipt as the offline driver writes it (checks abridged)."""
+    checks = [{"name": "both_previews_would_place", "ok": True},
+              {"name": "A_exact_refused_revision_not_current", "ok": True, "code": "exact_revision_not_current"},
+              {"name": "A_refusal_zero_mutations", "ok": True, "journal": False},
+              {"name": "A_refusal_neighbour_B_untouched", "ok": True},
+              {"name": "B_placed_once", "ok": True},
+              {"name": "B_placement_neighbour_A_untouched", "ok": True},
+              {"name": "malformed_ahead_zero_mutations", "ok": True, "code": "exact_revision_not_current"}]
+    receipt = {"kind": csm.PLACEMENT_EVIDENCE_KIND, "repo_head": engine, "repo_dirty": False, "mock_only": True,
+               "synthetic": True, "result": "PASS", "failed": [], "checks": checks,
+               "counts": {"checks": len(checks), "failed": 0, "tests": 2}, "driver_sha256": "a" * 64}
+    receipt.update(change)
+    return receipt
 
 
 def git(repo, *args):
@@ -58,7 +90,7 @@ def packed(value):
 
 def render(engine):
     return {"candidate_head": engine, "new_verdict": "FREEZABLE", "unexpected": [],
-            "contains": {"D17_mail_part_cite": True, "D1_merge_2019": True},
+            "contains": {"D17_mail_part_cite": True, "D1_merge_2019": True, "D2b_merge_2022": True},
             "renders": {"with-decisions": {"rc": 0, "wrapper_sha256": WRAPPER},
                         "without-decisions": {"rc": 0, "wrapper_sha256": "f" * 64}}}
 
@@ -104,6 +136,9 @@ class Fixture(unittest.TestCase):
         source.write_text(NEW_PLACE)
         git(cls.repo, "commit", "-q", "-am", "exact revision")
         cls.engine = git(cls.repo, "rev-parse", "HEAD").strip()
+        source.write_text(NOOP_PLACE)
+        git(cls.repo, "commit", "-q", "-am", "names and flag only")
+        cls.noop = git(cls.repo, "rev-parse", "HEAD").strip()
 
     @classmethod
     def tearDownClass(cls):
@@ -120,6 +155,7 @@ class Fixture(unittest.TestCase):
 
     def compose(self, kit, run, report, **kw):
         kw.setdefault("repo", self.repo)
+        kw.setdefault("placement", packed(placement_receipt(kit[0].get("candidate_head"))))
         return csm.compose(kit, run, report, now=NOW, **kw)
 
     def reviewed(self, kit, run, report, window, **change):
@@ -140,7 +176,7 @@ class ComposeTests(Fixture):
         self.assertIs(got["booked"], False)
         self.assertEqual(got["engine"], self.engine)
         self.assertEqual(got["wrapper_sha256"], WRAPPER)
-        self.assertEqual(got["capability"]["exact_revision_placement"], "PRESENT")
+        self.assertEqual(got["capability"]["exact_revision_placement"], "DEMONSTRATED")
         self.assertEqual(got["d8"]["stage_codes"], dict.fromkeys(csm.STAGES, "EVIDENCE_MATCH"))
         self.assertEqual(got["stages"]["11"]["driver"], "rehearse_gap_proposals")
         self.assertEqual(got["inputs"]["five_driver_set_sha256"], run[1])
@@ -215,7 +251,86 @@ class ComposeTests(Fixture):
         half = NEW_PLACE.replace(", only_revision=None", "")
         self.assertFalse(csm._has_exact_revision_placement(half))
         self.assertFalse(csm._has_exact_revision_placement(NEW_PLACE.replace('"--revision"', '"--rev"')))
+        self.assertFalse(csm._has_exact_revision_placement(NOOP_PLACE))
         self.assertTrue(csm._has_exact_revision_placement(NEW_PLACE))
+
+    def test_names_and_flag_without_revision_filtering_never_pass(self):
+        # RETURN t_2983ca66 item 1: a no-op place() with the right names and a --revision flag is not the capability.
+        noop = self.compose(*self.inputs(self.noop))
+        self.assertEqual(noop["capability"]["exact_revision_placement"], "MISSING")
+        self.assertIn("REVISION_PLACEMENT_MISSING", noop["holds"])
+        kit, run, report = self.inputs()
+        # Static shape alone, with no behavioural evidence, holds.
+        bare = self.compose(kit, run, report, placement=None)
+        self.assertEqual(bare["capability"]["exact_revision_placement"], "UNDEMONSTRATED")
+        self.assertEqual(bare["holds"], ["REVISION_PLACEMENT_UNDEMONSTRATED", "WINDOW_ABSENT", "WINDOW_UNREVIEWED"])
+        # What D32 records against an engine that ignores the requested revision: it places the edited revision.
+        ignored = placement_receipt(self.engine, result="FAIL", failed=["A_exact_refused_revision_not_current"],
+                                    counts={"checks": 7, "failed": 2, "tests": 2})
+        ignored["checks"][1].update(ok=False, code=None)
+        ignored["checks"][2].update(ok=False)
+        got = self.compose(kit, run, report, placement=packed(ignored))
+        self.assertEqual(got["capability"]["exact_revision_placement"], "UNDEMONSTRATED")
+        self.assertIn("REVISION_PLACEMENT_NOT_DEMONSTRATED", got["holds"])
+        self.assertIn("REVISION_PLACEMENT_NOT_DEMONSTRATED:A_EXACT_REFUSED_REVISION_NOT_CURRENT", got["holds"])
+        self.assertIn("REVISION_PLACEMENT_NOT_DEMONSTRATED:A_REFUSAL_ZERO_MUTATIONS", got["holds"])
+        self.assertEqual(got["disposition"], csm.HOLD)
+
+    def test_placement_evidence_must_be_this_clean_engine_and_complete(self):
+        kit, run, report = self.inputs()
+        refusal = csm.PLACEMENT_CHECKS
+        cases = {
+            "MIXED_PINS:PLACEMENT_EVIDENCE_NOT_KIT_ENGINE": [placement_receipt(self.old),
+                                                             placement_receipt(self.engine, repo_dirty=True),
+                                                             placement_receipt(self.engine, repo_dirty=None)],
+            "PLACEMENT_EVIDENCE_WRONG_KIND": [placement_receipt(self.engine, kind="deflock-d26-transition")],
+            "REVISION_PLACEMENT_NOT_DEMONSTRATED": [placement_receipt(self.engine, mock_only=False),
+                                                    placement_receipt(self.engine, counts={"failed": "0"})],
+        }
+        missing = placement_receipt(self.engine)
+        missing["checks"] = [c for c in missing["checks"] if c["name"] != "B_placement_neighbour_A_untouched"]
+        duplicate = placement_receipt(self.engine)
+        duplicate["checks"].append(dict(duplicate["checks"][1]))
+        wrong_code = placement_receipt(self.engine)
+        wrong_code["checks"][1]["code"] = "exact_not_approved"
+        cases["REVISION_PLACEMENT_NOT_DEMONSTRATED:B_PLACEMENT_NEIGHBOUR_A_UNTOUCHED"] = [missing]
+        cases["REVISION_PLACEMENT_NOT_DEMONSTRATED:A_EXACT_REFUSED_REVISION_NOT_CURRENT"] = [duplicate, wrong_code,
+                                                                                         dict(missing, checks="x")]
+        self.assertIn("A_exact_refused_revision_not_current", refusal)
+        for hold, receipts in cases.items():
+            for receipt in receipts:
+                with self.subTest(hold=hold):
+                    got = self.compose(kit, run, report, placement=packed(receipt))
+                    self.assertIn(hold, got["holds"])
+                    self.assertEqual(got["capability"]["exact_revision_placement"], "UNDEMONSTRATED")
+        good = packed(placement_receipt(self.engine))
+        got = self.compose(kit, run, report, placement=good)
+        self.assertEqual(got["capability"]["evidence_sha256"], good[1])
+        self.assertEqual(got["capability"]["evidence_driver_sha256"], "a" * 64)
+
+    def test_required_kit_changes_are_checked_by_name_not_by_any_true_entry(self):
+        # RETURN t_2983ca66 item 2: an unrelated true entry never stands in for the required changes.
+        _, run, report = self.inputs()
+        unrelated = render(self.engine)
+        unrelated["contains"] = {"UNRELATED": True}
+        got = self.compose(packed(unrelated), run, report)
+        self.assertEqual([h for h in got["holds"] if h.startswith("KIT")],
+                         ["KIT_REQUIRED_CHANGE_MISSING:%s" % name for name in sorted(csm.REQUIRED_CHANGES)])
+        self.assertEqual(got["kit"]["required_changes"], dict.fromkeys(csm.REQUIRED_CHANGES, False))
+        for contains in ({}, None, [], "D17_mail_part_cite"):
+            with self.subTest(contains=contains):
+                kit = render(self.engine)
+                kit["contains"] = contains
+                holds = self.compose(packed(kit), run, report)["holds"]
+                self.assertEqual(len([h for h in holds if h.startswith("KIT_REQUIRED_CHANGE_MISSING:")]), 3)
+        extra = render(self.engine)
+        extra["contains"]["UNRELATED"] = True
+        self.assertFalse([h for h in self.compose(packed(extra), run, report)["holds"] if h.startswith("KIT")])
+        extra["contains"]["UNRELATED"] = False
+        self.assertIn("KIT_CHANGE_ENTRY_INVALID", self.compose(packed(extra), run, report)["holds"])
+        truthy = render(self.engine)
+        truthy["contains"]["D1_merge_2019"] = 1
+        self.assertIn("KIT_REQUIRED_CHANGE_MISSING:D1_merge_2019", self.compose(packed(truthy), run, report)["holds"])
 
     def test_mixed_pins_hold_by_name(self):
         kit, run, report = self.inputs()
@@ -291,7 +406,8 @@ class ComposeTests(Fixture):
         cases = {
             "KIT_NOT_FREEZABLE": lambda k: k.update(unexpected=["x"]),
             "KIT_WRAPPER_MISSING": lambda k: k["renders"]["with-decisions"].update(rc=False),
-            "KIT_REQUIRED_CHANGE_MISSING": lambda k: k["contains"].update(D17_mail_part_cite=False),
+            "KIT_REQUIRED_CHANGE_MISSING:D17_mail_part_cite": lambda k: k["contains"].update(D17_mail_part_cite=False),
+            "KIT_REQUIRED_CHANGE_MISSING:D2b_merge_2022": lambda k: k["contains"].pop("D2b_merge_2022"),
             "KIT_ENGINE_INVALID": lambda k: k.update(candidate_head="HEAD"),
         }
         for hold, change in cases.items():
@@ -358,7 +474,7 @@ class ComposeTests(Fixture):
         self.assertNotIn("/home", text)
         self.assertNotIn("private", text)
         self.assertEqual(got["disposition"], csm.HOLD)
-        self.assertIn("KIT_REQUIRED_CHANGE_MISSING", got["holds"])
+        self.assertIn("KIT_CHANGE_ENTRY_INVALID", got["holds"])
         self.assertIn("D8_STAGE_NOT_MATCH:10:MALFORMED", got["holds"])
         self.assertEqual((got["d8"]["status"], got["d8"]["gate_status"], got["d8"]["d8_head"]),
                          ("MALFORMED", "MALFORMED", None))
@@ -394,6 +510,7 @@ class CliTests(Fixture):
             run_packed = (run, csm.sha256(run_path.read_bytes()))
             args = ["--kit", str(self.write(td, "render.json", render(self.engine))), "--five-driver-set",
                     str(run_path), "--d8", str(self.write(td, "d8.json", d8(self.engine, run_packed))),
+                    "--placement-evidence", str(self.write(td, "d32.json", placement_receipt(self.engine))),
                     "--repo", str(self.repo), "--out", str(Path(td) / "manifest.json")]
             done = subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True, text=True)
             self.assertEqual(done.returncode, 0, done.stderr)

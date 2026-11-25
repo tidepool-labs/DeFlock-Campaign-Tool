@@ -6,16 +6,18 @@ The composer only joins evidence that other tools already produced. It reads:
 * the repin render receipt (engine commit and rendered wrapper digest),
 * the five-driver rehearsal set (driver and receipt digests for stages 10-14),
 * the existing D8 sitting-manifest receipt (its stage verdicts are copied, never re-evaluated),
-* the engine's own ``mail_drafts.py`` from a local clone, to confirm exact-revision Drafts placement exists,
+* the engine's own ``mail_drafts.py`` from a local clone, as a static precondition for exact-revision placement,
+* the D32 exact-revision placement rehearsal receipt for that same clean engine, as the behavioural proof,
 * optionally a sitting window and an independent review of that window and this manifest.
 
 Every disagreement becomes a named HOLD reason: mixed engine pins, a D8 receipt for another rehearsal set,
-CI still held, a stage D8 did not match, missing exact-revision placement, or an absent, expired or unreviewed
-window. Even with no HOLD reason the result is only ``READY_FOR_BOOKING_REQUEST_REVIEW``: the manifest is
-unsigned, books nothing, installs nothing and runs nothing live. It writes only the ``--out`` file and refuses
-to overwrite it.
+CI still held, a stage D8 did not match, a required kit change not named, missing or undemonstrated
+exact-revision placement, or an absent, expired or unreviewed window. Even with no HOLD reason the result is only
+``READY_FOR_BOOKING_REQUEST_REVIEW``: the manifest is unsigned, books nothing, installs nothing and runs nothing
+live. It writes only the ``--out`` file and refuses to overwrite it.
 
 usage: compose_sitting_manifest.py --kit RENDER.json --five-driver-set SET.json --d8 D8.json --repo CLONE
+                                   [--placement-evidence D32.json]
                                    [--window WINDOW.json [--review REVIEW.json]] --out MANIFEST.json
 """
 import argparse
@@ -35,6 +37,21 @@ DRIVERS = {"10": "rehearse_comparison", "11": "rehearse_gap_proposals", "12": "r
 D8_GATE_CASE = "reviewed_candidate_positive"
 D8_VERIFIED, D8_CI_HELD = "REHEARSALS_VERIFIED", "REHEARSALS_VERIFIED_CI_HELD"
 PLACEMENT_SOURCE = "campaign_tool/records/mail_drafts.py"
+# The kit must name each of these merged changes as present (D1 signed draft join, D2b read gate, D17 mail-part
+# citation). Any other entry, however true, never stands in for one of them.
+REQUIRED_CHANGES = ("D1_merge_2019", "D2b_merge_2022", "D17_mail_part_cite")
+# Behavioural evidence that the engine places exactly the reviewed revision: the offline D32 preview/placement
+# rehearsal receipt, run on a clean checkout of this exact engine against a fake mailbox. A placement function that
+# merely has the right parameter names cannot pass these checks. name -> required refusal code (or None).
+PLACEMENT_EVIDENCE_KIND = "deflock-d32-preview-placement-seal"
+PLACEMENT_CHECKS = {
+    "A_exact_refused_revision_not_current": "exact_revision_not_current",
+    "A_refusal_zero_mutations": None,
+    "A_refusal_neighbour_B_untouched": None,
+    "B_placed_once": None,
+    "B_placement_neighbour_A_untouched": None,
+    "malformed_ahead_zero_mutations": "exact_revision_not_current",
+}
 HOLD, READY = "HOLD", "READY_FOR_BOOKING_REQUEST_REVIEW"
 NOTE = ("Unsigned offline composition. READY only permits an independent review of a booking request; it is "
         "never a booking, signature, installation, phone release or live run.")
@@ -110,13 +127,13 @@ def kit_section(render):
         holds.append("KIT_WRAPPER_MISSING")
         wrapper = None
     contains = render.get("contains")
-    required = {}
-    if not isinstance(contains, dict) or not contains:
-        holds.append("KIT_REQUIRED_CHANGE_MISSING")
-    else:
-        required = {name: value is True for name, value in contains.items() if _NAME.match(name)}
-        if len(required) != len(contains) or not all(required.values()):
-            holds.append("KIT_REQUIRED_CHANGE_MISSING")
+    contains = contains if isinstance(contains, dict) else {}
+    # Every required change must be listed and true by its own name; other entries never stand in for one.
+    required = {name: contains.get(name) is True for name in REQUIRED_CHANGES}
+    holds += ["KIT_REQUIRED_CHANGE_MISSING:%s" % name for name, present in required.items() if not present]
+    extra = {name: value for name, value in contains.items() if name not in REQUIRED_CHANGES}
+    if any(not (isinstance(name, str) and _NAME.match(name)) or value is not True for name, value in extra.items()):
+        holds.append("KIT_CHANGE_ENTRY_INVALID")
     return {"engine": engine, "wrapper_sha256": wrapper, "required_changes": required}, holds
 
 
@@ -193,17 +210,51 @@ def d8_section(report, set_sha, engine, drivers):
 
 
 def _has_exact_revision_placement(source):
+    """Static precondition only: ``place`` takes and reads ``only_revision`` and the CLI has ``--revision``.
+
+    Necessary, never sufficient: whether the engine actually refuses other revisions is decided by the pinned
+    behavioural evidence in ``placement_evidence_holds``."""
     tree = ast.parse(source)
     place = [n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "place"]
     names = {a.arg for a in place[0].args.kwonlyargs} if len(place) == 1 else set()
+    reads = len(place) == 1 and any(isinstance(n, ast.Name) and n.id == "only_revision"
+                                    and isinstance(n.ctx, ast.Load) for n in ast.walk(place[0]))
     flag = any(isinstance(n, ast.Call) and isinstance(n.func, ast.Attribute) and n.func.attr == "add_argument"
                and n.args and isinstance(n.args[0], ast.Constant) and n.args[0].value == "--revision"
                for n in ast.walk(tree))
-    return {"only_id", "only_revision"} <= names and flag
+    return {"only_id", "only_revision"} <= names and reads and flag
 
 
-def capability_section(repo, engine):
-    """Exact-revision Drafts placement must exist in the engine itself, read from its git object."""
+def placement_evidence_holds(evidence, engine):
+    """HOLD reasons unless ``evidence`` shows this exact clean engine refusing a non-current revision.
+
+    Required: the D32 receipt kind, ``repo_head`` equal to the kit engine on a clean tree, mock-only, an overall
+    PASS with no failures, and each behavioural check in ``PLACEMENT_CHECKS`` present exactly once, ok, and with
+    its expected refusal code."""
+    if evidence is None:
+        return ["REVISION_PLACEMENT_UNDEMONSTRATED"]
+    holds = []
+    if evidence.get("kind") != PLACEMENT_EVIDENCE_KIND:
+        holds.append("PLACEMENT_EVIDENCE_WRONG_KIND")
+    if evidence.get("repo_head") != engine or evidence.get("repo_dirty") is not False:
+        holds.append("MIXED_PINS:PLACEMENT_EVIDENCE_NOT_KIT_ENGINE")
+    counts = _obj(evidence.get("counts"))
+    if (evidence.get("result") != "PASS" or evidence.get("failed") != [] or evidence.get("mock_only") is not True
+            or type(counts.get("failed")) is not int or counts["failed"] != 0):
+        holds.append("REVISION_PLACEMENT_NOT_DEMONSTRATED")
+    checks = evidence.get("checks")
+    rows = [c for c in checks if isinstance(c, dict)] if isinstance(checks, list) else []
+    for name, code in PLACEMENT_CHECKS.items():
+        found = [c for c in rows if c.get("name") == name]
+        if len(found) != 1 or found[0].get("ok") is not True or (code is not None and found[0].get("code") != code):
+            holds.append("REVISION_PLACEMENT_NOT_DEMONSTRATED:%s" % name.upper())
+    return holds
+
+
+def capability_section(repo, engine, evidence=None):
+    """Exact-revision Drafts placement: read from the engine's git object, then shown by pinned behaviour.
+
+    ``evidence`` is (D32 receipt object, sha256 of its bytes) or None."""
     if repo is None or not engine:
         return {"exact_revision_placement": "UNKNOWN"}, ["CAPABILITY_UNKNOWN:EXACT_REVISION_PLACEMENT"]
     shown = subprocess.run(["git", "-C", str(repo), "show", "%s:%s" % (engine, PLACEMENT_SOURCE)],
@@ -214,9 +265,15 @@ def capability_section(repo, engine):
         present = _has_exact_revision_placement(shown.stdout.decode("utf-8"))
     except (SyntaxError, UnicodeDecodeError, ValueError):
         present = False
-    section = {"exact_revision_placement": "PRESENT" if present else "MISSING",
-               "source_sha256": sha256(shown.stdout)}
-    return section, [] if present else ["REVISION_PLACEMENT_MISSING"]
+    section = {"source_sha256": sha256(shown.stdout),
+               "evidence_sha256": evidence[1] if evidence is not None else None,
+               "evidence_driver_sha256": _digest_or_none(evidence[0].get("driver_sha256")) if evidence else None}
+    if not present:
+        section["exact_revision_placement"] = "MISSING"
+        return section, ["REVISION_PLACEMENT_MISSING"]
+    holds = placement_evidence_holds(evidence[0] if evidence is not None else None, engine)
+    section["exact_revision_placement"] = "DEMONSTRATED" if not holds else "UNDEMONSTRATED"
+    return section, holds
 
 
 def _instant(value):
@@ -262,8 +319,8 @@ def window_section(window, review, core_sha, engine, wrapper, now):
     return section, holds
 
 
-def compose(render, run, d8_report, *, repo, window=None, review=None, now=None):
-    """Each of render/run/d8_report/window/review is (object, sha256 of its bytes) or None for window/review."""
+def compose(render, run, d8_report, *, repo, placement=None, window=None, review=None, now=None):
+    """Each input is (object, sha256 of its bytes); placement/window/review may be None (each then HOLDs)."""
     now = now or datetime.now(timezone.utc)
     kit, holds = kit_section(render[0])
     engine, wrapper = kit["engine"], kit["wrapper_sha256"]
@@ -271,7 +328,7 @@ def compose(render, run, d8_report, *, repo, window=None, review=None, now=None)
     holds += more
     d8, more = d8_section(d8_report[0], run[1], engine, drivers)
     holds += more
-    capability, more = capability_section(repo, engine)
+    capability, more = capability_section(repo, engine, placement)
     holds += more
     core = {"schema": SCHEMA, "engine": engine, "wrapper_sha256": wrapper, "kit": kit, "stages": drivers,
             "d8": d8, "capability": capability,
@@ -291,18 +348,21 @@ def main(argv=None):
     parser.add_argument("--five-driver-set", required=True, type=Path, help="five-driver rehearsal set JSON")
     parser.add_argument("--d8", required=True, type=Path, help="existing D8 sitting-manifest receipt")
     parser.add_argument("--repo", type=Path, help="local clone containing the engine commit")
+    parser.add_argument("--placement-evidence", type=Path,
+                        help="D32 exact-revision placement rehearsal receipt run on a clean checkout of the engine")
     parser.add_argument("--window", type=Path, help="proposed sitting window JSON")
     parser.add_argument("--review", type=Path, help="independent review of the window and manifest digest")
     parser.add_argument("--out", required=True, type=Path, help="new file to write; never overwritten")
     args = parser.parse_args(argv)
     try:
         render, run, d8 = load(args.kit), load(args.five_driver_set), load(args.d8)
+        placement = load(args.placement_evidence) if args.placement_evidence else None
         window = load(args.window) if args.window else None
         review = load(args.review) if args.review else None
     except InputError as exc:
         print("REFUSED input: %s" % exc, file=sys.stderr)
         return 2
-    manifest = compose(render, run, d8, repo=args.repo, window=window, review=review)
+    manifest = compose(render, run, d8, repo=args.repo, placement=placement, window=window, review=review)
     try:
         with args.out.open("x", encoding="utf-8") as out:
             json.dump(manifest, out, indent=2, sort_keys=True)
