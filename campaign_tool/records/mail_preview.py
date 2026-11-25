@@ -75,6 +75,39 @@ def evidence_sha256(row):
     return hashlib.sha256(approval_queue._canon(row["evidence"]).encode("utf-8")).hexdigest()
 
 
+def received_source(evidence):
+    """The received-item citation a reply draft was rendered from (``draft_templates.render`` keeps it in
+    ``evidence["kind_basis"]``): ``{item_id, page, quote}`` or, for an unpaginated mail text part (REC-MAIL-CITE-1),
+    ``{item_id, page: None, part, quote}``. None when the row carries no such citation; a malformed one is never
+    repaired, guessed or given a page."""
+    if not isinstance(evidence, dict) or "kind_basis" not in evidence:
+        return None
+    basis, item_id = evidence.get("kind_basis"), evidence.get("item_id")
+    if basis == {"page": None, "quote": None}:
+        return None  # an uncited ("other") item: nothing to show, and no draft is rendered from it
+    if not isinstance(basis, dict) or "item_id" in basis:
+        return {"invalid": True}
+    out = {"item_id": item_id, **basis}
+    return out if _received_ok(out) else {"invalid": True}
+
+
+def _received_ok(source):
+    if not isinstance(source, dict) or set(source) - {"item_id", "page", "part", "quote"}:
+        return False
+    item_id = source.get("item_id")
+    return (isinstance(item_id, str) and draft_templates._SHA.fullmatch(item_id) is not None
+            and draft_templates._cited({k: v for k, v in source.items() if k != "item_id"}))
+
+
+def _received_html(source):
+    if not _received_ok(source):
+        return "<p>Received-item citation unavailable: the draft's source record is malformed.</p>"
+    where = ("message part %s (an email text part; it has no page number)" % source["part"] if "part" in source
+             else "page %d" % source["page"])
+    return ("<p>This reply answers received item <code>%s</code>, %s. The agency wrote:</p><blockquote>%s</blockquote>"
+            % (esc(source["item_id"][:12]), esc(where), esc(source["quote"])))
+
+
 def review_context(project, row):
     """Prepare non-secret display facts on the owning host; never a placement override.
 
@@ -87,6 +120,7 @@ def review_context(project, row):
             "revision": row["revision"], "evidence_sha256": evidence_sha256(row),
             "recipient": prepared["to"], "target": target, "subject": prepared["subject"],
             "citations": evidence.get("citations"),
+            "received_source": received_source(evidence),
             "why": evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in
                                                      ("clock_kind", "clock_date")).strip(),
             "limits": evidence.get("limits"),
@@ -112,9 +146,13 @@ def context_html(context):
     for label, value in fields:
         out.append('<dt>%s</dt><dd>%s</dd>' % (esc(label), esc(value)))
     out.append('</dl><h3>Cited records (review only)</h3>')
+    source = context.get("received_source")
+    if source is not None:
+        out.append(_received_html(source))
     citations = context.get("citations")
     if citations is None:
-        out.append('<p>Sources unknown: producer supplied no citation list.</p>')
+        if source is None:
+            out.append('<p>Sources unknown: producer supplied no citation list.</p>')
     elif not isinstance(citations, list):
         out.append('<p>Citations unavailable.</p>')
     elif not citations:
