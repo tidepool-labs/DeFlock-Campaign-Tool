@@ -21,9 +21,12 @@ Then each stage gets exactly one status:
   WITHHELD          anything flagged: the workbook check's flags (copied or swapped entry, edited evidence, partial
                     entry, ...) or the finding cites another request (FINDING_CITES_OTHER_REQUEST), any hex token of
                     12+ characters that is not a prefix of a LINKED document of this stage
-                    (FINDING_CITES_UNLINKED_DOCUMENT), a page or message part that the document it is written next to
-                    does not have (FINDING_CITES_MISSING_PAGE / FINDING_CITES_MISSING_PART), or the stage has no
-                    LINKED source at all (FINDING_WITHOUT_LINKED_SOURCE).
+                    (FINDING_CITES_UNLINKED_DOCUMENT), a page or message part that the document it is explicitly
+                    attached to ("<document> page N" or "page N of <document>") does not have
+                    (FINDING_CITES_MISSING_PAGE / FINDING_CITES_MISSING_PART; with no document named, none of the
+                    stage's LINKED documents has it), a locator attached to no named document or to two
+                    (FINDING_LOCATOR_NOT_BOUND / FINDING_LOCATOR_AMBIGUOUS), or the stage has no LINKED source at
+                    all (FINDING_WITHOUT_LINKED_SOURCE).
 
 Sources that are not LINKED (no locator, unattributed, cross-agency, cross-request) are listed as unreviewed for every
 stage. Exit 0 = nothing withheld, 1 = at least one stage withheld, 2 = refused or usage. ``accepted`` is always false.
@@ -45,6 +48,8 @@ NOTE = ("Summary of an attended read-through of synthetic rehearsal evidence. FI
 _PAGE_MENTION = re.compile(r"\bpage\s+(\d+)\b")
 _PART_MENTION = re.compile(r"\bmessage part\s+([0-9a-z]+)\b")
 _HEX_TOKEN = re.compile(r"(?<![0-9a-z])[0-9a-f]{12,}(?![0-9a-z])")
+_ATTACHED_AFTER = re.compile(r"[ \t,:(]*(?:(?:on|at)\s+)?")  # "<document> page N", "<document>, on page N"
+_ATTACHED_BEFORE = re.compile(r"\s+(?:of|in|from)\s+(?:(?:item|document)\s+)?")  # "page N of item <document>"
 
 
 def _load_sibling(name):
@@ -74,9 +79,12 @@ def _finding_flags(text, stage_links, all_links):
     """Flags for a filled finding that names something outside this stage's LINKED sources.
 
     Every hex token of 12 or more characters must be a prefix of a LINKED document of this stage (other digests do not
-    belong in a finding). A ``page N`` / ``message part P`` mention is checked against the document it is written next
-    to: the nearest document named before it, else the first one named after it; with no document named at all it must
-    be a locator of some LINKED document of the stage.
+    belong in a finding). A ``page N`` / ``message part P`` mention is checked only against the document it is
+    explicitly attached to, written either as ``<document> page N`` (``<document>, on page N`` and similar) or as
+    ``page N of <document>`` (``of``/``in``/``from``, optionally ``item``/``document``). When the finding names a
+    document, a locator attached to none (FINDING_LOCATOR_NOT_BOUND) or to two different documents
+    (FINDING_LOCATOR_AMBIGUOUS) is withheld; no pairing is guessed across clauses. With no document named at all, a
+    locator must be one of some LINKED document of the stage.
     """
     flags = []
     linked = [link for link in stage_links if link["status"] == "LINKED"]
@@ -86,25 +94,34 @@ def _finding_flags(text, stage_links, all_links):
     known_requests = {req.lower() for link in all_links for req in link["requests"]}
     if any(_mentions(text, req) for req in known_requests - own_requests):
         flags.append("FINDING_CITES_OTHER_REQUEST")
-    named = []  # (position, linked links the token names)
+    named = []  # (start, end, linked links the token names)
     for match in _HEX_TOKEN.finditer(text):
         targets = [link for link in linked if link["document_id"].startswith(match.group(0))]
         if not targets:
             flags.append("FINDING_CITES_UNLINKED_DOCUMENT")
             return flags  # a locator next to an unlinked document cannot be checked against anything
-        named.append((match.start(), targets))
+        named.append((match.start(), match.end(), targets))
     for pattern, kind, code in ((_PAGE_MENTION, "page", "FINDING_CITES_MISSING_PAGE"),
                                 (_PART_MENTION, "part", "FINDING_CITES_MISSING_PART")):
         for match in pattern.finditer(text):
             value = str(int(match.group(1))) if match.group(1).isdigit() else match.group(1)
-            before = [targets for position, targets in named if position < match.start()]
-            after = [targets for position, targets in named if position > match.start()]
-            targets = before[-1] if before else (after[0] if after else linked)
+            if named:
+                bound = [(start, targets) for start, end, targets in named
+                         if (end <= match.start() and _ATTACHED_AFTER.fullmatch(text[end:match.start()]))
+                         or (start >= match.end() and _ATTACHED_BEFORE.fullmatch(text[match.end():start]))]
+                if not bound:
+                    flags.append("FINDING_LOCATOR_NOT_BOUND")
+                    continue
+                if len(bound) > 1:
+                    flags.append("FINDING_LOCATOR_AMBIGUOUS")
+                    continue
+                targets = bound[0][1]
+            else:
+                targets = linked
             if not any(loc["kind"] == kind and loc["value"].lower() == value
                        for link in targets for loc in link["locators"]):
                 flags.append(code)
-                break
-    return flags
+    return sorted(set(flags))
 
 
 def summarize(workbook, agenda, agenda_sha, index, prior=None):

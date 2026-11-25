@@ -129,6 +129,10 @@ class SummaryTest(unittest.TestCase):
             ("10", "Harbor %s page 1 matches." % H["harbor"][:12]): "FINDING_CITES_MISSING_PAGE",
             ("10", "Page 1 of %s matches; %s too." % (H["harbor"][:12], H["valley"][:12])): "FINDING_CITES_MISSING_PAGE",
             ("12", "Item %s message part 3." % H["part"][:12]): "FINDING_CITES_MISSING_PART",
+            # RETURN t_d923efa8: a preposed locator binds to the document it names, never to an earlier clause
+            ("10", "%s page 2; page 2 of %s." % (H["harbor"][:12], H["valley"][:12])): "FINDING_CITES_MISSING_PAGE",
+            ("10", "%s page 2 of %s." % (H["harbor"][:12], H["valley"][:12])): "FINDING_LOCATOR_AMBIGUOUS",
+            ("10", "Item %s is the policy. It says so on page 2." % H["harbor"][:12]): "FINDING_LOCATOR_NOT_BOUND",
         }
         for (stage, text), code in cases.items():
             summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
@@ -136,6 +140,9 @@ class SummaryTest(unittest.TestCase):
             self.assertIsNone(next(s for s in summary["stages"] if s["stage"] == stage)["human"])
         for stage, text in (("12", "Item %s message part 2 belongs to req-1." % H["part"][:12]),
                             ("10", "Harbor %s page 2; valley %s page 1." % (H["harbor"][:12], H["valley"][:12])),
+                            ("10", "%s page 2; page 1 of %s." % (H["harbor"][:12], H["valley"][:12])),
+                            ("10", "%s, on page 2, differs from page 1 in document %s." % (H["harbor"][:12],
+                                                                                          H["valley"][:12])),
                             ("10", "Page 1 of %s matches." % H["valley"][:16]),
                             ("10", "Both policies cite page 1 and page 2.")):
             ok = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
