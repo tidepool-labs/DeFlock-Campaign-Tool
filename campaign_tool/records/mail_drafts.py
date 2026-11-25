@@ -494,13 +494,44 @@ def _exact_row(queue, only_id, only_revision):
     return row
 
 
+def _parent_message_id(project, row):
+    """The agency Message-ID this row would be threaded under, or None (no thread, or it cannot be resolved)."""
+    try:
+        thread = _thread_for(project, row)[0]
+    except MailDraftError:
+        return None
+    return None if thread is None else thread["message_id"]
+
+
+def _refuse_shared_target(project, queue, row):
+    """Refuse an exact request whose agency message is also answered by another approved, not yet placed mail row.
+
+    ``reply_placement_preview`` reports the same condition as ``target_shared``, but a second approval can land
+    after a successful preview. The caller holds the shared queue lock, so the rows checked here are the rows that
+    exist until the placement ends. Like the preview, rows are compared by the resolved agency Message-ID (replies
+    to different attachments of one message count) and placed rows are not competitors. A row whose thread cannot
+    be resolved answers no message here; its own placement still journals that failure."""
+    parent = _parent_message_id(project, row)
+    if parent is None:
+        return
+    latest = {(p["queue_id"], p["revision"]): p for p in placements(project)}
+    for other in queue:
+        if (other["id"] != row["id"] and other["status"] == "approved"
+                and other["kind"] not in draft_templates.NON_MAIL_KINDS
+                and latest.get((other["id"], other["revision"]), {}).get("state") not in DONE
+                and _parent_message_id(project, other) == parent):
+            raise MailDraftError("exact_target_shared")
+
+
 def place(project, config, *, factory=mail_poll.default_connect, now=None, only_id=None, only_revision=None,
           dry_run=False):
     """Place every approved, not yet placed row (or only ``only_id``). Content-free summary; never sends.
 
     With ``only_revision`` the request is exact: ``only_id`` must be a full queue ID whose current revision is
     ``only_revision`` and approved, otherwise ``MailDraftError`` is raised and nothing is written or connected.
-    Without it the behaviour is unchanged (``only_id`` alone places whichever revision is approved now)."""
+    An exact request is also refused (``exact_target_shared``) while another approved, not yet placed mail row
+    answers the same agency message. Without ``only_revision`` the behaviour is unchanged (``only_id`` alone places
+    whichever revision is approved now)."""
     now = now or _now()
     with contextlib.ExitStack() as hold:
         if only_revision is None:
@@ -508,7 +539,10 @@ def place(project, config, *, factory=mail_poll.default_connect, now=None, only_
         else:
             # The shared queue lock stays held until placement ends, so an edit, a new approval or a cancellation
             # cannot complete between this validation and the Drafts append: it waits, then gets queue_busy.
-            queue = [_exact_row(hold.enter_context(approval_queue.held_queue(project)), only_id, only_revision)]
+            held = hold.enter_context(approval_queue.held_queue(project))
+            row = _exact_row(held, only_id, only_revision)
+            _refuse_shared_target(project, held, row)
+            queue = [row]
         return _place_rows(project, config, queue, factory, now, only_id, dry_run)
 
 
