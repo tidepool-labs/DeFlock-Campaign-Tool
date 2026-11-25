@@ -15,8 +15,10 @@ or non-finite numbers, including overflowing exponents such as 1e999):
   an ``items`` list of writer-shaped entries (an empty list passes) and this run's ``run_id``.
 * ``CURRENT-REQUEST-REGISTER.json`` (stage 12, ``register.write_for_run``): its schema string and at least one
   request. It has no run id, so it must also agree with the timeline (as-of date, and per ordered row the
-  agency/request identities, agency name, deadline clocks and closed state); every row must name its agency and
-  request (a ledger id may be null for a tracker-only row). A register copied from another run fails closed.
+  agency/request identities, agency name, deadline clocks and closed state) and the timeline's register- and item-derived
+  events and issues must equal what the real ``build_timeline`` derives from the register in hand (no digest of the register is
+  recorded, so a byte binding is impossible); every row must name its agency and request (a ledger id may be null for a
+  tracker-only row). A register copied from another run fails closed.
 * ``outcomes/timeline.json`` (stage 12, ``timeline.write_run_timeline``): its schema string, a consistent
   request count, a named agency and request per row and this run's ``run_id``.
 
@@ -167,6 +169,28 @@ def _identity(doc):
                           for row in doc["requests"]]
 
 
+def _derived_agrees(register_doc, items_doc, timeline_doc, run_id):
+    """Fail closed unless the timeline's register- and item-derived events and issues are what the real writer derives from these files.
+
+    The register carries no run id and no digest of it is recorded anywhere, so its bytes cannot be bound to the run directly. The
+    timeline (which has the run id) was built from the run's own register; re-deriving it with the real ``build_timeline`` from the
+    register in hand exposes any difference in a field the timeline reads (production, determination, promise and extension dates, request
+    date, issues) as a different event or issue list. Events from drafts, the outbox and manual notes are not rebuilt and are ignored."""
+    kinds = ("register", "received_item") if items_doc is not None else ("register",)
+    try:
+        rebuilt = timeline.build_timeline(register_doc, items_doc or {"items": []}, [], [], [], run_id=run_id)
+
+        def events(row):
+            return sorted(json.dumps({k: v for k, v in e.items() if k != "superseded"}, sort_keys=True)
+                          for e in row["events"] if (e.get("source") or {}).get("kind") in kinds)
+        return len(rebuilt["requests"]) == len(timeline_doc["requests"]) and all(
+            events(made) == events(held) and {json.dumps(i, sort_keys=True) for i in made["issues"]}
+            <= {json.dumps(i, sort_keys=True) for i in held["issues"]}
+            for made, held in zip(rebuilt["requests"], timeline_doc["requests"]))
+    except (ValueError, KeyError, TypeError, AttributeError, RecursionError):
+        return False
+
+
 def _closed_agrees(register_doc, timeline_doc):
     """A register row recorded closed is closed on the timeline; a timeline closed without a closed event needs that status."""
     for held, line in zip(register_doc["requests"], timeline_doc["requests"]):
@@ -246,7 +270,8 @@ def records(outputs_dir, run_report_path, now):
         os.close(root)
         if outcomes is not None:
             os.close(outcomes)
-    if reg[0] == line[0] == "OK" and (_identity(reg[2]) != _identity(line[2]) or not _closed_agrees(reg[2], line[2])):
+    if reg[0] == line[0] == "OK" and (_identity(reg[2]) != _identity(line[2]) or not _closed_agrees(reg[2], line[2])
+                                      or not _derived_agrees(reg[2], items[2] if items[0] == "OK" else None, line[2], run_id)):
         reg = ("RUN", reg[1], reg[2])
     own = {stage: [c for c in golive_stages.OUTPUT_FAILURES[stage] if c in report_codes] for stage in ("11", "12")}
     common = (run_id, now, report_raw, report_name)
