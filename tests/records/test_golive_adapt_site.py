@@ -1,5 +1,6 @@
 """Synthetic contract tests for stage 17b capture evidence."""
 
+import gc
 import hashlib
 import io
 import json
@@ -103,6 +104,10 @@ class SiteCliTests(unittest.TestCase):
         if raw is not None:
             self.capture.write_bytes(raw)
         before = self.snapshot()
+        # Collect garbage left by earlier tests in this process first. On Python 3.13 an unclosed sqlite3
+        # connection warns when it is collected, and an automatic collection inside the capture below would put
+        # that unrelated text in the captured stderr (main ac952d8b: test_c3_tsv_failure in full 3.13, shard 2).
+        gc.collect()
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err), patch.object(site, "datetime") as clock:
             clock.now.return_value = NOW
