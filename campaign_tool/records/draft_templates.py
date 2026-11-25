@@ -30,6 +30,7 @@ MAX_BODY_BYTES = 64 * 1024
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 _SHA = re.compile(r"[a-f0-9]{64}")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
+_PART = re.compile(r"[^\x00-\x1f\x7f]{1,256}")  # a MIME part label as the extraction recorded it (REC-MAIL-CITE-1)
 _SOURCE_KIND = {"extension": "reply-extension", "denial": "appeal-denial", "fee": "fee-reply"}
 
 
@@ -39,6 +40,23 @@ class DraftSourceError(ValueError):
 
 def _citation(page, quote):
     return type(page) is int and page >= 1 and isinstance(quote, str) and bool(quote.strip())
+
+
+def _cited(entry):
+    """A page citation, or (REC-MAIL-CITE-1) a citation of an unpaginated mail text part: ``page`` None plus the
+    item's own MIME ``part`` and an exact quote. A mail body is never given a page; a comparison finding stays page-only."""
+    if not isinstance(entry, dict):
+        return False
+    if "part" in entry:
+        part, quote = entry["part"], entry.get("quote")
+        return (entry.get("page") is None and isinstance(part, str) and _PART.fullmatch(part) is not None
+                and isinstance(quote, str) and bool(quote.strip()))
+    return _citation(entry.get("page"), entry.get("quote"))
+
+
+def _where(entry):
+    """Human wording of a checked citation: ``page N`` or ``message part P``."""
+    return f"page {entry['page']}" if entry.get("page") is not None else f"message part {entry['part']}"
 
 
 def _need(condition, message):
@@ -64,9 +82,9 @@ def validate_item(item):
     basis = item.get("kind_basis")
     _need(isinstance(basis, dict), "kind_basis")
     if kind == "other":
-        _need(basis.get("page") is None and basis.get("quote") is None, "kind_basis")
+        _need(basis.get("page") is None and basis.get("quote") is None and "part" not in basis, "kind_basis")
     else:
-        _need(_citation(basis.get("page"), basis.get("quote")), "kind_basis")
+        _need(_cited(basis), "kind_basis")
     for key in ("agency_id", "request_id"):
         value = item.get(key)
         _need(value is None or (isinstance(value, str) and _ID.fullmatch(value)), key)
@@ -83,7 +101,7 @@ def validate_item(item):
     deadlines = item.get("deadlines", [])
     _need(isinstance(deadlines, list), "deadlines")
     for d in deadlines:
-        _need(isinstance(d, dict) and _citation(d.get("page"), d.get("quote")) and _text(d.get("date_text", "")),
+        _need(isinstance(d, dict) and _cited(d) and _text(d.get("date_text", "")),
               "deadline")
         date = d.get("date")
         _need(date is None or isinstance(date, str), "deadline")
@@ -118,8 +136,10 @@ def _deadline_lines(item):
     lines = []
     for number, d in enumerate(item.get("deadlines", []), 1):
         date = d.get("date")
-        lines.append(f"  {number}. page {d['page']}: \"{d['quote']}\""
-                     + (f" (date as the item recorded it: {date})" if date else " (date not resolved; check the page)"))
+        lines.append(f"  {number}. {_where(d)}: \"{d['quote']}\""
+                     + (f" (date as the item recorded it: {date})" if date else
+                        " (date not resolved; check the page)" if d.get("page") is not None else
+                        " (date not resolved; check the message)"))
     return lines
 
 
@@ -136,7 +156,7 @@ def _header(item, kind, why):
 
 def _quote_basis(item):
     b = item["kind_basis"]
-    return f"The agency wrote (page {b['page']}):\n\n{_block(b['quote'])}\n\n"
+    return f"The agency wrote ({_where(b)}):\n\n{_block(b['quote'])}\n\n"
 
 
 def _references(findings):
@@ -179,7 +199,7 @@ def render(item):
             name=item["agency_id"], subject=f" ({item['request_id']})", first="",
             sent_on=EDIT.format("date the request was sent"), channel=EDIT.format("channel"),
             denied_on=item.get("received_at") or EDIT.format("received date not recorded"), status="draft",
-            stated=f"The agency wrote, as quoted from page {item['kind_basis']['page']}:\n{quoted}\n\n",
+            stated=f"The agency wrote, as quoted from {_where(item['kind_basis'])}:\n{quoted}\n\n",
             first_ask=kit_track.ASK_REST, former_note="", current_ask="", citations="")
         refs = _references(findings)
         text = (_header(item, kind, why) + body
@@ -202,7 +222,8 @@ def render(item):
                 "findings": [{k: f.get(k) for k in ("finding_id", "rating", "rule_ref", "policy_ref", "page", "quote",
                                                     "comparison_ref")} for f in (gaps if kind == "followup-missing-records"
                                                                                   else findings)],
-                "deadlines": [{k: d.get(k) for k in ("date_text", "date", "page", "quote")}
+                "deadlines": [{**{k: d.get(k) for k in ("date_text", "date", "page", "quote")},
+                               **({"part": d["part"]} if "part" in d else {})}
                               for d in item.get("deadlines", [])]}
     return kind, text, evidence
 
