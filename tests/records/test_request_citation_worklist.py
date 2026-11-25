@@ -76,6 +76,22 @@ class CitationWorklist(unittest.TestCase):
         self.assertEqual(data['requests'][0]['mail_part_missing'], ['b' * 64])
         self.assertEqual(data['requests'][0]['pdf_page_missing'], ['c' * 64])
 
+    def test_unknown_mime_with_a_page_citation_stays_unassigned(self):
+        # Review t_8acd6ba8 item 1: a page locator does not establish PDF type.
+        rc, text, _ = self.invoke([
+            request('req-1', arrival('a', mime=None), arrival('b', mime='image/png'),
+                    arrival('c', mime=None), arrival('c', mime='application/pdf') | {'occurrence_id': 'occ-c2'})], [
+            received('a', basis={'page': 1, 'quote': 'Q'}),
+            received('b', basis={'page': 2, 'quote': 'Q'}),
+            received('c', basis={'page': 3, 'quote': 'Q'})])
+        self.assertEqual(rc, 0)
+        data = json.loads(text)
+        # c is known to be a PDF through its other registered arrival and is cited, so it is neither listed nor lost.
+        self.assertEqual(data['requests'], [])
+        self.assertEqual(data['unassigned'], [
+            {'original': 'a' * 64, 'reason': 'unknown_type'},
+            {'original': 'b' * 64, 'reason': 'unknown_type'}])
+
     def test_wrong_run_is_not_an_empty_success(self):
         rc, text, error = self.invoke([], [], item_run='run_2')
         self.assertEqual((rc, text), (2, ''))

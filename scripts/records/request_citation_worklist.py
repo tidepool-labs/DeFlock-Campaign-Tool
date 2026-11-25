@@ -87,9 +87,8 @@ def build(register_doc, received_doc):
                         'agency': agency, 'request': request, 'mail_part_missing': [], 'pdf_page_missing': []})
                     group['mail_part_missing' if kind == 'part' else 'pdf_page_missing'].append(digest)
                 continue
-            if kinds == {'attachment'} and 'page' in locators:
-                # A checked page is usable even when an older register did not retain the MIME type.
-                continue
+            # An unknown-MIME original stays unassigned even when a page citation exists: a page locator
+            # does not establish that the original is a PDF.
             reason = 'unknown_type'
         unassigned.append({'original': digest, 'reason': reason})
     return {'run': received_doc['run_id'], 'review_only': True,
