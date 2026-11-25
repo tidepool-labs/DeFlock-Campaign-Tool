@@ -53,7 +53,7 @@ jobs:
         with:
           path: engine
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 1
       - name: Require the reviewed WP4 public commit
         shell: bash
         run: |
@@ -61,7 +61,12 @@ jobs:
             printf '%s\n' 'WP4_REVISION is pending. Parent must supply its exact public commit before this workflow can pass.' >&2
             exit 1
           fi
+      # The four pinned checkouts below are used only for a dependency the engine
+      # lacks; the select step further down takes each in-tree copy first (same
+      # marker files, tools/run_wp5_ci.py IN_TREE_MARKERS). A pin is fetched
+      # exactly when its marker is absent.
       - name: Checkout pinned WP1
+        if: ${{ hashFiles('engine/campaign_tool/records/ledger/store.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -69,6 +74,7 @@ jobs:
           path: dependencies/wp1
           persist-credentials: false
       - name: Checkout pinned WP2
+        if: ${{ hashFiles('engine/campaign_tool/records/runner/canonical_mail.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -76,6 +82,7 @@ jobs:
           path: dependencies/wp2
           persist-credentials: false
       - name: Checkout pinned PR19
+        if: ${{ hashFiles('engine/campaign_tool/records/catalog_links.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -83,6 +90,7 @@ jobs:
           path: dependencies/pr19
           persist-credentials: false
       - name: Checkout pinned WP4
+        if: ${{ hashFiles('engine/campaign_tool/records/extraction_ledger.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # pragma: allowlist secret
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool
@@ -127,12 +135,12 @@ jobs:
             --pr19 "$PR19_ROOT" \
             --output-parent "$RUNNER_TEMP"
       - name: Public-tree credential and private-path scan
-        if: always()
+        if: ${{ !cancelled() }}
         working-directory: engine
         run: python -B tools/check_public_tree.py
       - name: Credential scan without network verification
         # Use the default Git-tracked scope, not a generated-directory denylist.
-        if: always()
+        if: ${{ !cancelled() }}
         working-directory: engine
         run: |
           detect-secrets scan --no-verify > "$RUNNER_TEMP/wp5-secret-scan.json"

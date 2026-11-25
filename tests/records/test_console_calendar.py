@@ -199,6 +199,30 @@ class Calendar(unittest.TestCase):
         self.assertIn("draft only, sends after your approval", html)
         self.assertLess(html.index("OVERDUE"), html.index("2026-11-09 &mdash;"))
         self.model_ics(model)
+        agenda = self.assert_calendar_jumps(html)
+        expiry_rows = re.findall(r"<li>(\d{4}-\d{2}-\d{2}) &mdash; Link expiry: .*\((\w+); source: release-link register\)</li>", agenda)
+        self.assertEqual(expiry_rows, [("2026-11-17", "DATED"), ("2026-11-27", "INFERRED")])
+
+    def assert_calendar_jumps(self, html):
+        # C1: a phone user can reach the agenda and get back without scrolling,
+        # even if an empty agenda would otherwise omit its destination.
+        self.assertIn('<a href="#calendar-agenda">Jump to agenda</a>', html)
+        self.assertIn('<a href="#calendar-month">Back to month grid</a>', html)
+        for target in ("calendar-month", "calendar-agenda"):
+            self.assertEqual(html.count(f'id="{target}"'), 1, target)
+        month, agenda = html.split('<section id="calendar-agenda"', 1)
+        self.assertRegex(month, r'<section id="calendar-month"[^>]* aria-label="Month grid"')
+        self.assertRegex(agenda, r'^[^>]* aria-label="Calendar agenda"')
+        self.assertRegex(month, r'/calendar\?month=[^\n]*<a href="#calendar-agenda">')
+        self.assertIn("<table", month)
+        self.assertRegex(agenda, r'<h2>Agenda</h2>\s*<p><a href="#calendar-month">')
+        return agenda
+
+    def test_agenda_jumps_in_empty_month(self):
+        html = cc.render(self.model([]), TODAY, date(2026, 12, 1))
+        self.assertIn("<caption>December 2026</caption>", html)
+        self.assertIn("Nothing dated in this window.", html)
+        self.assert_calendar_jumps(html)
 
     def model_ics(self, model):
         items = cc.entries(model, TODAY)
