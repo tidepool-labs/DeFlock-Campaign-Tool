@@ -182,7 +182,12 @@ class _Rehearsal:
         _need({m.get("message_sha256") for m in listed["messages"]} == shas, "UNMATCHED_NOT_LISTED")
         _need(not shas & {i["original_sha256"] for i in self.docs["items"]["items"]}, "UNMATCHED_ATTACHED")
         _need(_load(outcomes / "timeline.json", "UNMATCHED_NOT_STRICT_JSON")["requests"] == [], "UNMATCHED_ATTACHED")
-        return [*files, outcomes / "received-items.json", outcomes / "unmatched-messages.json"]
+        # The stray replay's own register must not tie the untied reply to any agency or request either.
+        held = _load(run_dir / "CURRENT-REQUEST-REGISTER.json", "UNMATCHED_NOT_STRICT_JSON")
+        _need(held.get("schema") == register.SCHEMA and type(held.get("requests")) is list, "UNMATCHED_SCHEMA")
+        _need(held["requests"] == [] and held.get("request_count") == 0, "UNMATCHED_ATTACHED")
+        return [*files, outcomes / "received-items.json", outcomes / "unmatched-messages.json",
+                run_dir / "CURRENT-REQUEST-REGISTER.json"]
 
     def no_sends(self):
         paths = []

@@ -171,6 +171,33 @@ class RehearseReceivedTests(unittest.TestCase):
                 result = driver.run(self.fresh())
                 self.assertEqual((result["codes"], result["steps"][-1]["name"]), ([code], step))
 
+    def test_c4_stray_register_that_ties_the_reply_fails_unmatched_is_not_attached(self):
+        """C4: only the stray replay's register file is spoiled, after every real stage ran (received items, unmatched list
+        and timeline stay clean). Bug: a register writer attaches the unmatched reply to an agency/request."""
+        original = e2e_proof.replay
+
+        def replay(*args, **kwargs):
+            report = original(*args, **kwargs)
+            if kwargs.get("label") == "stray":
+                run_dir = args[1] / "stray" / "project" / "run-outputs" / report["run_id"]
+                document = json.loads((run_dir / REG).read_text())
+                sha = json.loads((run_dir / OUT).read_text())["items"][0]["original_sha256"]
+                document.update(request_count=1, requests=[{"agency_key": driver.AGENCY, "request_id": driver.REQUEST,
+                                                            "status": "open", "arrived": [{"original_sha256": sha}]}])
+                (run_dir / REG).write_text(json.dumps(document))
+            return report
+        with patch.object(e2e_proof, "replay", replay):
+            result = driver.run(self.fresh())
+        self.assertEqual((result["codes"], result["steps"][-1]["name"]), (["UNMATCHED_ATTACHED"], "unmatched_is_not_attached"))
+        for body, code in (("NaN", "UNMATCHED_NOT_STRICT_JSON"), ('{"schema": "x", "requests": []}', "UNMATCHED_SCHEMA")):
+            def spoil(*args, body=body, **kwargs):
+                report = original(*args, **kwargs)
+                if kwargs.get("label") == "stray":
+                    (args[1] / "stray" / "project" / "run-outputs" / report["run_id"] / REG).write_text(body)
+                return report
+            with self.subTest(code=code), patch.object(e2e_proof, "replay", spoil):
+                self.assertEqual(driver.run(self.fresh())["codes"], [code])
+
     def test_c1_failed_replay_stops_the_rehearsal_with_a_named_code(self):
         """C1: seed_reply names why the replay failed; bug: a failed or sent replay reported as a pass."""
         failed = {"stages": [{"stage": "outputs", "status": "ok"}], "result": "FAIL", "manual_steps": [{}],
