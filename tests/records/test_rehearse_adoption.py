@@ -7,6 +7,8 @@ import re
 import smtplib
 import socket
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import unittest
 from contextlib import closing, redirect_stderr, redirect_stdout
@@ -206,6 +208,73 @@ class Fences(Base):
                                             before=lambda name, a=attempt, s=stage: name == s and a())
                 self.assertEqual((last(result), connects),
                                  (("no_sends" if label.startswith("swallowed") else stage, "SEND_ATTEMPTED"), []))
+
+
+class Children(Base):
+    """The stages start adopt-mail child interpreters; the audit hook must reach them and refuse what the parent fence cannot see."""
+
+    def test_c1_every_child_is_audited_and_none_wrote_outside_or_used_a_socket(self):
+        """C1: starts are logged for the real children and nothing is refused. Bug: a fence that covers only the parent process."""
+        sandbox = self.sandbox
+        result = driver.run(sandbox)
+        self.assertEqual(result["codes"], [])
+        events = [json.loads(line) for line in (sandbox / driver.CHILD_LOG).read_text().splitlines()]
+        starts = [value for kind, value in events if kind == "start"]
+        self.assertGreaterEqual(len(starts), 3)  # delta, adoption and the control's adoption
+        self.assertTrue(all(argv[:3] == ["-B", "-m", "campaign_tool.records"] and "adopt-mail" in argv for argv in starts), starts)
+        self.assertEqual([kind for kind, _ in events if kind != "start"], [])
+        self.assertEqual(result["steps"][-1]["outputs"][0]["path"], driver.CHILD_LOG)
+
+    def test_c1_a_child_that_writes_outside_or_connects_is_refused_recorded_and_named(self):
+        """C1: a real child interpreter under the stage's environment cannot write outside or open a socket, and the driver fails.
+        Bug: only the parent was fenced, so a child could send or write anywhere and no_sends stayed green."""
+        outside = self.parent / "child-escape.txt"
+        code = {"write": "open(%r, 'w').write('x')" % str(outside),
+                "socket": "import socket; socket.socket().connect(('127.0.0.1', 9))"}
+        for label, want in (("write", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("socket", "SEND_ATTEMPTED")):
+            with self.subTest(label):
+                def attempt(name, source=code[label]):
+                    if name == "adoption":
+                        subprocess.run([sys.executable, "-B", "-c", source], check=False, stderr=subprocess.DEVNULL)
+                result = self.replacing(label, lambda name, project: None, before=attempt)
+                self.assertEqual(last(result), ("no_sends", want))
+                self.assertEqual(result["codes"], [want])
+                self.assertFalse(outside.exists())
+
+    def test_c1_a_run_with_no_audited_child_is_not_a_pass(self):
+        """C1: if no child was audited the boundary was not observed. Bug: an empty audit counted as a clean one."""
+        real = driver._children
+        with patch.object(driver, "_children", lambda sandbox: [row for row in real(sandbox) if row[0] != "start"]):
+            self.assertEqual(last(driver.run(self.sandbox)), ("no_sends", "CHILD_NOT_AUDITED"))
+        with patch.object(driver, "_children", lambda sandbox: [[k, ["-B", "-m", "os", "x"]] if k == "start" else [k, v] for k, v in real(sandbox)]):
+            self.assertEqual(last(driver.run(self.fresh("other"))), ("no_sends", "CHILD_UNEXPECTED"))
+
+
+class Paths(Base):
+    def test_c2_the_ledger_is_read_from_a_sandbox_path_holding_uri_characters(self):
+        """C2: a path with ``#``, ``?`` or ``%`` reads its own ledger read-only. Bug: an unescaped SQLite URI names another file."""
+        for name in ("a#b", "c?d=1", "e%41f"):
+            with self.subTest(name):
+                project = self.parent / name / "project"
+                (project / "processing-v1").mkdir(parents=True)
+                with closing(sqlite3.connect(project / "processing-v1" / "ledger.sqlite")) as db:
+                    db.executescript("CREATE TABLE mail_messages(account, folder, eml_sha256); CREATE TABLE originals(sha256);"
+                                     "INSERT INTO mail_messages VALUES ('a', 'f', 'x'); INSERT INTO originals VALUES ('y');")
+                self.assertEqual(driver._ledger(project), ([("a", "f", "x")], {"y"}))
+
+    def test_c3_the_cli_creates_nothing_below_a_symlink(self):
+        """C3: a rejected --sandbox leaves no directory behind. Bug: mkdir ran before the symlink check and filled the target."""
+        target = self.fresh("target")
+        link = self.parent / "link"
+        link.symlink_to(target)
+        dangling = self.parent / "dangling"
+        dangling.symlink_to(self.parent / "never-made")
+        for path in (link / "new", link, dangling, dangling / "inner", self.parent / "absent" / "deep"):
+            with self.subTest(str(path.relative_to(self.parent))), redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as caught:
+                driver.main(["--sandbox", str(path)])
+            self.assertEqual(caught.exception.code, 2)
+        self.assertEqual((list(target.iterdir()), (self.parent / "never-made").exists(), (self.parent / "absent").exists()),
+                         ([], False, False))
 
 
 class Entry(Base):
