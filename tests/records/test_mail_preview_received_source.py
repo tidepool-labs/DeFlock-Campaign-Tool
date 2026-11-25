@@ -110,3 +110,35 @@ class ReceivedSourceTests(Panel):
         rendered = mail_preview.context_html(context)
         self.assertIn("received item <code>dddddddddddd</code>, page 4.", rendered)
         self.assertIn("<li>source_type: tracker; locator: row 9</li>", rendered)
+
+    def test_citation_of_another_received_item_is_flagged_not_shown(self):
+        # T20 finding: add_draft accepts evidence whose item_id differs from the row's own item_id. The review page
+        # must not present that other item's passage as the one this reply answers.
+        own, other = mail_item(311), item(312, "fee", quote=PAGE_QUOTE)
+        kind, body, evidence = dt.render(other)
+        crossed = aq.add_draft(self.live, item_id=own["item_id"], kind=kind, agency_id=own["agency_id"],
+                               request_id=own["request_id"], body=body, evidence=evidence, source_run_id=RUN)
+        self.assertNotEqual(crossed["item_id"], crossed["evidence"]["item_id"])
+        context = cs.LiveSource(self.live).review_context(crossed["id"])
+        self.assertEqual(context["received_source"], {"invalid": True})
+        rendered = mail_preview.context_html(context)
+        self.assertIn("Received-item citation unavailable", rendered)
+        self.assertNotIn("This reply answers", rendered)
+        self.assertNotIn(other["item_id"][:12], rendered)
+        self.assertNotIn(PAGE_QUOTE.replace("$", ""), html.unescape(rendered).replace("$", ""))
+        matching = self.queue(mail_item(313))
+        self.assertEqual(cs.LiveSource(self.live).review_context(matching["id"])["received_source"]["item_id"],
+                         matching["item_id"])
+        self.make_export()
+        source = cs.SnapshotSource(cs.Pinner(str(self.root)).pin())
+        self.assertEqual(source.review_context(crossed["id"])["received_source"], {"invalid": True})
+        self.up()
+        block = section(self.get("/review?id=" + crossed["id"]))
+        self.assertIn("Received-item citation unavailable", block)
+        self.assertNotIn(other["item_id"][:12], block)
+        # The direct reader keeps its earlier contract when no row item is given; with one, only equality passes.
+        self.assertEqual(mail_preview.received_source(evidence)["item_id"], other["item_id"])
+        self.assertEqual(mail_preview.received_source(evidence, other["item_id"])["item_id"], other["item_id"])
+        for row_item in (own["item_id"], None, "", "f" * 64, other["item_id"][:-1]):
+            with self.subTest(row_item=row_item):
+                self.assertEqual(mail_preview.received_source(evidence, row_item), {"invalid": True})
