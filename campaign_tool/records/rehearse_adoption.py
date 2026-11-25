@@ -41,6 +41,7 @@ CHILD_MODULES = ("campaign_tool.records",)  # the only interpreters a stage may 
 # Runs first in every child interpreter (PYTHONPATH); refuses and records a socket use or a write outside CHILD_FENCE_ROOT.
 _CHILD_HOOK = """
 import json, os, sys
+from urllib.parse import parse_qs, unquote
 _log, _root = os.environ.get("CHILD_FENCE_LOG"), os.environ.get("CHILD_FENCE_ROOT")
 if _log and _root:
     _fd = os.open(_log, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
@@ -56,8 +57,26 @@ if _log and _root:
         target = os.path.realpath(os.path.join(os.getcwd(), os.fsdecode(path)))
         return not (target == os.devnull or target == _root or target.startswith(_root + os.sep))
 
+    def _database(value):
+        # SQLite opens and journals its files in native code, with no ``open`` audit event: judge the connection itself.
+        name = os.fsdecode(value) if isinstance(value, (str, bytes, os.PathLike)) else ""
+        if name.startswith("file:"):
+            path, _, query = name[5:].partition("?")
+            options = parse_qs(query)
+            if options.get("mode") == ["ro"] or options.get("immutable") == ["1"]:
+                return  # read-only: nothing is written or journalled
+            if path.startswith("//"):
+                path = path[2:]
+                path = path[path.index("/"):] if "/" in path else ""
+            name = unquote(path)
+        if name and name != ":memory:" and _outside(name):
+            _emit("outside", name)
+            raise PermissionError("CHILD_WRITE_OUTSIDE_SANDBOX")
+
     def _hook(event, args):
-        if event == "open" and not isinstance(args[0], int):
+        if event == "sqlite3.connect":
+            _database(args[0])
+        elif event == "open" and not isinstance(args[0], int):
             if ((args[2] or 0) & _mask or any(flag in (args[1] or "") for flag in "wax+")) and _outside(args[0]):
                 _emit("outside", os.fsdecode(args[0]))
                 raise PermissionError("CHILD_WRITE_OUTSIDE_SANDBOX")

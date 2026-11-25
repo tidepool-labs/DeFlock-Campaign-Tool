@@ -229,9 +229,15 @@ class Children(Base):
         """C1: a real child interpreter under the stage's environment cannot write outside or open a socket, and the driver fails.
         Bug: only the parent was fenced, so a child could send or write anywhere and no_sends stayed green."""
         outside = self.parent / "child-escape.txt"
+        database = self.parent / "child-escape.db"
         code = {"write": "open(%r, 'w').write('x')" % str(outside),
-                "socket": "import socket; socket.socket().connect(('127.0.0.1', 9))"}
-        for label, want in (("write", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("socket", "SEND_ATTEMPTED")):
+                "socket": "import socket; socket.socket().connect(('127.0.0.1', 9))",
+                "sqlite": "import sqlite3; sqlite3.connect(%r).execute('create table t(x)')" % str(database),
+                "sqlite uri": "import sqlite3; sqlite3.connect('file:%s?mode=rwc', uri=True).execute('create table t(x)')" % database,
+                "sqlite uri path": "import sqlite3; sqlite3.connect('file://%s', uri=True).execute('create table t(x)')" % database}
+        wanted = (("write", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("socket", "SEND_ATTEMPTED"), ("sqlite", "CHILD_WROTE_OUTSIDE_SANDBOX"),
+                  ("sqlite uri", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("sqlite uri path", "CHILD_WROTE_OUTSIDE_SANDBOX"))
+        for label, want in wanted:
             with self.subTest(label):
                 def attempt(name, source=code[label]):
                     if name == "adoption":
@@ -239,7 +245,27 @@ class Children(Base):
                 result = self.replacing(label, lambda name, project: None, before=attempt)
                 self.assertEqual(last(result), ("no_sends", want))
                 self.assertEqual(result["codes"], [want])
-                self.assertFalse(outside.exists())
+                self.assertEqual((outside.exists(), database.exists(), (self.parent / "child-escape.db-journal").exists()),
+                                 (False, False, False))
+
+    def test_c1_a_child_may_open_sqlite_inside_the_sandbox_and_read_outside_read_only(self):
+        """C1: the real children keep working: an in-sandbox database and a read-only outside one are not refused. Bug: a hook so
+        broad it fails every adopt-mail child, or one that counts a read as a write."""
+        readable = self.parent / "readable.db"
+        with closing(sqlite3.connect(readable)) as db:
+            db.execute("CREATE TABLE t(x)")
+        inside = "import sqlite3; c = sqlite3.connect(%r); c.execute('create table if not exists t(x)'); c.commit()" % str(self.parent / "allowed" / "inside.db")
+        read_only = "import sqlite3; sqlite3.connect('file:%s?mode=ro', uri=True).execute('select * from t').fetchall()" % readable
+
+        def attempt(name):
+            if name == "adoption":
+                for source in (inside, read_only):
+                    self.assertEqual(subprocess.run([sys.executable, "-B", "-c", source], stderr=subprocess.DEVNULL).returncode, 0)
+        result = self.replacing("allowed", lambda name, project: None, before=attempt)
+        self.assertEqual(last(result), ("no_sends", "CHILD_UNEXPECTED"))  # the probes are not adopt-mail children, but nothing was refused
+        kinds = [json.loads(line)[0] for line in (self.parent / "allowed" / driver.CHILD_LOG).read_text().splitlines()]
+        self.assertEqual(sorted(set(kinds)), ["start"])
+        self.assertTrue((self.parent / "allowed" / "inside.db").exists())
 
     def test_c1_a_run_with_no_audited_child_is_not_a_pass(self):
         """C1: if no child was audited the boundary was not observed. Bug: an empty audit counted as a clean one."""
