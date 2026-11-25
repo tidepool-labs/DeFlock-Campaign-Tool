@@ -173,6 +173,29 @@ class WorksheetTests(unittest.TestCase):
         self.assertEqual(sheet["prior"], {"revision": "rev-A", "withheld": "DISPUTED_PASSAGE"})
         self.assertEqual(sheet["current"], {"revision": "rev-B", "withheld": "SOURCE_NAMES_OTHER_REVISION"})
 
+    def test_non_string_source_revision_is_withheld_not_a_crash(self):
+        # Review t_bb688080 item 1: a byte-verified source whose revision is an array/object must not raise TypeError,
+        # including behind a disputed or duplicated row.
+        for bad in (["rev-B"], {"id": "rev-B"}, 7, None):
+            for variant in ("plain", "disputed", "duplicated"):
+                with self.subTest(bad=bad, variant=variant):
+                    with tempfile.TemporaryDirectory(prefix="policy-worksheet-") as tmp:
+                        case = Case(tmp)
+                        case.files["odd.json"] = source(bad, "2026-06-01", [{}, {}, {FIELD: CURRENT_TEXT}])
+                        rows = case.pair["revisions"]
+                        rows[1].update(source="odd.json",
+                                       source_sha256=hashlib.sha256(case.files["odd.json"]).hexdigest())
+                        if variant == "disputed":
+                            rows[1]["disputed"] = True
+                        elif variant == "duplicated":
+                            rows.append(dict(rows[1]))
+                        sheet = pvw.build(case.write())
+                    expected = {"plain": "SOURCE_NAMES_OTHER_REVISION", "disputed": "DISPUTED_PASSAGE",
+                                "duplicated": "DISPUTED_DUPLICATE_ROWS"}[variant]
+                    self.assertEqual(sheet["wording"], pvw.UNREVIEWED)
+                    self.assertEqual(sheet["current"], {"revision": "rev-B", "withheld": expected})
+                    self.assertEqual(sheet["prior"]["passage"], PRIOR_TEXT)
+
     def test_same_effective_date_is_refused(self):
         self.case.files["rev-b.json"] = source("rev-B", "2025-01-01", [{}, {}, {FIELD: CURRENT_TEXT}])
         self.case.pair["revisions"][1]["source_sha256"] = hashlib.sha256(self.case.files["rev-b.json"]).hexdigest()

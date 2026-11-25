@@ -131,8 +131,9 @@ def _verified_source_revisions(pair, base, revision):
         if row.get("revision") != revision:
             continue
         doc, _ = _source(base, row)
-        if doc is not None and (doc.get("agency"), doc.get("policy")) == (pair["agency"], pair["policy"]):
-            named.add(doc.get("revision"))
+        if (doc is not None and (doc.get("agency"), doc.get("policy")) == (pair["agency"], pair["policy"])
+                and _text(doc.get("revision"))):
+            named.add(doc["revision"])
     return named
 
 
