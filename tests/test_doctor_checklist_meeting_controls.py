@@ -140,14 +140,16 @@ class RealChainTests(unittest.TestCase):
         self.assertEqual(snapshot(self.base), before)
 
     def test_safe_explicit_id_keeps_control_filename_outside_display_scope(self):
-        self.meeting("odd\nname", id="safe-id")
+        # Uppercase stem: tempfile's random names use only [a-z0-9_], so a temp path in the
+        # advice (e.g. ".../ci-chunk-0-yzp8oddi/...") can never contain it by chance.
+        self.meeting("ODDSTEM\nname", id="safe-id")
         plain = json.loads(self.doctor().stdout)
         self.assertEqual([e["meeting"] for e in plain["stale_comment_kits"]], ["safe-id"])
         for extra in (("--checklist",), ("--checklist", "--json")):
             done = self.doctor(*extra)
             self.assertEqual(done.returncode, 0, done.stderr)
             self.assertIn("--id safe-id --replace", done.stdout)
-            self.assertNotIn("odd", done.stdout)
+            self.assertNotIn("ODDSTEM", done.stdout)
 
     def test_cli_success_is_unchanged_nonsticky_and_read_only(self):
         self.meeting("m-two")
