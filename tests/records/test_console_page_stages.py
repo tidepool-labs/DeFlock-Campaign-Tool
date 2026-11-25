@@ -44,6 +44,15 @@ class StagePage(Base):
         self.assertEqual(len(rows), 1, stage)
         return rows[0]
 
+    def assert_ledger_signpost(self, html, before):
+        # A nav link alone does not explain the difference to someone opening an old bookmark.
+        main = html.split("<main ", 1)[1].split("</main>", 1)[0]
+        links = re.findall(r'<a href="/golive">([^<]+)</a>', main)
+        self.assertEqual(links, ["Go-live ledger"])
+        self.assertIn("Archived run-report proof only.", main)
+        self.assertIn("pipeline live count", main)
+        self.assertLess(main.index('href="/golive"'), main.index(before))
+
     def test_registered_get_renders_ordered_evidence_only(self):
         # Protect navigation, deterministic table projection and the write-method boundary, not the proof rules.
         proof = self.archive_report(6)
@@ -60,6 +69,7 @@ class StagePage(Base):
         self.assertEqual(self.get(), html)
         self.assertEqual(self.http.post("/stages", {})[0], 404)
         self.assertEqual(self.http.send("PUT", "/stages")[0], 405)
+        self.assert_ledger_signpost(html, "Warning codes from all eligible runs.")
 
     def test_since_narrows_warning_cells_without_losing_proof(self):
         # Catch an ignored cutoff, a cutoff applied to all evidence, or a 400 for an unknown run.
@@ -95,6 +105,7 @@ class StagePage(Base):
         self.assertIn(expected[0], html)
         self.assertNotIn("<table", html)
         self.assertNotIn(str(self.archive), html)
+        self.assert_ledger_signpost(html, expected[0])
 
     def test_invalid_report_is_named_without_raw_details(self):
         # A bad sibling must not be skipped or leak JSON payload, traceback or absolute path.
