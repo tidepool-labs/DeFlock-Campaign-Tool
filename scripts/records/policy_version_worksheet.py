@@ -16,7 +16,8 @@ missing or changed source file, a crossed agency/policy/revision, or a passage t
 withheld side makes the pair UNREVIEWED; it is never read as a removal, a match or a change.
 
 The worksheet is refused as a whole (exit 2, nothing printed on stdout) when the two revision IDs are the same, when
-the prior and current rows each carry the other revision's source (swapped), or when both sides are byte-bound but
+the prior and current rows each carry the other revision's source (swapped; checked over every row's byte-verified
+source, including disputed and duplicate rows, before any side is withheld), or when both sides are byte-bound but
 the prior revision is not strictly older than the current one by effective date.
 
 Exit 0 = both sides cited, 1 = worksheet printed with a withheld side, 2 = refused, usage or unreadable input.
@@ -119,6 +120,22 @@ def _source(base, row):
     return doc, digest
 
 
+def _verified_source_revisions(pair, base, revision):
+    """Revision IDs named by every byte-verified, same-agency/policy source behind ANY row for this revision.
+
+    Disputed and duplicate rows are inspected too: a swap is a property of the source files, so withholding a row
+    must never hide it.
+    """
+    named = set()
+    for row in pair["revisions"]:
+        if row.get("revision") != revision:
+            continue
+        doc, _ = _source(base, row)
+        if doc is not None and (doc.get("agency"), doc.get("policy")) == (pair["agency"], pair["policy"]):
+            named.add(doc.get("revision"))
+    return named
+
+
 def side(pair, base, revision):
     """One revision's cited passage, or a withheld record carrying only the revision ID and a reason."""
     rows = [r for r in pair["revisions"] if r.get("revision") == revision]
@@ -135,7 +152,7 @@ def side(pair, base, revision):
     if (doc.get("agency"), doc.get("policy")) != (pair["agency"], pair["policy"]):
         return {"revision": revision, "withheld": "CROSSED_SOURCE"}
     if doc.get("revision") != revision:
-        return {"revision": revision, "withheld": "SOURCE_NAMES_OTHER_REVISION", "_source_revision": doc.get("revision")}
+        return {"revision": revision, "withheld": "SOURCE_NAMES_OTHER_REVISION"}
     effective = _effective(doc.get("effective"))
     if effective is None:
         return {"revision": revision, "withheld": "EFFECTIVE_DATE_MISSING"}
@@ -153,13 +170,12 @@ def build(pair_path):
     pair_path = Path(pair_path)
     pair = load_pair(pair_path)
     base = pair_path.resolve().parent
+    # Swap check first, over every row's verified source, before any side is withheld for dispute or duplication.
+    if (pair["current_revision"] in _verified_source_revisions(pair, base, pair["prior_revision"])
+            and pair["prior_revision"] in _verified_source_revisions(pair, base, pair["current_revision"])):
+        raise Refused("prior and current rows carry each other's source (swapped revisions)")
     prior = side(pair, base, pair["prior_revision"])
     current = side(pair, base, pair["current_revision"])
-    if (prior.get("_source_revision") == pair["current_revision"]
-            and current.get("_source_revision") == pair["prior_revision"]):
-        raise Refused("prior and current rows carry each other's source (swapped revisions)")
-    for item in (prior, current):
-        item.pop("_source_revision", None)
     if "withheld" not in prior and "withheld" not in current:
         if prior["effective"] >= current["effective"]:
             raise Refused("prior revision is not older than the current revision (swapped or same date)")

@@ -136,6 +136,43 @@ class WorksheetTests(unittest.TestCase):
         with self.assertRaisesRegex(pvw.Refused, "same ID"):
             self.sheet()
 
+    def test_swapped_sources_are_refused_even_when_a_row_is_disputed_or_duplicated(self):
+        # Review t_ef131f44 item 1: a disputed or duplicate row must not hide independently verifiable swapped sources.
+        def swapped(tmp):
+            case = Case(tmp)
+            rows = case.pair["revisions"]
+            rows[0]["source"], rows[1]["source"] = rows[1]["source"], rows[0]["source"]
+            rows[0]["source_sha256"], rows[1]["source_sha256"] = rows[1]["source_sha256"], rows[0]["source_sha256"]
+            return case, rows
+        variants = {
+            "prior disputed": lambda rows: rows[0].update(disputed=True),
+            "current disputed": lambda rows: rows[1].update(disputed=True),
+            "both disputed": lambda rows: (rows[0].update(disputed=True), rows[1].update(disputed=True)),
+            "prior duplicated": lambda rows: rows.append(dict(rows[0], passage="other")),
+            "current duplicated": lambda rows: rows.append(dict(rows[1], passage="other")),
+        }
+        for name, mutate in variants.items():
+            with self.subTest(variant=name):
+                with tempfile.TemporaryDirectory(prefix="policy-worksheet-") as tmp:
+                    case, rows = swapped(tmp)
+                    mutate(rows)
+                    path = case.write()
+                    with self.assertRaisesRegex(pvw.Refused, "swapped"):
+                        pvw.build(path)
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        self.assertEqual(pvw.main([str(path)]), 2)
+                    self.assertEqual(out.getvalue(), "")
+        # Control: only one direction crossed (current row carries the prior source, prior row disputed but its own
+        # source) is not a swap; the current side is withheld and the sheet stays UNREVIEWED.
+        rows = self.case.pair["revisions"]
+        rows[0]["disputed"] = True
+        rows[1].update(source=rows[0]["source"], source_sha256=rows[0]["source_sha256"])
+        sheet = self.sheet()
+        self.assertEqual(sheet["wording"], pvw.UNREVIEWED)
+        self.assertEqual(sheet["prior"], {"revision": "rev-A", "withheld": "DISPUTED_PASSAGE"})
+        self.assertEqual(sheet["current"], {"revision": "rev-B", "withheld": "SOURCE_NAMES_OTHER_REVISION"})
+
     def test_same_effective_date_is_refused(self):
         self.case.files["rev-b.json"] = source("rev-B", "2025-01-01", [{}, {}, {FIELD: CURRENT_TEXT}])
         self.case.pair["revisions"][1]["source_sha256"] = hashlib.sha256(self.case.files["rev-b.json"]).hexdigest()
