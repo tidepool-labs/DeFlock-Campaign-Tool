@@ -18,8 +18,10 @@ queue ID: PENDING_DRAFT, APPROVED or PLACED_IN_DRAFTS with the revision, decisio
 
 Progress is matched on the exact agency, request and queue ID; a neighbouring request to the same agency never
 inherits it. An approval must name the draft revision it applies to and a placement must carry the applied decision
-and the same revision, so a later edit returns the queue to PENDING_DRAFT. A draft that answers an original not
-received for its own request is SOURCE_UNATTRIBUTED and goes no further. Placement in Drafts is never reported as
+and the same revision, so a later edit (at any higher revision; the export need not hold every revision) returns the
+queue to PENDING_DRAFT. A draft that answers an original not received for its own request is SOURCE_UNATTRIBUTED and
+goes no further until a later draft answers one of the request's own originals. An approval or placement naming a
+revision the exported history cannot reach is HISTORY_INCOMPLETE. Placement in Drafts is never reported as
 sent: this summary has no sent state. Events for a request that is not in the ledger are counted as unmatched.
 
 Exit 0 = summary printed, 2 = refused, usage or unreadable input. Review aid only: it infers no deadline, fulfilment
@@ -40,6 +42,7 @@ NOTE = ("Review aid for the sitting. Placed in Drafts means placed, not sent. No
         "conclusion is drawn.")
 AWAITING, RECEIVED, NEEDS_ATTRIBUTION = "AWAITING_REPLY", "RECEIVED", "NEEDS_ATTRIBUTION"
 PENDING, APPROVED, PLACED, UNATTRIBUTED = "PENDING_DRAFT", "APPROVED", "PLACED_IN_DRAFTS", "SOURCE_UNATTRIBUTED"
+INCOMPLETE = "HISTORY_INCOMPLETE"
 
 
 class Refused(Exception):
@@ -102,7 +105,14 @@ def incoming(data, keys):
 
 
 def outgoing(events, key, attributed):
-    """One entry per queue ID of this exact request, advanced only by exact-revision evidence."""
+    """One entry per queue ID of this exact request, advanced only by exact-revision evidence.
+
+    Events apply in list order. A draft at any revision above the current one starts over at that revision (the
+    history need not be contiguous): earlier approval and placement no longer apply, and the draft's source is
+    attributed afresh, so a corrected draft leaves SOURCE_UNATTRIBUTED. A draft at or below the current revision is
+    stale and ignored. An approval or placement that names a revision the known history cannot reach means an edit
+    is missing from the export: the queue becomes HISTORY_INCOMPLETE and goes no further until a later draft.
+    """
     queues = {}
     for e in events:
         if (e.get("agency_id"), e.get("request_id")) != key or not _ident(e.get("queue_id")):
@@ -113,14 +123,14 @@ def outgoing(events, key, attributed):
         q = queues.setdefault(e["queue_id"], {"queue_id": e["queue_id"], "state": None, "revision": 0,
                                               "decision_id": None, "message_id": None})
         kind = e.get("kind")
-        if q["state"] == UNATTRIBUTED:
-            continue
-        if kind == "draft" and n == q["revision"] + 1:
+        if kind == "draft":
+            if n <= q["revision"]:
+                continue
             source = e.get("original_sha256")
-            if source is not None and source not in attributed:
-                q.update(state=UNATTRIBUTED, revision=n, decision_id=None, message_id=None)
-            else:
-                q.update(state=PENDING, revision=n, decision_id=None, message_id=None)
+            state = UNATTRIBUTED if source is not None and source not in attributed else PENDING
+            q.update(state=state, revision=n, decision_id=None, message_id=None)
+        elif kind not in ("approval_applied", "drafts_placement") or q["state"] in (None, UNATTRIBUTED, INCOMPLETE):
+            continue
         elif (kind == "approval_applied" and q["state"] == PENDING and n == q["revision"] + 1
               and type(e.get("from_revision")) is int and e["from_revision"] == q["revision"]
               and _ident(e.get("decision_id"))):
@@ -128,6 +138,9 @@ def outgoing(events, key, attributed):
         elif (kind == "drafts_placement" and q["state"] == APPROVED and n == q["revision"]
               and e.get("decision_id") == q["decision_id"] and _ident(e.get("message_id"))):
             q.update(state=PLACED, message_id=e["message_id"])
+        elif n > q["revision"] + 1 or (kind == "approval_applied" and type(e.get("from_revision")) is int
+                                       and e["from_revision"] > q["revision"]):
+            q.update(state=INCOMPLETE, revision=n, decision_id=None, message_id=None)
     return [q for _, q in sorted(queues.items()) if q["state"] is not None]
 
 

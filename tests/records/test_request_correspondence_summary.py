@@ -97,6 +97,48 @@ class SummaryTests(unittest.TestCase):
         rows = self.summary(fixture([events[0], events[1] | {"from_revision": 0}, events[2]]))
         self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
 
+    def test_later_non_contiguous_edit_invalidates_placement(self):
+        # Review t_ad6b46ca item 1: placed at revision 2, then an edit exported only as revision 4.
+        events = chain()
+        rows = self.summary(fixture(events + [LINK | {"kind": "draft", "revision": 4, "original_sha256": A}]))
+        reply = rows[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["revision"], reply["decision_id"], reply["message_id"]),
+                         (rcs.PENDING, 4, None, None))
+        # A stale (lower) draft revision after placement does not reopen or advance anything.
+        rows = self.summary(fixture(events + [LINK | {"kind": "draft", "revision": 1, "original_sha256": A}]))
+        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PLACED)
+        # An approval or placement the exported history cannot reach is not progress.
+        for late in (LINK | {"kind": "approval_applied", "from_revision": 4, "revision": 5, "decision_id": "D-5"},
+                     LINK | {"kind": "drafts_placement", "revision": 5, "decision_id": "D-test", "message_id": "M-5"}):
+            with self.subTest(kind=late["kind"]):
+                reply = self.summary(fixture(events + [late]))[("alpha", "R-OLD")]["replies"][0]
+                self.assertEqual((reply["state"], reply["revision"], reply["decision_id"], reply["message_id"]),
+                                 (rcs.INCOMPLETE, 5, None, None))
+                # A later draft starts the queue over.
+                again = events + [late, LINK | {"kind": "draft", "revision": 6, "original_sha256": A}]
+                self.assertEqual(self.summary(fixture(again))[("alpha", "R-OLD")]["replies"][0]["state"], rcs.PENDING)
+
+    def test_corrected_draft_leaves_source_unattributed(self):
+        # Review t_ad6b46ca item 2: attribution is re-evaluated on every later draft, both ways.
+        link = OLD | {"queue_id": "q-fix"}
+        wrong = link | {"kind": "draft", "revision": 1, "original_sha256": B}
+        right = link | {"kind": "draft", "revision": 2, "original_sha256": A}
+        approve = link | {"kind": "approval_applied", "from_revision": 2, "revision": 3, "decision_id": "D-fix"}
+        rows = self.summary(fixture([wrong]))
+        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.UNATTRIBUTED)
+        # Approval of the unattributed draft never advances it.
+        rows = self.summary(fixture([wrong, link | {"kind": "approval_applied", "from_revision": 1, "revision": 2,
+                                                     "decision_id": "D-bad"}]))
+        self.assertEqual(rows[("alpha", "R-OLD")]["replies"][0]["state"], rcs.UNATTRIBUTED)
+        rows = self.summary(fixture([wrong, right, approve]))
+        reply = rows[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["revision"], reply["decision_id"]), (rcs.APPROVED, 3, "D-fix"))
+        # And a later draft that points away again is unattributed again.
+        rows = self.summary(fixture([wrong, right, approve, link | {"kind": "draft", "revision": 5,
+                                                                    "original_sha256": C}]))
+        reply = rows[("alpha", "R-OLD")]["replies"][0]
+        self.assertEqual((reply["state"], reply["decision_id"]), (rcs.UNATTRIBUTED, None))
+
     def test_draft_answering_another_requests_original_is_unattributed(self):
         data = fixture(chain(link=NEW | {"queue_id": "q-new"}, source=A))
         rows = self.summary(data)
