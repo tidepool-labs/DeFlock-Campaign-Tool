@@ -5,8 +5,11 @@ sandbox ledger is checked by SHA-256. A control changes one byte of a second cop
 adoption stage must refuse it (ADOPTION_NOT_REFUSED if it adopts). A send or any socket connection (loopback included) fails the driver.
 
 The stages start ``adopt-mail`` child interpreters, which the in-process fence cannot see. Every child (and its own children) therefore runs
-under an audit hook found through PYTHONPATH: it refuses and records a socket use or a write outside the sandbox, and records each start in
-``child-audit.jsonl``; ``no_sends`` fails on any such record and when no child was audited.
+under an audit hook found through PYTHONPATH: it refuses and records a socket use or a write outside the sandbox (an open, a rename, a
+SQLite connection, and an ATTACH or VACUUM INTO on any connection, which SQLite opens in native code and which therefore go through a
+connection authorizer the child cannot lift), and records each start in ``child-audit.jsonl``; ``no_sends`` fails on any such record and when
+no child was audited. The fence is for the repository's own ``adopt-mail`` children (their start is checked against ``CHILD_MODULES``): it
+catches an accidental write or send, it is not isolation from deliberately hostile code (ctypes or a native extension are not judged).
 """
 
 import argparse
@@ -57,25 +60,33 @@ if _log and _root:
         target = os.path.realpath(os.path.join(os.getcwd(), os.fsdecode(path)))
         return not (target == os.devnull or target == _root or target.startswith(_root + os.sep))
 
-    def _database(value):
-        # SQLite opens and journals its files in native code, with no ``open`` audit event: judge the connection itself.
+    def _target(value):
+        # SQLite opens and journals its files in native code, with no ``open`` audit event: the database file a connection or an
+        # ATTACH / VACUUM INTO would write, when it lies outside the sandbox; None for read-only, in-memory and in-sandbox files.
         name = os.fsdecode(value) if isinstance(value, (str, bytes, os.PathLike)) else ""
         if name.startswith("file:"):
             path, _, query = name[5:].partition("?")
             options = parse_qs(query)
             if options.get("mode") == ["ro"] or options.get("immutable") == ["1"]:
-                return  # read-only: nothing is written or journalled
+                return None  # read-only: nothing is written or journalled
             if path.startswith("//"):
                 path = path[2:]
                 path = path[path.index("/"):] if "/" in path else ""
             name = unquote(path)
-        if name and name != ":memory:" and _outside(name):
+        return name if name and name != ":memory:" and _outside(name) else None
+
+    def _database(value):
+        name = _target(value)
+        if name:
             _emit("outside", name)
             raise PermissionError("CHILD_WRITE_OUTSIDE_SANDBOX")
 
     def _hook(event, args):
         if event == "sqlite3.connect":
             _database(args[0])
+        elif event == "sqlite3.enable_load_extension":
+            _emit("outside", "sqlite3 load_extension")  # native code the hook cannot judge
+            raise PermissionError("CHILD_WRITE_OUTSIDE_SANDBOX")
         elif event == "open" and not isinstance(args[0], int):
             if ((args[2] or 0) & _mask or any(flag in (args[1] or "") for flag in "wax+")) and _outside(args[0]):
                 _emit("outside", os.fsdecode(args[0]))
@@ -91,6 +102,43 @@ if _log and _root:
 
     _emit("start", sys.orig_argv[1:6])
     sys.addaudithook(_hook)
+
+    # A connection may open a second database later (ATTACH, VACUUM INTO): SQLite does that in native code with no audit event, but
+    # it asks the connection's authorizer first. Every connection a child makes therefore carries an authorizer that refuses an
+    # outside file; a child's own set_authorizer is kept and consulted after ours, so it cannot lift the fence.
+    import sqlite3
+
+    class _Guard:
+        _user = None
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            super().set_authorizer(self._judge)
+
+        def _judge(self, action, arg1, arg2, database, source):
+            if action == sqlite3.SQLITE_ATTACH and _target(arg1):
+                _emit("outside", _target(arg1))
+                return sqlite3.SQLITE_DENY
+            return self._user(action, arg1, arg2, database, source) if self._user else sqlite3.SQLITE_OK
+
+        def set_authorizer(self, callback):
+            self._user = callback
+
+    _made, _plain, _connect = {}, sqlite3.Connection, sqlite3.connect
+
+    def _guarded(factory):
+        factory = factory or _plain
+        return factory if issubclass(factory, _Guard) else _made.setdefault(factory, type("Guarded", (_Guard, factory), {}))
+
+    def _guarded_connect(database, *args, **kwargs):
+        if len(args) > 4:  # factory given by position
+            args = args[:4] + (_guarded(args[4]),) + args[5:]
+        else:
+            kwargs["factory"] = _guarded(kwargs.get("factory"))
+        return _connect(database, *args, **kwargs)
+
+    sqlite3.connect = sqlite3.dbapi2.connect = _guarded_connect
+    sqlite3.Connection = sqlite3.dbapi2.Connection = _guarded(_plain)
 """
 
 

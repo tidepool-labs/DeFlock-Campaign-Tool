@@ -234,9 +234,26 @@ class Children(Base):
                 "socket": "import socket; socket.socket().connect(('127.0.0.1', 9))",
                 "sqlite": "import sqlite3; sqlite3.connect(%r).execute('create table t(x)')" % str(database),
                 "sqlite uri": "import sqlite3; sqlite3.connect('file:%s?mode=rwc', uri=True).execute('create table t(x)')" % database,
-                "sqlite uri path": "import sqlite3; sqlite3.connect('file://%s', uri=True).execute('create table t(x)')" % database}
+                "sqlite uri path": "import sqlite3; sqlite3.connect('file://%s', uri=True).execute('create table t(x)')" % database,
+                # ATTACH / VACUUM INTO open their file in native code (no audit event); the connection's authorizer is the gate.
+                "sqlite attach": "import sqlite3; sqlite3.connect(':memory:').execute(%r)" % ("ATTACH DATABASE '%s' AS x" % database),
+                "sqlite attach in sandbox db": ("import sqlite3; c = sqlite3.connect(%r); c.execute(%r)"
+                                                % (str(self.parent / "sqlite-attach-in-sandbox-db" / "home.db"), "ATTACH DATABASE '%s' AS x" % database)),
+                "sqlite vacuum into": "import sqlite3; c = sqlite3.connect(':memory:'); c.execute('create table t(x)'); c.execute(%r)" % (
+                    "VACUUM INTO '%s'" % database),
+                "sqlite attach uri": "import sqlite3; sqlite3.connect(':memory:', uri=True).execute(%r)" % (
+                    "ATTACH DATABASE 'file:%s?mode=rwc' AS x" % database),
+                "sqlite attach after the authorizer is cleared": (
+                    "import sqlite3; c = sqlite3.connect(':memory:'); c.set_authorizer(None); c.execute(%r)" % ("ATTACH DATABASE '%s' AS x" % database)),
+                "sqlite attach through the Connection class": (
+                    "import sqlite3; c = sqlite3.Connection(':memory:'); c.execute(%r)" % ("ATTACH DATABASE '%s' AS x" % database)),
+                "sqlite attach with a factory by position": (
+                    "import sqlite3; c = sqlite3.connect(':memory:', 5.0, 0, '', True, sqlite3.Connection); c.execute(%r)" % (
+                        "ATTACH DATABASE '%s' AS x" % database)),
+                "sqlite load extension": "import sqlite3; sqlite3.connect(':memory:').enable_load_extension(True)"}
         wanted = (("write", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("socket", "SEND_ATTEMPTED"), ("sqlite", "CHILD_WROTE_OUTSIDE_SANDBOX"),
-                  ("sqlite uri", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("sqlite uri path", "CHILD_WROTE_OUTSIDE_SANDBOX"))
+                  ("sqlite uri", "CHILD_WROTE_OUTSIDE_SANDBOX"), ("sqlite uri path", "CHILD_WROTE_OUTSIDE_SANDBOX"),
+                  *((label, "CHILD_WROTE_OUTSIDE_SANDBOX") for label in list(code)[5:]))
         for label, want in wanted:
             with self.subTest(label):
                 def attempt(name, source=code[label]):
@@ -256,16 +273,25 @@ class Children(Base):
             db.execute("CREATE TABLE t(x)")
         inside = "import sqlite3; c = sqlite3.connect(%r); c.execute('create table if not exists t(x)'); c.commit()" % str(self.parent / "allowed" / "inside.db")
         read_only = "import sqlite3; sqlite3.connect('file:%s?mode=ro', uri=True).execute('select * from t').fetchall()" % readable
+        # ATTACH inside the sandbox and read-only outside work; a child's own authorizer still runs and may deny.
+        attach_inside = "import sqlite3; c = sqlite3.connect(':memory:'); c.execute(%r); c.execute('create table if not exists x.t(y)')" % (
+            "ATTACH DATABASE '%s' AS x" % (self.parent / "allowed" / "attached.db"))
+        attach_read_only = "import sqlite3; c = sqlite3.connect(':memory:', uri=True); c.execute(%r); c.execute('select * from x.t').fetchall()" % (
+            "ATTACH DATABASE 'file:%s?mode=ro' AS x" % readable)
+        own_authorizer = ("import sqlite3; c = sqlite3.connect(':memory:'); c.set_authorizer(lambda action, *rest: sqlite3.SQLITE_DENY if action == "
+                          "sqlite3.SQLITE_CREATE_TABLE else sqlite3.SQLITE_OK); c.execute('select 1')\n"
+                          "try:\n    c.execute('create table t(x)')\nexcept sqlite3.DatabaseError:\n    pass\nelse:\n    raise SystemExit(1)")
 
         def attempt(name):
             if name == "adoption":
-                for source in (inside, read_only):
-                    self.assertEqual(subprocess.run([sys.executable, "-B", "-c", source], stderr=subprocess.DEVNULL).returncode, 0)
+                for source in (inside, read_only, attach_inside, attach_read_only, own_authorizer):
+                    self.assertEqual(subprocess.run([sys.executable, "-B", "-c", source], stderr=subprocess.DEVNULL).returncode, 0, source)
         result = self.replacing("allowed", lambda name, project: None, before=attempt)
         self.assertEqual(last(result), ("no_sends", "CHILD_UNEXPECTED"))  # the probes are not adopt-mail children, but nothing was refused
         kinds = [json.loads(line)[0] for line in (self.parent / "allowed" / driver.CHILD_LOG).read_text().splitlines()]
         self.assertEqual(sorted(set(kinds)), ["start"])
         self.assertTrue((self.parent / "allowed" / "inside.db").exists())
+        self.assertTrue((self.parent / "allowed" / "attached.db").exists())
 
     def test_c1_a_run_with_no_audited_child_is_not_a_pass(self):
         """C1: if no child was audited the boundary was not observed. Bug: an empty audit counted as a clean one."""
