@@ -47,7 +47,7 @@ def _sha(raw):
 
 def _read(path, limit):
     """Bytes of one regular file opened without following a final symlink, refused above ``limit``."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)  # a FIFO must not block before fstat rejects it
     try:
         info = os.fstat(fd)
         if not (stat.S_ISREG(info.st_mode) and info.st_size <= limit):
@@ -80,8 +80,8 @@ def find_decision(journal_bytes, decision_id):
             continue
         try:
             entry = json.loads(line)
-        except ValueError:
-            continue  # a torn line cannot be the decision; D5 still checks the entry it gets
+        except (ValueError, RecursionError):
+            continue  # a torn or over-nested line cannot be the decision; D5 still checks the entry it gets
         if isinstance(entry, dict) and entry.get("entry_id") == decision_id:
             found.append(entry)
     if not found:
@@ -130,6 +130,9 @@ def evaluate(*, export_root, queue_id, revision, decision_id, journal_bytes, con
             raise Hold("CURRENT_MOVED")
     except Hold as hold:
         return {"verdict": "HOLD", "reason": hold.reason, "seal_sha256": seal, **hold.detail}
+    except RecursionError:
+        # Over-nested caller-supplied JSON (capture/denial receipts) reaching a reader: a HOLD, never a traceback.
+        return {"verdict": "HOLD", "reason": "INPUT_UNREADABLE", "seal_sha256": seal}
     return {"verdict": "READY", "seal_sha256": seal, "export": name, "run_id": d1["run_id"],
             "queue_id": d1["queue_id"], "revision": d1["revision"], "kind": d1["kind"], "state": d1["state"],
             "decision_id": decision_id, "signed_revision": d5["signed_revision"], "console_head": console_head,
@@ -159,7 +162,7 @@ def main(argv=None):
         page = _read(args.page, golive_parity.MAX_BYTES)
         capture = json.loads(_read(args.capture, MAX_RECEIPT))
         denial = json.loads(_read(args.denial, MAX_RECEIPT))
-    except (OSError, ValueError):
+    except (OSError, ValueError, RecursionError):
         result = {"verdict": "HOLD", "reason": "INPUT_UNREADABLE", "seal_sha256": None}
     else:
         result = evaluate(export_root=args.export_root, queue_id=args.queue_id, revision=args.revision,

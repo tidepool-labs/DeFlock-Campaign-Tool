@@ -1,6 +1,7 @@
 """golive_step9: READY only when D1, anchor, D5 and D6 all name the one current seal (synthetic, no network)."""
 import io
 import json
+import os
 import socket
 import tempfile
 import threading
@@ -204,6 +205,26 @@ class Step9(tmd.Base):
         out = io.StringIO()
         with redirect_stdout(out):
             self.assertEqual(step9.main([*argv[:-1], str(self.base / "link")]), 1)
+        self.assertEqual(json.loads(out.getvalue())["reason"], "INPUT_UNREADABLE")
+        # Review t_c41323fd item 1: over-nested JSON is a HOLD, never a traceback; an over-nested journal line
+        # beside the real decision is skipped like a torn line.
+        deep = b"[" * 30000 + b"]" * 30000
+        files["capture"].write_bytes(deep)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(step9.main(argv), 1)
+        self.assertEqual(json.loads(out.getvalue())["reason"], "INPUT_UNREADABLE")
+        files["capture"].write_bytes(json.dumps(cap2).encode())
+        self.assertEqual(self.evaluate(ident, n + 1, decision_id, deep + b"\n" + journal, cli, page, cap2,
+                                       den2)["verdict"], "READY")
+        with mock.patch.object(step9.golive_phone_check_packet, "build", side_effect=RecursionError):
+            self.assertEqual(reason(), "INPUT_UNREADABLE")
+        # Review t_c41323fd item 2: a FIFO with no writer is refused at once instead of blocking the check.
+        fifo = self.base / "fifo"
+        os.mkfifo(fifo)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            self.assertEqual(step9.main([*argv[:-1], str(fifo)]), 1)
         self.assertEqual(json.loads(out.getvalue())["reason"], "INPUT_UNREADABLE")
 
         # A later seal exported while the approval anchor is unavailable becomes current: withheld.
