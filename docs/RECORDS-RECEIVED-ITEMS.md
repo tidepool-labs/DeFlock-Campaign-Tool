@@ -25,7 +25,8 @@ the us-ca law package is draft and each finding says so.
   two different specific kinds give `other` with `mixed_kind_candidates`; text without a real page
   gives `other` with `page_locator_unavailable`. A mail body or MIME part is never given an invented page.
   **Mail-body citation (REC-MAIL-CITE-1):** a unit whose extraction kind is `email_body` or `mime_part` and whose
-  locator is exactly a MIME locator (`mime` plus one part label, `part` or `source_part`, and no page) is read and
+  locator is exactly a MIME locator (`mime` plus one part label, `part` or `source_part`, and no page; the label must
+  be non-blank and free of control characters) is read and
   cited by that part: `kind_basis: {page: null, part, quote}` (exact source line) and, for a date it states,
   `deadlines[]: {page: null, part, ...}`. Mail headers, documents and any other unit without a real page keep the
   page contract above (a non-mail unit with a MIME-looking locator still stays `other` with `page_locator_unavailable`).

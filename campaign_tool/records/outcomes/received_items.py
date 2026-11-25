@@ -47,7 +47,7 @@ ADMITTED_ROLES = frozenset({"agency_original", "container_child", "original"})
 # extraction, {mime, source_part} from mail intake). Its citation is that part, never an invented page.
 MAIL_TEXT_KINDS = frozenset({"email_body", "mime_part"})
 MAIL_LOCATOR_KEYS = frozenset({"mime", "part", "source_part"})
-_PART = re.compile(r"[^\x00-\x1f\x7f]{1,256}")
+_PART = re.compile(r"[^\x00-\x1f\x7f-\x9f]{1,256}")
 
 _I = re.I
 PHRASES = {
@@ -152,7 +152,7 @@ def _mail_part(payload):
     if len(labels) != 1:
         return None
     label = str(labels[0]) if type(labels[0]) is int and labels[0] >= 0 else labels[0]
-    return label if isinstance(label, str) and _PART.fullmatch(label) else None
+    return label if isinstance(label, str) and _PART.fullmatch(label) and label.strip() else None
 
 
 def _candidates(units):

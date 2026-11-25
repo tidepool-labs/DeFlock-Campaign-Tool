@@ -83,6 +83,10 @@ class MailPartCitationTests(unittest.TestCase):
             "two part labels": [("email_body", {"mime": "text/plain", "part": "1", "source_part": "1"},
                                  "We deny your request.")],
             "control in label": [("email_body", {"mime": "text/plain", "part": "1\n2"}, "We deny your request.")],
+            "whitespace-only label": [("email_body", {"mime": "text/plain", "part": "   "}, "We deny your request.")],
+            "whitespace-only source_part": [("mime_part", {"mime": "text/plain", "source_part": "\u00a0\t"},
+                                             "We deny your request.")],
+            "C1 control in label": [("email_body", {"mime": "text/plain", "part": "1\x85"}, "We deny your request.")],
             "no mime": [("email_body", {"part": "1"}, "We deny your request.")],
         }
         subjects = {name: self.mail(units) for name, units in cases.items()}
@@ -147,6 +151,9 @@ class MailPartDraftTests(unittest.TestCase):
             "empty part": {"page": None, "part": "", "quote": "We deny your request."},
             "int part": {"page": None, "part": 1, "quote": "We deny your request."},
             "control part": {"page": None, "part": "1\x00", "quote": "We deny your request."},
+            "whitespace-only part": {"page": None, "part": "   ", "quote": "We deny your request."},
+            "unicode-space part": {"page": None, "part": "\u00a0\u2003", "quote": "We deny your request."},
+            "C1 control part": {"page": None, "part": "1\x85", "quote": "We deny your request."},
             "blank quote": {"page": None, "part": "1", "quote": "  "},
         }
         for name, basis in broken.items():
@@ -158,6 +165,10 @@ class MailPartDraftTests(unittest.TestCase):
         bad_deadline = {"date_text": "November 30", "date": None, "page": 2, "part": "1", "quote": "x by November 30"}
         with self.assertRaisesRegex(dt.DraftSourceError, "^deadline$"):
             dt.validate_item(mail_item(6, deadlines=[bad_deadline]))
+        blank_deadline = {"date_text": "November 30", "date": None, "page": None, "part": "  ",
+                          "quote": "x by November 30"}
+        with self.assertRaisesRegex(dt.DraftSourceError, "^deadline$"):
+            dt.validate_item(mail_item(7, deadlines=[blank_deadline]))
 
 
 class MailPartQueueTests(unittest.TestCase):

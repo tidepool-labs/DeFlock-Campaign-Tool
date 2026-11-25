@@ -30,7 +30,7 @@ MAX_BODY_BYTES = 64 * 1024
 _ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}")
 _SHA = re.compile(r"[a-f0-9]{64}")
 _CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f]")
-_PART = re.compile(r"[^\x00-\x1f\x7f]{1,256}")  # a MIME part label as the extraction recorded it (REC-MAIL-CITE-1)
+_PART = re.compile(r"[^\x00-\x1f\x7f-\x9f]{1,256}")  # a MIME part label as the extraction recorded it (REC-MAIL-CITE-1)
 _SOURCE_KIND = {"extension": "reply-extension", "denial": "appeal-denial", "fee": "fee-reply"}
 
 
@@ -50,7 +50,7 @@ def _cited(entry):
     if "part" in entry:
         part, quote = entry["part"], entry.get("quote")
         return (entry.get("page") is None and isinstance(part, str) and _PART.fullmatch(part) is not None
-                and isinstance(quote, str) and bool(quote.strip()))
+                and bool(part.strip()) and isinstance(quote, str) and bool(quote.strip()))
     return _citation(entry.get("page"), entry.get("quote"))
 
 
