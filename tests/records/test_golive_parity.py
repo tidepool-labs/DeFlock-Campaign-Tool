@@ -304,6 +304,50 @@ class CliTests(Base):
             golive_parity.main(["--page", good_page])
         self.assertEqual(stop.exception.code, 2)
 
+    def test_c3_read_failure_after_open_exit_two(self):
+        """C3: An I/O error after a successful open (read or fstat) exits 2 with fixed text, not a traceback."""
+        # Catches catching OSError only around os.open: an EIO from read() would escape and exit 1 (the difference code).
+        good_page, good_cli = self.save("good.html", self.html), self.save("good.json", json.dumps(self.doc))
+        real_fdopen = os.fdopen
+
+        class FailingHandle:
+            def __init__(self, fd, fail):
+                self.fd, self.fail = fd, fail
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                os.close(self.fd)
+                return False
+
+            def fileno(self):
+                if self.fail == "fstat":
+                    raise OSError(5, "Input/output error")
+                return self.fd
+
+            def read(self, size=-1):
+                raise OSError(5, "Input/output error " + SENTINEL)
+
+        for target in ("page", "cli"):
+            for fail in ("read", "fstat"):
+                calls = []
+
+                def fdopen(fd, mode="r", *rest, target=target, fail=fail, calls=calls):
+                    calls.append(fd)
+                    failing = (target == "page") == (len(calls) == 1)
+                    return FailingHandle(fd, fail) if failing else real_fdopen(fd, mode, *rest)
+
+                err = io.StringIO()
+                with self.subTest(target=target, fail=fail), \
+                        mock.patch.object(golive_parity.os, "fdopen", side_effect=fdopen), \
+                        contextlib.redirect_stdout(io.StringIO()) as out, contextlib.redirect_stderr(err):
+                    self.assertEqual(golive_parity.main(["--page", good_page, "--cli", good_cli]), 2)
+                    self.assertEqual(out.getvalue(), "")
+                    self.assertEqual(err.getvalue(), "golive_parity: unreadable file\n")
+                    self.assertNotIn(SENTINEL, err.getvalue())
+                    self.assertEqual(len(calls), 1 if target == "page" else 2)
+
     def test_c3_size_limit_is_two_mib(self):
         """C3: Exactly 2 MiB is read; one byte more is refused."""
         # Catches an off-by-one in the size bound.

@@ -221,10 +221,13 @@ def _read(path):
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise _Input("unreadable file") from None
-    with os.fdopen(fd, "rb") as handle:
-        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
-            raise _Input("not a regular file")
-        data = handle.read(MAX_BYTES + 1)
+    try:
+        with os.fdopen(fd, "rb") as handle:
+            if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+                raise _Input("not a regular file")
+            data = handle.read(MAX_BYTES + 1)
+    except OSError:  # An I/O error after a successful open (e.g. EIO on read) is still an unreadable input.
+        raise _Input("unreadable file") from None
     if len(data) > MAX_BYTES:
         raise _Input("file is over 2 MiB")
     try:
