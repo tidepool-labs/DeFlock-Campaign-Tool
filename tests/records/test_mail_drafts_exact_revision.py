@@ -181,6 +181,48 @@ class ExactRevisionCommandLineTests(Base):
                     self.assertEqual((code, out, err), (1, "", "exact_request_invalid\n"))
         self.assertFalse(self.journal_path().exists())
 
+    def test_missing_repeated_and_abbreviated_revision_forms_are_code_only_refusals(self):
+        # Contract: every --revision occurrence is checked before argparse, so a bare trailing option, a repeated
+        # option (any order, any spelling, valid or not) or an abbreviation of it is exact_request_invalid, exit 1,
+        # code-only stderr (never argparse usage/exit 2, never a silent last-value-wins). Nothing connects or is written.
+        self.build_ledger()
+        reply = self.draft()
+        good = str(reply["revision"])
+        forms = (
+            ("--queue-id", reply["id"], "--revision"),
+            ("--revision", "--queue-id", reply["id"]),
+            ("--queue-id", reply["id"], "--revision", good, "--revision", "-" + CANARY),
+            ("--queue-id", reply["id"], "--revision=" + CANARY, "--revision=" + good),
+            ("--queue-id", reply["id"], "--revision=" + good, "--revision=" + CANARY),
+            ("--queue-id", reply["id"], "--revision=" + good, "--revision", good),
+            ("--queue-id", reply["id"], "--revision=" + good, "--revision=" + good),
+            ("--queue-id", reply["id"], "--rev", CANARY),
+            ("--queue-id", reply["id"], "--rev=" + CANARY),
+            ("--queue-id", reply["id"], "--revision=" + CANARY),
+            ("--queue-id", reply["id"], "--revision", "--dry-run"),
+        )
+        blocked = mock.patch.object(mail_poll, "connect", side_effect=AssertionError("connect"))
+        with blocked:
+            for args in forms:
+                with self.subTest(args=args):
+                    code, out, err = self.run_cli(*args)
+                    self.assertEqual((code, out, err), (1, "", "exact_request_invalid\n"))
+        self.assertFalse(self.journal_path().exists())
+
+    def test_one_well_formed_revision_in_any_accepted_spelling_still_goes_through_to_the_exact_check(self):
+        # Guards the refusal above against being over-broad: "--revision N", "--revision=N" and "--rev N" all reach the
+        # exact-revision check (here a dry run), and exactly one is accepted.
+        self.build_ledger()
+        reply = self.draft()
+        blocked = mock.patch.object(mail_poll, "connect", side_effect=AssertionError("connect"))
+        with blocked:
+            for spelling in (("--revision", str(reply["revision"])), ("--revision=%d" % reply["revision"],),
+                             ("--rev", str(reply["revision"]))):
+                with self.subTest(spelling=spelling):
+                    code, out, err = self.run_cli("--queue-id", reply["id"], *spelling, "--dry-run")
+                    self.assertEqual((code, err), (0, ""), err)
+                    self.assertNotIn(CANARY, out)
+
     def test_exact_cli_places_one_row_through_the_fake_mailbox(self):
         self.build_ledger()
         reply = self.draft()

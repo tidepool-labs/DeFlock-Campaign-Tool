@@ -448,6 +448,35 @@ _HEX64 = re.compile(r"[0-9a-f]{64}")
 _REVISION = re.compile(r"[0-9]{1,9}")  # ASCII digits only; no sign, space or other numeral
 
 
+def _revision_argv(argv):
+    """``argv`` with its single ``--revision`` rewritten as ``--revision=VALUE``, or None if the request is malformed.
+
+    Done before argparse, which would exit 2 with a usage line (and echo the rejected text). Every occurrence counts,
+    including argparse's unambiguous abbreviations (``--rev``): a missing value, a repeated option or a value that
+    is not 1-9 ASCII digits is malformed, so a second occurrence can never overwrite a first one unnoticed. The
+    value is glued on so a leading-dash value is never read as an option."""
+    out, seen, i = [], 0, 0
+    while i < len(argv):
+        token = argv[i]
+        if token == "--":
+            return out + argv[i:]
+        name, eq, value = token.partition("=")
+        if len(name) >= 3 and name.startswith("--") and "--revision".startswith(name):
+            seen += 1
+            if not eq:
+                if i + 1 >= len(argv):
+                    return None
+                i += 1
+                value = argv[i]
+            if seen > 1 or _REVISION.fullmatch(value) is None:
+                return None
+            out.append("--revision=" + value)
+        else:
+            out.append(token)
+        i += 1
+    return out
+
+
 def _exact_row(queue, only_id, only_revision):
     """The one row an exact (queue ID, revision) request names, or a refusal before anything is opened for writing.
 
@@ -574,10 +603,10 @@ def main(argv=None):
     list_p = sub.add_parser("list")
     list_p.add_argument("--project", required=True)
     argv = list(sys.argv[1:] if argv is None else argv)
-    for i in range(len(argv) - 1):  # glue the value on so argparse never reads a leading-dash value as an option
-        if argv[i] == "--revision":
-            argv[i:i + 2] = ["--revision=" + argv[i + 1]]
-            break
+    argv = _revision_argv(argv)
+    if argv is None:  # before argparse can print usage or echo the text; content-free like every other refusal
+        print("exact_request_invalid", file=sys.stderr)
+        return 1
     args = parser.parse_args(argv)
     try:
         if args.action == "list":
@@ -587,8 +616,6 @@ def main(argv=None):
                                                         "superseded_by", "at")}, sort_keys=True))
             return 0
         _need((args.queue_id is None) == (args.revision is None), "exact_request_invalid")
-        # Parsed here, not by argparse type=int: argparse would exit 2 and echo the rejected text to stderr.
-        _need(args.revision is None or _REVISION.fullmatch(args.revision) is not None, "exact_request_invalid")
         config = load_config(args.config)
         print(json.dumps(place(args.project, config, dry_run=args.dry_run, only_id=args.queue_id,
                                only_revision=None if args.revision is None else int(args.revision)), sort_keys=True))
