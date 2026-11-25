@@ -12,8 +12,10 @@ From the JSON / JSONL outputs it lists, per run and document, which request the 
 sources such as policy documents, which agency) and where in the document the citation points (``page N`` or
 ``message part P``). Each link gets exactly one status:
 
-  LINKED         one request and/or one agency, at least one page or message-part locator
-  NO_LOCATOR     attributed, but nothing says which page or part (stays unreviewed; a page is never invented)
+  LINKED         one request and/or one agency, and at least one page or message-part locator stated by an
+                 occurrence that itself carries that attribution
+  NO_LOCATOR     attributed, but no attributed occurrence says which page or part (stays unreviewed; a page is
+                 never invented, and a locator from an unattributed or weaker mention does not count)
   UNATTRIBUTED   the output names the document but ties it to no request or agency (stays unreviewed)
   CROSS_AGENCY   the same document is tied to two or more agencies in one run (withheld; never attributed)
   CROSS_REQUEST  the same document is tied to two or more requests in one run (withheld; never attributed)
@@ -232,33 +234,50 @@ def _stage_links(entry, receipt):
     return _classify(raw_links), opaque
 
 
+def _supports(occurrence, request, agency):
+    """True when one occurrence carries the link's own attribution (a weaker or absent attribution never does)."""
+    occ_request, occ_agency = occurrence
+    if request is not None:
+        return occ_request == request
+    return occ_request is None and agency is not None and occ_agency == agency
+
+
 def _classify(raw_links):
-    """One link per (run, document). A document tied to two requests (or two agencies) in one run is never attributed."""
+    """One link per (run, document). A document tied to two requests (or two agencies) in one run is never attributed.
+
+    A locator counts for an attributed link only when the same occurrence also carries that attribution: a page
+    stated by an unattributed (or agency-only) mention never upgrades a request-attributed reference that has none.
+    """
     merged = {}
     for run_id, request, agency, doc, locators, evidence in raw_links:
-        slot = merged.setdefault((run_id or "", doc), {"requests": set(), "agencies": set(), "locators": set(),
+        slot = merged.setdefault((run_id or "", doc), {"requests": set(), "agencies": set(), "occurrences": [],
                                                          "evidence": {}})
         if request is not None:
             slot["requests"].add(request)
         if agency is not None:
             slot["agencies"].add(agency)
-        slot["locators"] |= locators
+        slot["occurrences"].append(((request, agency), locators))
         slot["evidence"][(evidence["path"], evidence["sha256"])] = evidence
     links = []
     for (run_id, doc), slot in merged.items():
+        observed = set().union(*(locators for _, locators in slot["occurrences"]))
+        request = next(iter(slot["requests"])) if len(slot["requests"]) == 1 else None
+        agency = next(iter(slot["agencies"])) if len(slot["agencies"]) == 1 else None
+        supported = set().union(*(locators for occurrence, locators in slot["occurrences"]
+                                  if _supports(occurrence, request, agency)))
+        shown = observed
         if len(slot["requests"]) > 1:
             status = "CROSS_REQUEST"
         elif len(slot["agencies"]) > 1:
             status = "CROSS_AGENCY"
         elif not slot["requests"] and not slot["agencies"]:
             status = "UNATTRIBUTED"
-        elif not slot["locators"]:
-            status = "NO_LOCATOR"
         else:
-            status = "LINKED"
+            shown = supported
+            status = "LINKED" if supported else "NO_LOCATOR"
         links.append({"run_id": run_id or None, "document_id": doc, "status": status,
                       "requests": sorted(slot["requests"]), "agencies": sorted(slot["agencies"]),
-                      "locators": [{"kind": kind, "value": value} for kind, value in sorted(slot["locators"])],
+                      "locators": [{"kind": kind, "value": value} for kind, value in sorted(shown)],
                       "evidence": [slot["evidence"][key] for key in sorted(slot["evidence"])]})
     links.sort(key=lambda link: (link["run_id"] or "", link["requests"], link["agencies"], link["document_id"]))
     return links

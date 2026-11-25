@@ -210,6 +210,29 @@ class SourceIndexTest(unittest.TestCase):
         link = by_doc(self.build(outputs), "11")[H["denial"]]
         self.assertEqual((link["status"], link["locators"]), ("NO_LOCATOR", []))
 
+    def test_locator_from_an_unattributed_or_weaker_mention_does_not_link(self):
+        # RETURN t_8a005323 item 3: attribution and locator must come from the same occurrence
+        outputs = stage_outputs()
+        outputs["12"]["replay/received-items.json"] = json.dumps({"run_id": "run_c", "items": [
+            {"agency_id": "ag-valley", "request_id": "req-1", "item_id": H["part"], "kind_basis": {"page": None}}]})
+        outputs["12"]["replay/timeline.json"] = json.dumps({"run_id": "run_c", "loose": [
+            {"request_id": None, "agency_id": None, "item_id": H["part"], "page": 4}]})
+        outputs["12"]["replay/agency.json"] = json.dumps({"run_id": "run_c", "agency_id": "ag-valley", "cited": [
+            {"item_id": H["part"], "kind_basis": {"part": 2}}]})
+        link = by_doc(self.build(outputs), "12")[H["part"]]
+        self.assertEqual((link["status"], link["requests"], link["locators"]), ("NO_LOCATOR", ["req-1"], []))
+        self._fresh()
+        outputs["12"]["replay/same.json"] = json.dumps({"run_id": "run_c", "request_id": "req-1", "agency_id": "ag-valley",
+                                                        "item_id": H["part"], "page": 6})
+        link = by_doc(self.build(outputs), "12")[H["part"]]
+        self.assertEqual((link["status"], link["locators"]), ("LINKED", [{"kind": "page", "value": "6"}]))
+        self._fresh()
+        agency_only = stage_outputs()
+        agency_only["12"] = {"replay/a.json": json.dumps({"run_id": "run_c", "agency_id": "ag-valley", "items": [
+            {"item_id": H["nopage"]}, {"request_id": None, "agency_id": None, "item_id": H["nopage"], "page": 2}]})}
+        link = by_doc(self.build(agency_only), "12")[H["nopage"]]
+        self.assertEqual((link["status"], link["agencies"], link["locators"]), ("NO_LOCATOR", ["ag-valley"], []))
+
     def test_changed_missing_or_escaping_evidence_refuses(self):
         self.refused("STAGE_11_EVIDENCE_CHANGED",
                      mutate=lambda root: (root / "stage-11/replay/gap-proposals.json").write_text("{}"))

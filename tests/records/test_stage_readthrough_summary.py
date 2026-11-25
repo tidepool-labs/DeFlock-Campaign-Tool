@@ -121,14 +121,25 @@ class SummaryTest(unittest.TestCase):
             ("13", "Fee item %s is filed under 11." % H["denial"][:12]): "FINDING_CITES_UNLINKED_DOCUMENT",
             ("11", "The denial is on page 5."): "FINDING_CITES_MISSING_PAGE",
             ("12", "Message part 2 is on page 1."): "FINDING_CITES_MISSING_PAGE",
+            # RETURN t_8a005323 item 1: an unknown digest next to a linked one is not ignored
+            ("11", "req-1 page 1 of %s, also %s." % (H["denial"][:12], "0123456789ab" * 2)):
+                "FINDING_CITES_UNLINKED_DOCUMENT",
+            ("11", "See %s." % ("f" * 70)): "FINDING_CITES_UNLINKED_DOCUMENT",
+            # RETURN t_8a005323 item 2: a page or part is checked against the document it is written next to
+            ("10", "Harbor %s page 1 matches." % H["harbor"][:12]): "FINDING_CITES_MISSING_PAGE",
+            ("10", "Page 1 of %s matches; %s too." % (H["harbor"][:12], H["valley"][:12])): "FINDING_CITES_MISSING_PAGE",
+            ("12", "Item %s message part 3." % H["part"][:12]): "FINDING_CITES_MISSING_PART",
         }
         for (stage, text), code in cases.items():
             summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
             self.assertEqual(self.statuses(summary)[stage], ("WITHHELD", (code,)), text)
             self.assertIsNone(next(s for s in summary["stages"] if s["stage"] == stage)["human"])
-        ok = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), "12",
-                                            "Item %s message part 2 belongs to req-1." % H["part"][:12]))
-        self.assertEqual(self.statuses(ok)["12"], ("FINDING_RECORDED", ()))
+        for stage, text in (("12", "Item %s message part 2 belongs to req-1." % H["part"][:12]),
+                            ("10", "Harbor %s page 2; valley %s page 1." % (H["harbor"][:12], H["valley"][:12])),
+                            ("10", "Page 1 of %s matches." % H["valley"][:16]),
+                            ("10", "Both policies cite page 1 and page 2.")):
+            ok = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
+            self.assertEqual(self.statuses(ok)[stage], ("FINDING_RECORDED", ()), text)
 
     def test_cross_request_source_never_supports_a_finding(self):
         outputs = case.stage_outputs()
