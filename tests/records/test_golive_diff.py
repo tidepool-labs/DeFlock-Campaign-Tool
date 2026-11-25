@@ -3,6 +3,7 @@
 Each test names its contract item (C1-C4) and the believable bug that fails it.
 """
 
+import gc
 import io
 import json
 import os
@@ -41,6 +42,10 @@ class Base(unittest.TestCase):
         return str(path)
 
     def run_cli(self, *args):
+        # Collect earlier modules' garbage first: on Python 3.13 a leaked sqlite3
+        # connection finalized inside the redirect writes "ResourceWarning: unclosed
+        # database" into err (CI run 45570486535, full (3.13, 2): 151 != 1).
+        gc.collect()
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             try:
