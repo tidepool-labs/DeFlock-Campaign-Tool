@@ -183,6 +183,19 @@ class RehearseGapProposalsTests(unittest.TestCase):
         self.assertEqual(result["codes"], ["CONTROL_PROPOSED"])
         self.assertNotEqual(driver.denial_pdf("a", True), driver.denial_pdf("a", False))
 
+        def other_proposal(*args, **kwargs):  # a proposal of a DIFFERENT type in the cited control must still fail it
+            report = original(*args, **kwargs)
+            seen.append(report)
+            if len(seen) == 2:  # the control replay
+                row = {"proposal_id": "x" * 64, "type": "policy_gap", "confidence": "low"}
+                report["agencies"] = [{"agency_id": driver.AGENCY, "requests": [{"request_id": driver.REQUEST, "proposals": [row]}]}]
+                report["counts"]["policy_gap"] = 1
+            return report
+        seen = []
+        with patch.object(gap_proposals, "propose", other_proposal):
+            result = driver.run(self.fresh())
+        self.assertEqual((result["codes"], result["steps"][-1]["name"]), (["CONTROL_PROPOSED"], "cited_denial_proposes_nothing"))
+
     def test_c5_send_or_extra_draft_in_a_journal_fails_no_sends(self):
         """C5: no send and no draft beyond the one appeal draft; bug: a next-step or reminder draft, or a send record."""
         queue, draft = "approvals/queue.jsonl", b'{"event": "draft", "revision": 0, "snapshot": {"kind": "%s"}}\n'
@@ -229,6 +242,26 @@ class RehearseGapProposalsTests(unittest.TestCase):
         receipt = rehearsal_receipt.build("rehearse_gap_proposals", self.result, self.sandbox, finished - timedelta(seconds=9),
                                           finished, "a" * 40)
         self.assertEqual((receipt["qualified"], receipt["qualify_codes"]), (True, []))
+
+    def test_adapter_only_or_foreign_stage_11_receipt_does_not_qualify(self):
+        """Stage 11 receipt boundary; bug: a receipt with only the early adapter-level steps (or from another module)
+        qualifies as stage 11 evidence because every recorded step is OK."""
+        self.assertEqual(rehearsal_receipt._STAGE_REQUIRED["11"], ("rehearse_gap_proposals", driver.STEP_NAMES))  # no drift
+        finished = datetime.now(timezone.utc)
+        build = lambda module, result: rehearsal_receipt.build(module, result, self.sandbox, finished - timedelta(seconds=9), finished, "a" * 40)
+        adapter_only = dict(self.result, steps=self.result["steps"][:2])  # seed_denial + received_denial, all OK
+        late_missing = dict(self.result, steps=[s for s in self.result["steps"] if s["name"] != "cited_denial_proposes_nothing"])
+        for label, module, result in (("adapter-only steps", "rehearse_gap_proposals", adapter_only),
+                                      ("control step missing", "rehearse_gap_proposals", late_missing),
+                                      ("another module", "rehearse_received", self.result)):
+            with self.subTest(label):
+                receipt = build(module, result)
+                self.assertEqual((receipt["result"], receipt["qualified"], receipt["qualify_codes"]),
+                                 ("pass", False, [rehearsal_receipt.INCOMPLETE]))
+                self.assertEqual(rehearsal_receipt.qualify(receipt, now=finished), (False, [rehearsal_receipt.INCOMPLETE]))
+        # a driver that claims no registered stage is not held to this boundary
+        other = build("rehearse_x", dict(self.result, stages=["3"], steps=self.result["steps"][:2]))
+        self.assertEqual((other["qualified"], other["qualify_codes"]), (True, []))
 
     def test_main_exit_code_and_sandbox_refusal(self):
         """Interface: exit 0 only when every step is OK; a used --sandbox is refused with exit 2."""

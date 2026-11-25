@@ -119,8 +119,9 @@ class _GapRehearsal(_Rehearsal):
         mine = [i for i in items.get("items", []) if i.get("original_sha256") == self.item_sha_cited]
         _need(len(mine) == 1 and mine[0].get("kind") == "denial", "CONTROL_ITEM_NOT_DENIAL")
         path, document = self._gap_doc(run_dir, report, "CONTROL_GAP_PROPOSALS")
-        _need(not [p for p in _proposals(document) if p.get("type") == PROPOSAL_TYPE], "CONTROL_PROPOSED")
-        _need(document["counts"].get(PROPOSAL_TYPE, 0) == 0, "CONTROL_COUNTS_DISAGREE")
+        _need(not _proposals(document), "CONTROL_PROPOSED")  # no proposal of any type: a cited denial leaves nothing to ask about
+        counts = document["counts"]
+        _need(counts.get(PROPOSAL_TYPE, 0) == 0 and sum(counts["by_confidence"].values()) == 0, "CONTROL_COUNTS_DISAGREE")
         return [*files, run_dir / "outcomes" / "received-items.json", path]
 
     def no_sends(self):
