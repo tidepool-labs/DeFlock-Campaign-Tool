@@ -34,7 +34,8 @@ def agenda(tag="1", main=MAIN):
 
 def fill(workbook, stage, finding="looked at the rows", **extra):
     entry = next(e for e in workbook["entries"] if e["stage"] == stage)
-    entry["human"].update({"reviewer": "R", "checked_on": "2026-11-26", "finding": finding, "outcome": "read"})
+    entry["human"].update({"reviewer": "R", "checked_on": "2026-11-26", "finding": finding,
+                           "cited": "document %s page 1" % ("a" * 12), "outcome": "read"})
     entry["human"].update(extra)
 
 
@@ -48,7 +49,8 @@ class MakeTests(unittest.TestCase):
         self.assertEqual([e["stage"] for e in book["entries"]], list(wb.STAGES))
         self.assertIs(book["accepted"], False)
         for entry in book["entries"]:
-            self.assertEqual(entry["human"], {"reviewer": "", "checked_on": "", "finding": "", "outcome": ""})
+            self.assertEqual(entry["human"], {"reviewer": "", "checked_on": "", "finding": "", "cited": "",
+                                              "outcome": ""})
             self.assertEqual(entry["engine"], MAIN)
             self.assertEqual(entry["references"][0]["path"], "out/1/%s.json" % entry["stage"])
             self.assertEqual(entry["receipt"], entry["stage"] + "-receipt.json")
@@ -167,6 +169,24 @@ class CheckTests(unittest.TestCase):
         stale["rows"][0]["readiness"] = "STALE"
         with self.assertRaises(wb.Refused):
             wb.check(built(), stale)
+
+    def test_v2_needs_cited_and_a_v1_workbook_is_only_a_prior(self):
+        # A finding filled without the structured citations is half filled, never a finding.
+        book = built()
+        fill(book, "11", cited="")
+        self.assertEqual(self.run_check(book)[0], [("11", "PARTIAL_HUMAN_ENTRY")])
+        self.assertIn("Cited (document <hex>", wb.render(built()))
+        old = built("2")
+        old["schema"] = "stage-readthrough-workbook-v1"
+        fill(old, "10", finding="rows match their sources")
+        for entry in old["entries"]:
+            entry["human"].pop("cited")
+        with self.assertRaises(wb.Refused) as raised:
+            wb.check(old, agenda())
+        self.assertEqual(str(raised.exception), "WORKBOOK_NOT_RECOGNISED")
+        book = built()
+        fill(book, "10", finding="rows match their sources")
+        self.assertEqual(self.run_check(book, old)[0], [("10", "COPIED_FROM_PRIOR_RUN")])
 
 
 class CommandTests(unittest.TestCase):
