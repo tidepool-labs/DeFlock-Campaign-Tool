@@ -91,7 +91,7 @@ class SummaryTest(unittest.TestCase):
                              ("12", "  Document   %s  Part 2 ;  " % D12),
                              ("10", "document %s page 2; document %s page 1" % (D10H, D10V)),
                              ("10", "document %s" % D10V)):
-            self.assertEqual(self.stage_of(stage, "Rows match their stored sources.", cited)[1],
+            self.assertEqual(self.stage_of(stage, "Rows match what is stored.", cited)[1],
                              ("FINDING_RECORDED", ()), cited)
 
     def test_wrong_workbook_header_alone_is_refused(self):
@@ -170,10 +170,14 @@ class SummaryTest(unittest.TestCase):
                      "\u0405ee the denial.", "Same as req-1.", "Quoted at p 1.", "Value 12345 differs.",
                      # RETURN t_49c6a30f: an alphabetic digest is not a plain word
                      "See deadbeefdeadbeef.", "See DEADBEEF.", "Item cafebabe matches.", "Commit abcdefa.",
-                     "See %s." % "".join(c for c in H["denial"] if c.isalpha())[:12]):
+                     "See %s." % "".join(c for c in H["denial"] if c.isalpha())[:12],
+                     # RETURN t_6d508356: a reference word introduces a reference whatever follows it, and no digits
+                     "See request 1234.", "See request unknown.", "The Request's answer differs.",
+                     "Same as requests alpha and beta.", "Page five matches.", "Document alpha matches.",
+                     "Item beta.", "ID gamma.", "Ticket delta.", "Read 2 rows in 2026.", "See 7."):
             self.assertEqual(self.stage_of("11", text, cited)[1], ("WITHHELD", ("FINDING_PROSE_HAS_CITATION",)), text)
         for text in ("Proposal quotes the denial; it's stored as written (no change)!", "Matches - nothing else.",
-                     "Read 2 rows in 2026.", '"Exactly" as stored: yes.', "A decade old facade, fine.",
+                     "Read two rows; all match.", '"Exactly" as stored: yes.', "A decade old facade, fine.",
                      "Bead and cafe."):
             self.assertEqual(self.stage_of("11", text, cited)[1], ("FINDING_RECORDED", ()), text)
 
