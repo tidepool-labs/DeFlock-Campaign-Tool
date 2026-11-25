@@ -75,17 +75,23 @@ def evidence_sha256(row):
     return hashlib.sha256(approval_queue._canon(row["evidence"]).encode("utf-8")).hexdigest()
 
 
-def received_source(evidence):
+_ROW_ITEM_UNSET = object()
+
+
+def received_source(evidence, row_item_id=_ROW_ITEM_UNSET):
     """The received-item citation a reply draft was rendered from (``draft_templates.render`` keeps it in
     ``evidence["kind_basis"]``): ``{item_id, page, quote}`` or, for an unpaginated mail text part (REC-MAIL-CITE-1),
     ``{item_id, page: None, part, quote}``. None when the row carries no such citation; a malformed one is never
-    repaired, guessed or given a page."""
+    repaired, guessed or given a page. With ``row_item_id`` (the queue row's own ``item_id``), a citation naming any
+    other received item is malformed too: the page never shows a passage from an item the draft does not answer."""
     if not isinstance(evidence, dict) or "kind_basis" not in evidence:
         return None
     basis, item_id = evidence.get("kind_basis"), evidence.get("item_id")
     if basis == {"page": None, "quote": None}:
         return None  # an uncited ("other") item: nothing to show, and no draft is rendered from it
     if not isinstance(basis, dict) or "item_id" in basis:
+        return {"invalid": True}
+    if row_item_id is not _ROW_ITEM_UNSET and item_id != row_item_id:
         return {"invalid": True}
     out = {"item_id": item_id, **basis}
     return out if _received_ok(out) else {"invalid": True}
@@ -123,7 +129,7 @@ def review_context(project, row):
             "revision": row["revision"], "evidence_sha256": evidence_sha256(row),
             "recipient": prepared["to"], "target": target, "subject": prepared["subject"],
             "citations": evidence.get("citations"),
-            "received_source": received_source(evidence),
+            "received_source": received_source(evidence, row.get("item_id")),
             "why": evidence.get("why") or " ".join(str(evidence.get(k) or "") for k in
                                                      ("clock_kind", "clock_date")).strip(),
             "limits": evidence.get("limits"),
