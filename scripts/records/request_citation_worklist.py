@@ -52,8 +52,15 @@ def _type(row):
 def build(register_doc, received_doc):
     registered, observed, occurrences = defaultdict(list), defaultdict(list), defaultdict(set)
     for req in _rows(register_doc.get('requests')):
+        arrived = _rows(req.get('arrived'))
+        if req.get('ledger_request_id') is None:
+            # A tracker-only register row has no ledger membership and therefore no arrivals of its own;
+            # it cannot own a citation gap. An arrival under a null ledger ID is inconsistent input.
+            if arrived:
+                raise ValueError('arrival without ledger request')
+            continue
         key = (_text(req.get('agency_key')), _text(req.get('ledger_request_id')))
-        for row in _rows(req.get('arrived')):
+        for row in arrived:
             digest = _original(row)
             oid = _text(row.get('occurrence_id'))
             registered[digest].append((key, oid, _type(row)))

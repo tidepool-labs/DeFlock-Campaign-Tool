@@ -25,7 +25,8 @@ def received(c, rid='req-1', basis=None, occurrence=None):
 class CitationWorklist(unittest.TestCase):
     def invoke(self, requests, items, item_run='run_1'):
         with tempfile.TemporaryDirectory() as tmp:
-            run = Path(tmp) / 'run-outputs' / 'run_1'
+            # The reader refuses symlinked paths on purpose; resolve a symlinked TMPDIR first.
+            run = Path(tmp).resolve() / 'run-outputs' / 'run_1'
             (run / 'outcomes').mkdir(parents=True)
             files = {run / 'CURRENT-REQUEST-REGISTER.json': {
                          'schema': 'records-request-register-v1', 'requests': requests},
@@ -91,6 +92,24 @@ class CitationWorklist(unittest.TestCase):
         self.assertEqual(data['unassigned'], [
             {'original': 'a' * 64, 'reason': 'unknown_type'},
             {'original': 'b' * 64, 'reason': 'unknown_type'}])
+
+    def test_tracker_only_request_does_not_abort_other_requests(self):
+        # Review t_14211ea2 item 1: register.build_register emits tracker-only rows with
+        # ledger_request_id=None and no arrivals; they must not hide another request's gaps.
+        tracker = {'agency_key': 'tracker:beta', 'ledger_request_id': None, 'arrived': []}
+        rc, text, _ = self.invoke([tracker, request('req-1', arrival('a')), tracker | {'agency_key': 'alpha'}],
+                                  [received('a')])
+        self.assertEqual(rc, 0)
+        data = json.loads(text)
+        self.assertEqual(data['requests'], [{'agency': 'alpha', 'request': 'req-1',
+            'mail_part_missing': [], 'pdf_page_missing': ['a' * 64]}])
+        self.assertEqual(data['unassigned'], [])
+
+    def test_arrival_under_a_null_ledger_request_is_refused(self):
+        rc, text, error = self.invoke([{'agency_key': 'alpha', 'ledger_request_id': None,
+                                        'arrived': [arrival('a')]}], [received('a')])
+        self.assertEqual((rc, text), (2, ''))
+        self.assertIn('inputs unavailable', error)
 
     def test_wrong_run_is_not_an_empty_success(self):
         rc, text, error = self.invoke([], [], item_run='run_2')
