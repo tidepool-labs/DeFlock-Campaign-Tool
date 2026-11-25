@@ -28,9 +28,10 @@ MAX_INPUT = 8 * 1024 * 1024
 _SHA = re.compile(r"\Asha256:[0-9a-f]{64}\Z")
 _HEX = re.compile(r"\A[0-9a-f]{64}\Z")
 _QUOTE_LIMIT = 240
+_PAGE = re.compile(r"\Apage [1-9][0-9]{0,5}\Z")
 REASONS = ("INPUT_NOT_RECOGNISED", "NO_REQUEST_FOR_AGENCY", "NO_COMPARISON_ROW", "AMBIGUOUS_COMPARISON_ROW",
            "NOT_A_DIFFERENCE", "POLICY_LOCATOR_MISSING", "RECEIVED_ITEM_MISSING", "RECEIVED_ITEM_AGENCY_MISMATCH",
-           "RECEIVED_LOCATOR_MISSING", "NO_TIMELINE_EVENT_FOR_ITEM")
+           "RECEIVED_ITEM_ID_INVALID", "RECEIVED_LOCATOR_MISSING", "NO_TIMELINE_EVENT_FOR_ITEM")
 
 
 def _is_text(value):
@@ -38,12 +39,12 @@ def _is_text(value):
 
 
 def _policy_evidence(row):
-    """Evidence entries that carry both a locator and a sha256 source id."""
+    """Evidence entries that carry a policy page locator (``page N``) and a sha256 source id."""
     found = []
     for entry in row.get("evidence") or []:
-        if isinstance(entry, dict) and _is_text(entry.get("locator")) and isinstance(entry.get("source_id"), str) \
-                and _SHA.match(entry["source_id"]):
-            found.append({"locator": entry["locator"], "source_id": entry["source_id"]})
+        if isinstance(entry, dict) and isinstance(entry.get("locator"), str) and _PAGE.match(entry["locator"].strip().lower()) \
+                and isinstance(entry.get("source_id"), str) and _SHA.match(entry["source_id"]):
+            found.append({"locator": entry["locator"].strip().lower(), "source_id": entry["source_id"]})
     return found
 
 
@@ -117,16 +118,23 @@ def open_case(comparison, timeline, received, agency_id, field):
         if any(i.get("agency_id") != agency_id for i in items):
             reasons.append("RECEIVED_ITEM_AGENCY_MISMATCH")
         elif items:
-            located = [loc for loc in map(_received_locator, items) if loc is not None]
-            if not located:
-                reasons.append("RECEIVED_LOCATOR_MISSING")
-        wanted = {loc["item_id"] for loc in located}
-        for event in request.get("events") or []:
-            source = event.get("source") if isinstance(event, dict) else None
-            if isinstance(source, dict) and source.get("item_id") in wanted:
-                events.append({"date": event.get("date"), "type": event.get("type"), "item_id": source["item_id"]})
-        if located and not events:
-            reasons.append("NO_TIMELINE_EVENT_FOR_ITEM")
+            ids = [i.get("item_id") for i in items]
+            if not all(_is_text(x) for x in ids) or len(set(ids)) != len(ids):
+                reasons.append("RECEIVED_ITEM_ID_INVALID")
+            else:
+                located = [loc for loc in map(_received_locator, items) if loc is not None]
+                if not located:
+                    reasons.append("RECEIVED_LOCATOR_MISSING")
+                else:
+                    wanted = {loc["item_id"] for loc in located}
+                    for event in request.get("events") or []:
+                        source = event.get("source") if isinstance(event, dict) else None
+                        item_id = source.get("item_id") if isinstance(source, dict) else None
+                        if isinstance(item_id, str) and item_id in wanted:
+                            events.append({"date": event.get("date"), "type": event.get("type"), "item_id": item_id})
+                    if wanted - {e["item_id"] for e in events}:
+                        # a located item no timeline event cites is an incomplete chain: nothing is exposed
+                        reasons.append("NO_TIMELINE_EVENT_FOR_ITEM")
     if reasons or row is None or request is None:
         return _withheld(agency_id, field, reasons or ["INPUT_NOT_RECOGNISED"])
     citation = row.get("citation") if isinstance(row.get("citation"), dict) else {}
@@ -141,6 +149,12 @@ def open_case(comparison, timeline, received, agency_id, field):
                               "received_locators": located, "timeline_events": events}}
 
 
+def _line(value):
+    """One printable line for a cited value, so a quoted record cannot start new markdown lines."""
+    text = value if isinstance(value, str) else json.dumps(value, sort_keys=True, ensure_ascii=True)
+    return " ".join(text.split())
+
+
 def render(exhibit):
     out = ["# Stage case exhibit (review-only)", "", exhibit["note"], "",
            "Agency: %s  Field: %s  Status: %s" % (exhibit["agency_id"], exhibit["field"], exhibit["status"])]
@@ -148,13 +162,15 @@ def render(exhibit):
         out += ["", "WITHHELD: no comparison content is shown. Reasons: " + ", ".join(exhibit["reasons"])]
         return "\n".join(out)
     diff, case = exhibit["stage_10_difference"], exhibit["stage_12_case"]
-    out += ["", "## Stage 10 difference (%s)" % diff["reason"], "Citation: %s" % diff["citation"]]
+    out += ["", "## Stage 10 difference (%s)" % diff["reason"], "Citation: %s" % diff["citation"],
+            "Expected: %s" % _line(diff["expected"]), "Observed: %s" % _line(diff["observed"])]
     out += ["Policy source: %s @ %s" % (e["locator"], e["source_id"]) for e in diff["policy_locators"]]
     out += ["", "## Stage 12 case: request %s, stage %s" % (case["request_id"], case["stage"])]
     if case["issues"]:
         out.append("Timeline issues: " + ", ".join(case["issues"]))
-    out += ["Received item %s (%s): %s, original %s" % (loc["item_id"], loc["kind"], loc["locator"], loc["original_sha256"])
-            for loc in case["received_locators"]]
+    for loc in case["received_locators"]:
+        out += ["Received item %s (%s): %s, original %s" % (loc["item_id"], loc["kind"], loc["locator"], loc["original_sha256"]),
+                "Quote: %s" % _line(loc["quote"])]
     out += ["Timeline: %s %s (item %s)" % (e["date"], e["type"], e["item_id"]) for e in case["timeline_events"]]
     return "\n".join(out)
 

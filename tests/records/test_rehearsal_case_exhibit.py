@@ -61,6 +61,48 @@ class OpenCaseTests(unittest.TestCase):
         self.assertIs(result["legal_conclusion"], False)
         self.assertIn("Policy source: page 1 @ " + SHA_POLICY, exhibit.render(result))
 
+    def test_open_rendering_shows_the_difference_and_the_received_quote(self):
+        # Contract: EXHIBIT.md carries the cited difference and the quoted received item, not only their locators.
+        # Bug caught: a render that prints ids and hashes but omits expected/observed/quote.
+        text = exhibit.render(case(r=lambda d: d["items"][0]["kind_basis"].update(quote="We have\nreceived  your request.")))
+        self.assertIn("Expected: restrictions documented", text)
+        self.assertIn('Observed: {"restrictions_documented": false}', text)
+        self.assertIn("Quote: We have received your request.", text)
+
+    def test_item_ids_must_be_nonempty_and_unique(self):
+        # Contract: join on exact identifiers. Bug caught: a missing item_id on an item matches an event source that
+        # also lacks item_id (None == None), and duplicate ids make the join ambiguous.
+        def no_ids(docs):
+            del docs["items"][0]["item_id"]
+        def no_source_id(docs):
+            docs["requests"][0]["events"][0]["source"].pop("item_id")
+        def duplicate(docs):
+            docs["items"].append(copy.deepcopy(docs["items"][0]))
+        for edits in ({"r": no_ids, "t": no_source_id}, {"r": duplicate}):
+            result = case(**edits)
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["RECEIVED_ITEM_ID_INVALID"]))
+        blank = case(r=lambda d: d["items"][0].update(item_id="  "))
+        self.assertEqual(blank["reasons"], ["RECEIVED_ITEM_ID_INVALID"])
+
+    def test_a_located_item_without_a_timeline_event_withholds_the_chain(self):
+        # Contract: only a received item that a timeline event cites is exposed. Bug caught: a second located item
+        # with no event shown beside the matched one, so an incomplete chain opens.
+        def unrelated_second(docs):
+            second = copy.deepcopy(docs["items"][0])
+            second.update(item_id="item-2")
+            docs["items"].append(second)
+        result = case(r=unrelated_second)
+        self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["NO_TIMELINE_EVENT_FOR_ITEM"]))
+        self.assertNotIn("item-1", json.dumps(result))
+
+    def test_policy_locator_must_be_a_page(self):
+        # Contract: the policy citation names a page. Bug caught: any non-empty text ("unknown") passes as a locator.
+        for bad in ("unknown", "page", "page 0", "page one", "section 2", "page 1; page 2"):
+            result = case(c=lambda d: d["rows"][0]["evidence"][0].update(locator=bad))
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["POLICY_LOCATOR_MISSING"]), bad)
+        good = case(c=lambda d: d["rows"][0]["evidence"][0].update(locator="Page 12"))
+        self.assertEqual(good["stage_10_difference"]["policy_locators"][0]["locator"], "page 12")
+
     def test_a_mail_part_citation_is_a_locator_and_never_gets_a_page(self):
         def mail(docs):
             docs["items"][0]["kind_basis"] = {"page": None, "part": 2, "quote": "mail quote"}
