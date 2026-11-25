@@ -39,11 +39,11 @@ def items_doc(run=RUN):
     return ri.collect(sqlite3.connect(":memory:"), Path("."), None, run_id=run)
 
 
-def register_doc(ref="SYN-1", as_of="2030-01-12"):
+def register_doc(ref="SYN-1", as_of="2030-01-12", **extra):
     data = {table: [] for table in reg.correspondence.TABLES}
     data["agencies"] = [{"id": "a1", "name": "Synthetic Agency"}]
     data["requests"] = [{"id": "r1", "agency_id": "a1", "external_ref": ref, "submitted_at": "2030-01-10",
-                         "received_at": "2030-01-12", "status": "open"}][:ref is not None]
+                         "received_at": "2030-01-12", "status": "open", **extra}][:ref is not None]
     return reg.build_register(data, as_of=as_of)
 
 
@@ -183,6 +183,7 @@ class GapsEvidenceTest(unittest.TestCase):
         # A tracker-only row legitimately has no ledger request id (None); it must still bind.
         tracker_only, tracker_line = {**row, "ledger_request_id": None}, {**base_tl["requests"][0], "ledger_request_id": None}
         copy = {"register": {**base_reg, "requests": [tracker_only]}, "timeline": {**base_tl, "requests": [tracker_line]}}
+        copy["timeline"]["register_sha256"] = tl.register_sha256(copy["register"])  # a timeline derived from that register
         self.assertEqual(self.codes(copy)[1], [])
 
     def test_c3_register_from_another_run_with_the_same_identities_fails_closed(self):
@@ -203,6 +204,22 @@ class GapsEvidenceTest(unittest.TestCase):
         closed["requests"][0]["status"] = "closed"
         self.assertEqual(self.codes({"register": closed, "timeline": timeline_doc(closed)})[1], [])
         self.assertEqual(row["status"], "open")
+
+    def test_c3_register_bytes_are_bound_by_the_timeline_digest(self):
+        """C3 bug: another run's register with the same identities, clocks and closed state but a different
+        substantive field (a same-day production_at) passed because only identities were compared,
+        though the timeline derives a production event from that field; a timeline with no digest also fails closed."""
+        produced, other_day = register_doc(production_at="2030-01-12"), register_doc(production_at="2030-01-11")
+        self.assertNotEqual(produced["requests"][0]["production_at"], other_day["requests"][0]["production_at"])
+        self.assertEqual(adapter._identity(produced), adapter._identity(other_day))  # the old checks cannot tell them apart
+        self.assertEqual(self.codes({"register": produced, "timeline": timeline_doc(produced)})[1], [])
+        self.assertEqual(self.codes({"register": other_day, "timeline": timeline_doc(produced)})[1], [REG + "RUN"])
+        self.assertEqual(self.codes({"register": register_doc(), "timeline": timeline_doc(produced)})[1], [REG + "RUN"])
+        self.assertEqual(self.codes({"register": produced, "timeline": timeline_doc()})[1], [REG + "RUN"])
+        plain = timeline_doc()
+        for digest in ({k: v for k, v in plain.items() if k != "register_sha256"}, {**plain, "register_sha256": None},
+                       {**plain, "register_sha256": "x"}):
+            self.assertEqual(self.codes({"timeline": digest})[1], [REG + "RUN"])
 
     def test_c4_report_file_name_never_becomes_the_source_name(self):
         """C4 bug: with no readable artifact the caller's report basename (which may carry request text) was copied

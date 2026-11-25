@@ -14,8 +14,10 @@ or non-finite numbers, including overflowing exponents such as 1e999):
 * ``outcomes/received-items.json`` (stage 12, ``received_items.write_run_received_items``): its schema string,
   an ``items`` list of writer-shaped entries (an empty list passes) and this run's ``run_id``.
 * ``CURRENT-REQUEST-REGISTER.json`` (stage 12, ``register.write_for_run``): its schema string and at least one
-  request. It has no run id, so it must also agree with the timeline (as-of date, and per ordered row the
-  agency/request identities, agency name, deadline clocks and closed state); every row must name its agency and
+  request. It has no run id, so it must also agree with the timeline: the timeline's ``register_sha256`` must equal
+  the digest of this register document (every field bound; a timeline without it fails closed), and as defence in
+  depth the as-of date and, per ordered row, the agency/request identities, agency name, deadline clocks and closed
+  state must match; every row must name its agency and
   request (a ledger id may be null for a tracker-only row). A register copied from another run fails closed.
 * ``outcomes/timeline.json`` (stage 12, ``timeline.write_run_timeline``): its schema string, a consistent
   request count, a named agency and request per row and this run's ``run_id``.
@@ -167,6 +169,13 @@ def _identity(doc):
                           for row in doc["requests"]]
 
 
+def _derived_from(register_doc, timeline_doc):
+    """The timeline carries the digest of the register it was derived from (the writer's own); a register that differs
+    in any field, or a timeline with no digest to check, fails closed. The register itself has no run id to bind."""
+    digest = timeline_doc.get("register_sha256")
+    return type(digest) is str and SHA256.fullmatch(digest) is not None and digest == timeline.register_sha256(register_doc)
+
+
 def _closed_agrees(register_doc, timeline_doc):
     """A register row recorded closed is closed on the timeline; a timeline closed without a closed event needs that status."""
     for held, line in zip(register_doc["requests"], timeline_doc["requests"]):
@@ -246,7 +255,8 @@ def records(outputs_dir, run_report_path, now):
         os.close(root)
         if outcomes is not None:
             os.close(outcomes)
-    if reg[0] == line[0] == "OK" and (_identity(reg[2]) != _identity(line[2]) or not _closed_agrees(reg[2], line[2])):
+    if reg[0] == line[0] == "OK" and (_identity(reg[2]) != _identity(line[2]) or not _closed_agrees(reg[2], line[2])
+                                      or not _derived_from(reg[2], line[2])):
         reg = ("RUN", reg[1], reg[2])
     own = {stage: [c for c in golive_stages.OUTPUT_FAILURES[stage] if c in report_codes] for stage in ("11", "12")}
     common = (run_id, now, report_raw, report_name)
