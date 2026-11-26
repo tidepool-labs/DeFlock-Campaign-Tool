@@ -4,7 +4,8 @@
 authentication. cloudflared's Access validation ("Protect with Access") does that at the edge; the tripwire only refuses a
 request when that edge is missing or misconfigured.
 
-``identity`` (DFB-11) is the check for a decision POST on the public Host: the same claims AND an RS256 signature verified
+``identity`` (DFB-11) is the check for a decision POST on the public Host (and, D2b, for every GET on the public Host when the
+console has an Access keys file): the same claims AND an RS256 signature verified
 here, with the standard library, against the Access signing keys in an owner-only JWKS file (``load_keys``; a copy of
 ``https://<team>.cloudflareaccess.com/cdn-cgi/access/certs``). Only then is the token's email used as the decision's actor.
 Every step fails closed. No token part, claim, key, email or aud is ever printed or logged.

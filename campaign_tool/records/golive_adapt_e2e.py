@@ -56,6 +56,10 @@ def _unique_object(pairs):
     return value
 
 
+def _reject_constant(_literal):
+    raise ValueError("non-JSON numeric constant in e2e report")
+
+
 def _positive(name, entry):
     detail = entry.get("detail")
     counts = detail.get("counts") if isinstance(detail, dict) else None
@@ -132,7 +136,7 @@ def records(report, now):
         raise ValueError("invalid e2e report basename")
     try:
         raw = _read_report(path)
-        value = json.loads(raw, object_pairs_hook=_unique_object)
+        value = json.loads(raw, object_pairs_hook=_unique_object, parse_constant=_reject_constant)
     except (OSError, ValueError, RecursionError):
         raise ValueError("invalid e2e report or sandbox marker") from None
     instant = datetime.fromisoformat(now) if isinstance(now, str) else now

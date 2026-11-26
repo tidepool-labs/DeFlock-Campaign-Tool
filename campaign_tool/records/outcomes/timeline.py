@@ -19,6 +19,7 @@ marked superseded).
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 import json
 import os
 import re
@@ -77,6 +78,11 @@ def _iso(day):
 
 def _canon(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
+
+
+def register_sha256(register):
+    """Digest of the canonical register document this timeline was derived from (binds every register field)."""
+    return hashlib.sha256(_canon(register).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------- pure merge
@@ -265,8 +271,8 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
         + [("outbox", o.get("idempotency_key")) for o in outbox if o.get("state") == "sent"]
         + [("manual", m.get("event_id")) for m in manual]) if t == kind and (t, key) not in matched)
                  for kind in ("item", "draft", "outbox", "manual")}
-    return {"schema": SCHEMA, "run_id": run_id, "as_of": register["as_of"], "visibility": "private",
-            "review_required": True, "requests": requests, "request_count": len(requests),
+    return {"schema": SCHEMA, "run_id": run_id, "as_of": register["as_of"], "register_sha256": register_sha256(register),
+            "visibility": "private", "review_required": True, "requests": requests, "request_count": len(requests),
             "unmatched": unmatched, "limits": list(LIMITS)}
 
 
