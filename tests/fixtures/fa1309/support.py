@@ -6,6 +6,7 @@ import io
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import socket
 import stat
@@ -205,5 +206,17 @@ def invoke_child(repo, mode, output):
 
 def disposable(repo, parent):
     target = fresh(parent) / "repo"
-    shutil.copytree(repo, target, ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__"))
+    shutil.copytree(repo, target, ignore=_snapshot_ignore)
     return target
+
+
+_SKIP = shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__")
+# Parallel CI chunks share this checkout, and sibling tests create and remove
+# scratch directories inside it (TemporaryDirectory(dir=Path.cwd()), dir=".",
+# mkdtemp(dir=ROOT, prefix=".rf0935-5-")). They are never snapshot inputs, so
+# skip them by name instead of racing their cleanup; every copy error raises.
+_SCRATCH = re.compile(r"tmp[a-z0-9_]{8}|\.rf0935-5-[a-z0-9_]{8}")
+
+
+def _snapshot_ignore(directory, names):
+    return set(_SKIP(directory, names)) | {name for name in names if _SCRATCH.fullmatch(name)}
