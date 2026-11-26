@@ -24,6 +24,7 @@ from campaign_tool.records import public_packets as pp
 from tests.records.test_console_access import AUD, EMAIL, HDR, TEAM, make_token, write_config
 from tests.records.test_console_apply import Apply
 from tests.records.test_console_model import RUN
+from tests.records.test_console_snapshot import Panel
 
 PUBLIC, HOST = "https://admin.example.test", "admin.example.test"
 NOW = int(time.time())
@@ -282,7 +283,8 @@ class HostedDecisions(Apply):
         loop = "127.0.0.1:%d" % self.server.server_port
         fields = {"id": self.pending_id, "reason": "forged"}
         unsigned = make_token(now=NOW)
-        self.assertEqual(self.public("GET", "/board", unsigned)[0], 200)  # the read-only tripwire is unchanged
+        self.assertEqual(self.public("GET", "/board", unsigned)[0], 403)  # D2b: reads on the public Host need a signature too
+        self.assertEqual(self.public("GET", "/board", self.key.token())[0], 200)
         for label, token, host, origin, status in (
                 ("anonymous", None, HOST, PUBLIC, 403),
                 ("unsigned claims", unsigned, HOST, PUBLIC, 403),
@@ -342,6 +344,74 @@ class HostedDecisions(Apply):
             code = ap.main(["--export-root", str(self.root), "--run-id", "auto", "--decisions-dir", str(self.j),
                             "--actor", "G", "--public-origin", PUBLIC, "--access-config", str(self.cfg), "--no-system"])
         self.assertEqual((code, err.getvalue()), (2, "access_keys_required\n"))
+
+
+class HostedReads(Panel):
+    """D2b: records panel --export-root DIR --run-id auto --public-origin URL --access-config C --access-keys K (read-only,
+    no decision journal). A public-Host GET needs a signature-verified Access token; a token whose claims match but whose
+    signature is forged (what the claims tripwire alone accepts) is refused before anything is read."""
+    public = HostedDecisions.public
+    PAGES = ("/", "/board", "/golive", "/stages", "/drafts", "/decisions")
+
+    def setUp(self):
+        super().setUp()
+        self.key, self.other = TestKey(1), TestKey(2)
+        self.cfg = write_config(self.tmp)
+        self.keys = write_keys(self.tmp, self.key.jwk())
+        self.make_export()
+
+    def up(self, keys=True, **kw):
+        super().up(public_origin=PUBLIC, access_config=str(self.cfg), access_clock=lambda: NOW,
+                   **({"access_keys": str(self.keys)} if keys else {}), **kw)
+
+    def loopback(self, path):
+        return self.request("GET", path)[0]
+
+    def test_public_reads_need_a_signed_token_and_loopback_is_unchanged(self):
+        self.up()
+        head, payload, _ = self.key.token().split(".")
+        refused = {"anonymous": None,
+                   "unsigned claims": make_token(now=NOW),
+                   "claims with a forged signature": head + "." + payload + "." + _b64(b"\x01" * 256),
+                   "another key": self.other.token(),
+                   "unknown kid": self.key.token(kid="kid-unknown"),
+                   "expired": self.key.token(exp=NOW - 1),
+                   "another email": self.key.token(email="someone@example.test"),
+                   "another aud": self.key.token(aud=["f" * 64])}
+        for path in self.PAGES:
+            expected = self.loopback(path)
+            with self.subTest(path=path):
+                self.assertNotIn(expected, (403, 503))  # loopback (operator/CLI) reads are unchanged
+                status, _, page = self.public("GET", path, self.key.token())
+                self.assertEqual(status, expected)
+                for label, token in refused.items():
+                    with self.subTest(label=label):
+                        status, _, page = self.public("GET", path, token)
+                        self.assertEqual(status, 403)
+                        self.assertNotIn(RUN, page)  # nothing from the export is shown
+        self.assertEqual(self.public("GET", "/board", self.key.token(), host="other.example.test")[0], 403)
+
+    def test_without_keys_public_reads_keep_the_claims_tripwire_only(self):
+        self.up(keys=False)
+        self.assertEqual(self.public("GET", "/board", None)[0], 403)
+        self.assertEqual(self.public("GET", "/board", make_token(now=NOW))[0], self.loopback("/board"))  # edge-only, as before
+
+    def test_unusable_keys_refuse_public_reads_and_a_rotation_needs_no_restart(self):
+        self.up()
+        os.chmod(self.keys, 0o644)
+        status, _, page = self.public("GET", "/board", self.key.token())
+        self.assertEqual(status, 503)
+        self.assertIn("nothing was shown", page)
+        self.assertNotIn(RUN, page)
+        self.assertEqual(self.loopback("/board"), 200)  # the operator's loopback view stays available
+        write_keys(self.tmp, self.other.jwk("kid-2"))  # a rotation: the old key's tokens stop, the new key's start
+        self.assertEqual(self.public("GET", "/board", self.key.token())[0], 403)
+        self.assertEqual(self.public("GET", "/board", self.other.token(kid="kid-2"))[0], 200)
+
+    def test_a_read_only_console_still_refuses_every_post(self):
+        self.up()
+        status = self.public("POST", "/approvals/reject", self.key.token(), id="x", reason="x")[0]
+        self.assertEqual(status, 503)  # read_only_export: a signed reader still cannot decide anything
 
 
 if __name__ == "__main__":

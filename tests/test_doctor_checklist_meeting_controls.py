@@ -3,6 +3,7 @@ import copy
 import json
 import os
 from pathlib import Path
+import shlex
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,18 @@ KIT = f"Cite /findings/{SLUG}.html in two minutes."
 def stale(*meetings):
     return {"stale_comment_kits": [{"meeting": m, "finding": "f", "latest_correction": "2026-01-02"}
                                    for m in meetings]}
+
+
+def decoded_strings(node):
+    if isinstance(node, str):
+        yield node
+    elif isinstance(node, dict):
+        for key, value in node.items():
+            yield key
+            yield from decoded_strings(value)
+    elif isinstance(node, list):
+        for value in node:
+            yield from decoded_strings(value)
 
 
 def snapshot(root):
@@ -140,14 +153,22 @@ class RealChainTests(unittest.TestCase):
         self.assertEqual(snapshot(self.base), before)
 
     def test_safe_explicit_id_keeps_control_filename_outside_display_scope(self):
-        self.meeting("odd\nname", id="safe-id")
+        self.meeting("ODDSTEM\nname", id="safe-id")
         plain = json.loads(self.doctor().stdout)
         self.assertEqual([e["meeting"] for e in plain["stale_comment_kits"]], ["safe-id"])
+        # The advice legitimately names the campaign directory, whose temp parent may contain
+        # any text (CI's ci-chunk-0-yzp8oddi once matched "odd"). Compare decoded text, never
+        # escaped JSON, and remove that known value so the negative check only sees what the
+        # doctor derived from the meeting file.
         for extra in (("--checklist",), ("--checklist", "--json")):
-            done = self.doctor(*extra)
-            self.assertEqual(done.returncode, 0, done.stderr)
-            self.assertIn("--id safe-id --replace", done.stdout)
-            self.assertNotIn("odd", done.stdout)
+            with self.subTest(extra=extra):
+                done = self.doctor(*extra)
+                self.assertEqual(done.returncode, 0, done.stderr)
+                text = "\n".join(decoded_strings(json.loads(done.stdout))) if "--json" in extra else done.stdout
+                self.assertIn("--id safe-id --replace", text)
+                scoped = text.replace(shlex.quote(str(self.root)), "<campaign>").replace(str(self.root), "<campaign>")
+                self.assertIn("<campaign>", scoped)
+                self.assertNotIn("ODDSTEM", scoped)
 
     def test_cli_success_is_unchanged_nonsticky_and_read_only(self):
         self.meeting("m-two")

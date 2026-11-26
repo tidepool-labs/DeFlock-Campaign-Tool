@@ -28,8 +28,10 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
-          fetch-depth: 2
+          fetch-depth: 1
       - name: Check out immutable public WP8 dependency
+        # Needed only when the engine lacks WP8; the next step selects the in-tree copy first.
+        if: ${{ hashFiles('campaign_tool/records/review_bundle.py') == '' }}
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           repository: Grahammmm/DeFlock-Campaign-Tool

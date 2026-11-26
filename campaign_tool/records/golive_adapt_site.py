@@ -30,7 +30,13 @@ def records(check_tsv, agency_slugs, now, *, source_name="site-check.tsv"):
             raise ValueError(f"line {line}: duplicate slug")
         observed[slug] = status
 
-    expected = set(agency_slugs)
+    expected = set()
+    for slug in agency_slugs:
+        if not isinstance(slug, str) or not SLUG.fullmatch(slug):
+            raise ValueError("invalid expected agency slug")
+        if slug in expected:
+            raise ValueError("duplicate expected agency slug")
+        expected.add(slug)
     if not expected:
         raise ValueError("campaign has no agency slugs")
     missing = len(expected - observed.keys())

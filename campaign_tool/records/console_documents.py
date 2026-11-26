@@ -17,6 +17,7 @@ import re
 import stat
 import sys
 import urllib.parse
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -320,7 +321,7 @@ def sources(model):
 
 # ---- rendering ---------------------------------------------------------------------------------------
 
-def _table(headers, rows, caption, *, item_prefixes=None, page_links=None, page_col=3):
+def _table(headers, rows, caption, *, item_prefixes=None, page_links=None, page_col=3, row_anchors=None):
     if not rows:
         return "<p>None reported in this source.</p>"
     out = ["<table><caption>%s</caption><thead><tr>%s</tr></thead><tbody>" % (
@@ -331,11 +332,16 @@ def _table(headers, rows, caption, *, item_prefixes=None, page_links=None, page_
             cells[1] = '<a href="/document?id=%s">%s</a>' % (esc(item_prefixes[idx]), cells[1] or "Document details")
         if page_links is not None and page_links[idx] is not None:
             cells[page_col] = '<a href="%s">%s</a>' % (esc(page_links[idx]), cells[page_col])
-        out.append("<tr>" + "".join("<td>%s</td>" % cell for cell in cells) + "</tr>")
+        start = "<tr>"
+        if row_anchors is not None and row_anchors[idx] is not None:
+            anchor = esc(row_anchors[idx])
+            start = '<tr id="%s">' % anchor
+            cells[0] = '<a href="#%s">%s</a>' % (anchor, cells[0])
+        out.append(start + "".join("<td>%s</td>" % cell for cell in cells) + "</tr>")
     return "".join(out) + "</tbody></table>"
 
 
-def render_agency(v):
+def render_agency(v, *, proposal_ids=frozenset()):
     name = v["agency_id"] if v["agency_id"] is not None else NO_AGENCY
     out = ['<section aria-label="%s"><h2>%s</h2>' % (esc(name), esc(name)), '<p class="notice">%s</p>' % esc(v["label"])]
     out.append("<h3>Received items</h3>" + _table(
@@ -358,12 +364,14 @@ def render_agency(v):
     if not v["dispositions"]:
         out.append("<p>None reported in this source.</p>")
     out.append("<h3>Findings and gap proposals</h3>" + _table(
-        ("Confidence", "Type", "Request", "Page", "Quote", "Policy section", "Review state", "Question"),
-        [(p["confidence"], p["type"], p["request_id"], p["page"], p["quote"],
+        ("Proposal ID", "Confidence", "Type", "Request", "Page", "Quote", "Policy section", "Review state", "Question"),
+        [(p["proposal_id"] or "ID unavailable", p["confidence"], p["type"], p["request_id"], p["page"], p["quote"],
           json.dumps(p["policy_section"], sort_keys=True) if p["policy_section"] else "unavailable",
           p["review_state"] + (" (list)" if p["review_bucket"] == "review_list" else "") + ", not publishable",
           p["question"]) for p in v["findings"]], "Proposals; a lead is a reason to ask, not evidence",
-        page_links=[p.get("page_link") for p in v["findings"]]))
+        page_links=[p.get("page_link") for p in v["findings"]], page_col=4,
+        row_anchors=[f'proposal-{p["proposal_id"]}' if p["proposal_id"] in proposal_ids else None
+                     for p in v["findings"]]))
     return "".join(out) + "</section>"
 
 
@@ -372,7 +380,12 @@ def render(model, now, agency=..., *, detail_links=False):
     chosen = (agencies(model) + [None]) if agency is ... else [agency]
     notes = ["<p class=\"diag\" role=\"status\">%s</p>" % esc(console_layout.unavailable_note(*console_layout.plain([k]), s.get("code")))
              for k, s in sources(model).items() if s["state"] != "ok"]
-    body = [render_agency(view(model, a, now, detail_links=detail_links)) for a in chosen]
+    # Count across the run before filtering. A hidden duplicate remains ambiguous.
+    counts = Counter(p.get("proposal_id")
+                     for block in (model["proposals"].get("doc") or {}).get("agencies", [])
+                     for req in block.get("requests", []) for p in req.get("proposals", []))
+    proposal_ids = frozenset(ident for ident, count in counts.items() if ident and count == 1 and AGENCY.fullmatch(ident))
+    body = [render_agency(view(model, a, now, detail_links=detail_links), proposal_ids=proposal_ids) for a in chosen]
     head = [console_layout.start("Documents and findings", "Library"),
             "<h1>Documents and findings</h1>", "<p>Run %s. %s Nothing is fetched, sent or published.</p>" % (
                 esc(model["run_id"]), esc(LABEL))] + (['<p><a href="/holds">Holds</a></p>'] if detail_links else [])
