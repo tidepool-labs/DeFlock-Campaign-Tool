@@ -72,6 +72,38 @@ class OrderedListCitesTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(lint_cites.lint(text, set()), [(line, C4)])
 
+    def test_next_ordinal_alone_after_an_unpunctuated_item_is_structure(self):
+        # RETURN t_20fe73aa: "9. Please confirm\n10.\nPlease clarify." flagged line 2.
+        for first, lone in (("9.", "10."), ("9)", "10)"), ("  9.", "  10. "), ("1)", "2)")):
+            with self.subTest(first=first, lone=lone):
+                text = f"{first} Please confirm\n{lone}\nPlease clarify."
+                self.assertEqual(lint_cites.lint(text, set()), [])
+        # A chain of lone ordinals each follows the item before it.
+        self.assertEqual(lint_cites.lint("9. Please confirm\n10.\nPlease clarify\n11.\nThanks", set()), [])
+        # The lone-marker item still reports its own unsourced count, on its own line.
+        self.assertEqual(lint_cites.lint("9. Please confirm\n10.\nWe received 12 documents", set()), [(3, C4)])
+        # UNSTICK witness controls: inline items and a real count inside an item.
+        self.assertEqual(lint_cites.lint("9. Please confirm\n10. Please clarify.", set()), [])
+        self.assertEqual(lint_cites.lint("9. We saw 24 cameras\n10.\nPlease clarify.", set()), [(1, C4)])
+
+    def test_lone_number_without_list_evidence_stays_a_fact(self):
+        # Nonconsecutive, mixed-delimiter, plain-text and month-wrapped numbers are not markers
+        # (after "Mar." the sentence split reports the number on its own line, still as a fact).
+        for text, line in (("1. We received\n12.", 2), ("9. We received\n12.", 2),
+                           ("9. We received\n10)", 2), ("9) We received\n10.", 2),
+                           ("We received\n10.", 2),
+                           ("9. Sent on March\n10.", 1), ("9) Sent on Mar.\n10)", 2),
+                           ("We wrote in March.\n12.", 2)):
+            with self.subTest(text=text):
+                self.assertEqual(lint_cites.lint(text, set()), [(line, C4)])
+
+    def test_citation_labels_stay_with_their_own_item(self):
+        # C1/C2 isolation: a label after a lone next ordinal does not label the earlier citation.
+        text = "9. See Gov. Code § 7922.000\n10.\nUNVERIFIED"
+        self.assertEqual(lint_cites.lint(text, set()), [(1, "C1_label_missing")])
+        text = "9. See Gov. Code § 7922.000 UNVERIFIED\n10.\nPlease clarify."
+        self.assertEqual(lint_cites.lint(text, set()), [])
+
     def test_non_marker_numbers_remain_facts(self):
         # Neither decimals nor marker lookalikes (including wrapped dates) are prefixes.
         for text in ("12.5 was the reading.", "12)without a space", "See item 12. Please confirm.",
