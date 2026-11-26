@@ -393,7 +393,7 @@ whose header is RS256 and whose `aud`, `iss`, `exp`, `iat` and `email` claims ma
 This check does **not** verify the signature: alone it is only a tripwire against a missing or misconfigured edge, never
 authentication. Loopback requests are exempt. Never commit the real values.
 Never add an edge rule that rewrites Origin. Existing CSRF and action checks still apply.
-`--access-keys FILE` (DFB-11) adds the signature check for every POST; see "Hosted decisions" below.
+`--access-keys FILE` (DFB-11) adds the signature check for every POST and (D2b) every public-Host GET; see "Hosted decisions" below.
 
 ## Static snapshot
 
@@ -652,11 +652,17 @@ with a token whose signature the console verifies itself**, so the write path do
   keys of 2048 to 8192 bits with a unique `kid` are used; other members (`public_cert`, non-RSA keys) are ignored. A bad file stops the
   start (`access_keys_invalid`). The console never fetches it: the operator refreshes the copy (Cloudflare rotates the keys); the file is
   re-read on every POST, so a refresh needs no restart. While the copy is unusable every POST answers 503 and nothing is saved; while it
-  is out of date (a rotated key) a decision gets the 403 below. Viewing is unaffected either way.
+  is out of date (a rotated key) a decision gets the 403 below. Public-Host viewing needs the same copy (next item); loopback viewing
+  is unaffected either way.
 - A POST is taken only on the public Host with exactly one `Cf-Access-Jwt-Assertion` that passes the claims check above **and** whose
   RS256 signature (RSASSA-PKCS1-v1_5, SHA-256, verified with the standard library against the key its `kid` names) is valid. Anything
   else, including a POST on the loopback pair, gets 403 "decisions here need the Access sign-in" before the body is read; nothing is
-  journaled. GETs keep the claims tripwire only.
+  journaled.
+- D2b: with `--access-keys` (also allowed on a read-only console without `--decisions-dir`), a **GET on the public Host** needs the same
+  signature-verified token, so a token with copied claims and a forged signature cannot read through a missing or misconfigured edge:
+  anything else gets the generic 403 before the export is pinned; an unusable keys copy gets 503 "Access keys unavailable: nothing was
+  shown" (a stale copy after a key rotation is a 403 until refreshed). Loopback GETs keep their current rule. Without `--access-keys`,
+  public GETs keep the claims tripwire only and rely on the edge's signature check.
 - The decision's `actor` is then `<configured email> via Access` (the email the verified token carries) instead of the `--actor` label,
   in the journal entry and, after the apply, in the live project's events. The `--actor` label stays for pages only.
 - Unchanged: the CSRF, Origin and field checks; validation against the pinned snapshot; `/send` is 404; no mail-draft placement; no

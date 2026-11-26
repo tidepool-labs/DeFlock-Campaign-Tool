@@ -146,7 +146,7 @@ class ImportPageTests(unittest.TestCase):
         self.refused(ref(self.unpaged, 1), docs=[self.unpaged])  # page-locator diagnostics: no usable pages
         ledger = self.processing / "ledger.sqlite"
         evidence = self.project / "processing-v1" / "artifacts" / "evidence"
-        with sqlite3.connect(ledger.as_uri() + "?mode=ro&immutable=1", uri=True) as con:
+        with contextlib.closing(sqlite3.connect(ledger.as_uri() + "?mode=ro&immutable=1", uri=True)) as con:
             (path,) = con.execute("SELECT derived_path FROM units WHERE original_sha256=?", (self.one,)).fetchone()
         unit = Path(path)
         self.assertEqual(unit.parent, evidence)

@@ -3,6 +3,7 @@
 Each test names its contract item (C1-C4) and the believable bug that fails it.
 """
 
+import gc
 import io
 import json
 import os
@@ -41,6 +42,11 @@ class Base(unittest.TestCase):
         return str(path)
 
     def run_cli(self, *args):
+        # Collect garbage left by earlier tests in this process first. On Python
+        # 3.13 an unclosed sqlite3 connection warns when it is collected, and an
+        # automatic collection inside the capture below would put that unrelated
+        # text in the captured stderr (main 223543e7: "151 != 1" in full 3.13).
+        gc.collect()
         out, err = io.StringIO(), io.StringIO()
         with redirect_stdout(out), redirect_stderr(err):
             try:

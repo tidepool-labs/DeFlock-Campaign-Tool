@@ -23,9 +23,15 @@ the us-ca law package is draft and each finding says so.
   of a policy/contract/audit log). A non-`other` kind needs `kind_basis: {page, quote}` (positive page,
   exact source line). Negation, questions, quoted/forwarded history and bare words never qualify;
   two different specific kinds give `other` with `mixed_kind_candidates`; text without a real page
-  gives `other` with `page_locator_unavailable`. A mail body or MIME part (locator `{mime, part}`, no page)
-  is not given an invented page: it stays `other` with `page_locator_unavailable` until a mail-body
-  locator contract exists. Only originals whose admission resolves (`effective_original`) are read;
+  gives `other` with `page_locator_unavailable`. A mail body or MIME part is never given an invented page.
+  **Mail-body citation (REC-MAIL-CITE-1):** a unit whose extraction kind is `email_body` or `mime_part` and whose
+  locator is exactly a MIME locator (`mime` plus one part label, `part` or `source_part`, and no page; the label must
+  be non-blank and free of control characters) is read and
+  cited by that part: `kind_basis: {page: null, part, quote}` (exact source line) and, for a date it states,
+  `deadlines[]: {page: null, part, ...}`. Mail headers, documents and any other unit without a real page keep the
+  page contract above (a non-mail unit with a MIME-looking locator still stays `other` with `page_locator_unavailable`).
+  Readers that need a page (comparison evidence, gap proposals, tracker updates, cited pages) treat a part
+  citation as no page, as before; reply drafts quote it as "message part P". Only originals whose admission resolves (`effective_original`) are read;
   an unresolved binding omits the original unread. `kit_equivalent` is a read-only crosswalk to
   `kit_track` kinds (extension, denied, fee_estimate, produced; response maps to acknowledged or determination).
 - `deadlines`: dates the item states for a response, extension or production ("by November 30"),

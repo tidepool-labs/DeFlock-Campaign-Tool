@@ -42,6 +42,7 @@ GATES = {definition["gate_id"]: definition for definition in (
         dict(type="window", label="Outside run slots (Pacific)",
              days=list(DAYS), start="14:00", end="18:00"),
         _prior("s5-engine-switch", "Engine switch gate"),
+        _rehearsal("4", "Portal rehearsal"),
     ),
     _gate(
         "a4-hostname", "A4", "Public admin hostname",
@@ -55,7 +56,8 @@ def spec(gate_id, **pins):
     """Return a validated copy, with an optional operator-pinned evidence age.
 
     Supply copied evidence, pair, and hold-release inputs to the evaluator,
-    not here. The portal hold-release check cannot be removed by a pin.
+    not here. The portal hold-release check cannot be removed by a pin, and
+    its stage 4 rehearsal needs the engine pair like every other lane.
     """
     definition = deepcopy(GATES[gate_id])
     max_age_days = pins.pop("max_age_days", _DEFAULT_MAX_AGE_DAYS)
