@@ -1598,6 +1598,38 @@ class RendererTests(unittest.TestCase):
                 self.assert_refused(fragment, values={**self.values, **extra}, out=out)
                 self.assertFalse(out.exists() and any(out.iterdir()), "partial output")
 
+    def test_console_journal_dir_must_equal_wrapper_decisions_dir(self):
+        # Owner: D49 finding. Catches a render where the panel journals approvals to one directory while the
+        # wrapper's apply step replays another: the approval would be recorded and silently never applied.
+        base = {**self.values, **self.CONSOLE, "CONSOLE_EXPORT_DIR": "/srv/console-export",
+                "CONTAINER_USER": "records", "CONTAINER_ENGINE_DIR": "/srv/engine",
+                "CONTAINER_PYTHON": "/usr/bin/python3", "CONTAINER_PROJECT_DIR": "/srv/project"}
+        for label, panel, wrapper in (("different", "/srv/decisions-panel", "/srv/decisions"),
+                                      ("sibling prefix", "/srv/decisions", "/srv/decisions2"),
+                                      ("nested", "/srv/decisions/sub", "/srv/decisions"),
+                                      # Review t_d3f15cb2: lexically equal is not enough; `..` after a symlinked
+                                      # component can address another directory, so only the identical path passes.
+                                      ("dotdot via other dir", "/srv/decisions", "/srv/link/../decisions"),
+                                      ("trailing slash", "/srv/decisions", "/srv/decisions/"),
+                                      ("double slash", "/srv/decisions", "/srv//decisions")):
+            with self.subTest(label):
+                out = self.tmp / ("mismatch-" + label.replace(" ", "-"))
+                self.assert_refused("differs from DECISIONS_DIR",
+                                    values={**base, "console_decisions_dir": panel, "DECISIONS_DIR": wrapper},
+                                    out=out)
+                self.assertFalse(out.exists() and any(out.iterdir()), "partial output")
+        self.do_render({**base, "console_decisions_dir": "/srv/decisions", "DECISIONS_DIR": "/srv/decisions"},
+                       out=self.tmp / "match")
+        start = next(l for l in (self.tmp / "match" / "records-console.service").read_text().splitlines()
+                     if l.startswith("ExecStart="))
+        self.assertTrue(start.endswith(" --decisions-dir /srv/decisions"), start)
+        wrapper = (self.tmp / "match" / "run-records.sh").read_text()
+        self.assertEqual(re.findall(r"^DECISIONS_DIR=(\S+)$", wrapper, re.M), ["/srv/decisions"])
+        self.assertIn('[ -f "$DECISIONS_DIR/decisions.jsonl" ]', wrapper)
+        # Either side alone stays as before (staged roll-out: journal first, apply later, or the reverse).
+        self.do_render({**base, "console_decisions_dir": "/srv/decisions"}, out=self.tmp / "panel-only")
+        self.do_render({**base, "DECISIONS_DIR": "/srv/decisions"}, out=self.tmp / "wrapper-only")
+
     def test_console_port_equal_to_another_rendered_listener_is_refused(self):
         # Owner: listener-clash validator, exercised on a synthetic plan (no current template listens).
         other = [("other.service", "[Service]\nExecStart=/bin/x serve --port 8782\n", 0o600),

@@ -214,8 +214,21 @@ class AdapterTests(unittest.TestCase):
 
     def test_c3_refusal_exits_without_receipt_data(self):
         """C3: invalid input exits 2 with a fixed diagnostic and no path or data leak."""
-        self.path.write_text("not a JSON report", encoding="utf-8")
-        out, err = io.StringIO(), io.StringIO()
-        with redirect_stdout(out), redirect_stderr(err):
-            self.assertEqual(golive_adapt_e2e.main([str(self.path), "--json"]), 2)
-        self.assertEqual((out.getvalue(), err.getvalue()), ("", "E2E_EVIDENCE_BAD_INPUT\n"))
+        digest = stage("digest_gates")
+        self.report(digest, metadata={"samples": [0.5]})
+        self.assert_rows([self.row("8")])
+
+        # A permissive decoder would ignore bad numbers in unconsumed metadata
+        # and still emit the otherwise valid stage 8 pass.
+        for literal in (None, "NaN", "Infinity", "-Infinity"):
+            if literal is None:
+                self.path.write_text("not a JSON report", encoding="utf-8")
+            else:
+                self.report(digest, metadata={"samples": [float(literal)]})
+            for args in ([], ["--json"]):
+                with self.subTest(literal=literal, args=args):
+                    out, err = io.StringIO(), io.StringIO()
+                    with redirect_stdout(out), redirect_stderr(err):
+                        code = golive_adapt_e2e.main([str(self.path), *args])
+                    self.assertEqual((code, out.getvalue(), err.getvalue()),
+                                     (2, "", "E2E_EVIDENCE_BAD_INPUT\n"))

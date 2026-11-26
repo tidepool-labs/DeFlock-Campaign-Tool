@@ -237,6 +237,14 @@ there is no SMTP call in `campaign_tool/records/mail_drafts.py`. Sending is a se
   config `user`. The password stays in `password_file`; it is read only by `mail_poll` at connect time.
 - `records mail-drafts place --project DIR --config FILE [--dry-run]` places every approved, not yet placed
   row and prints counts only. `records mail-drafts list --project DIR` prints the journal without text.
+  `--queue-id ID --revision N` (always together, full 64-hex ID) places only that row and only if its current
+  revision is exactly N and approved, so an edit, a new approval or a cancellation after the reviewer saw
+  revision N is refused (`exact_revision_not_current`, `exact_not_approved`, `exact_id_unknown`,
+  `exact_not_mail`, `exact_request_invalid`) before anything is written or any connection is made. A malformed
+  `--revision` (not 1-9 plain ASCII digits, missing its value, or given more than once, abbreviations included) is
+  `exact_request_invalid`, exit 1, code-only stderr, checked before argparse can print usage. The queue's shared
+  lock is held from that check until the Drafts append is journaled, so an edit, approval or cancellation
+  meanwhile waits (then `queue_busy`) and the placed text is always the revision that was checked.
   `records panel ... --mail-drafts-config FILE` places the one draft right after a successful Approve; a
   placement failure is shown on the page and never undoes the approval.
 - The draft is threaded (`In-Reply-To`, `References`, `To` from `Reply-To`/`From`) when the ledger links the

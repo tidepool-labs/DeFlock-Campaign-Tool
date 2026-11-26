@@ -19,7 +19,7 @@ from . import release_manifest
 from .run_stages import SANDBOX_MARKER
 
 SCHEMA = "records-rehearsal-v1"
-FAILED, MANUAL, EMPTY, OUTPUT, SANDBOX, ENGINE, STALE, MISMATCH = _CODES = (
+FAILED, MANUAL, EMPTY, OUTPUT, SANDBOX, ENGINE, STALE, MISMATCH, INCOMPLETE = _CODES = (
     "REHEARSAL_FAILED_STEP",
     "REHEARSAL_MANUAL_STEP",
     "REHEARSAL_NO_STEPS",
@@ -28,7 +28,15 @@ FAILED, MANUAL, EMPTY, OUTPUT, SANDBOX, ENGINE, STALE, MISMATCH = _CODES = (
     "REHEARSAL_ENGINE_UNKNOWN",
     "REHEARSAL_STALE",
     "REHEARSAL_ENGINE_MISMATCH",
+    "REHEARSAL_STAGE_INCOMPLETE",
 )
+# A receipt that claims one of these stages qualifies only when it comes from the stage's own driver and records every
+# one of that driver's steps. Stage 11 is the real replay through the outputs stage plus the cited-denial control and
+# the no-send check; a receipt with only the early (adapter-level) steps, or from another module, is not stage 11 evidence.
+_STAGE_REQUIRED = {
+    "11": ("rehearse_gap_proposals", ("seed_denial", "received_denial", "proposal_written", "proposal_is_review_only",
+                                      "cited_denial_proposes_nothing", "no_sends")),
+}
 _FIELDS = {
     "schema", "module", "stages", "started_at", "finished_at", "engine",
     "steps", "manual_steps", "codes", "result", "qualified", "qualify_codes",
@@ -212,6 +220,11 @@ def _qualify(receipt, now, target_engine, max_age_days, observations):
         bad.add(MANUAL)
     if not receipt["steps"]:
         bad.add(EMPTY)
+    names = [step["name"] for step in receipt["steps"]]
+    for stage in receipt["stages"]:
+        module, required = _STAGE_REQUIRED.get(stage, (None, ()))
+        if module is not None and (receipt["module"] != module or not set(required) <= set(names)):
+            bad.add(INCOMPLETE)
     if engine is None:
         bad.add(ENGINE)
     elif target_engine is not None and engine != target_engine:
