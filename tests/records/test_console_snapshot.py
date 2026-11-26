@@ -240,7 +240,34 @@ class ServedExport(Panel):
     def test_a_tampered_export_file_fails_the_hash_check(self):
         name = self.make_export()
         unlock(self.root)
-        path = self.root / "exports" / name / "console-model" / "queue.json"
+        export = self.root / "exports" / name
+        manifest_path = export / console_export.MANIFEST
+        raw = manifest_path.read_bytes()
+        manifest = json.loads(raw)
+        pinner = console_snapshot.Pinner(str(self.root))
+        with mock.patch.object(pinner, "_verify", wraps=pinner._verify) as verify:
+            good = pinner.pin()
+            self.assertEqual((good.run_id, good.source_project_id, good.name, good.exported_at),
+                             (RUN, self.pid, name, manifest["exported_at"]))
+            self.assertEqual(pinner.historical(name), good)
+            verify.assert_called_once()
+
+        with self.subTest(tampered="manifest digest on a warm cache"):
+            # An in-place rewrite leaves the directory key intact: a directory-only cache
+            # would accept a changed digest claim without checking the unchanged payload.
+            before = export.stat()
+            rel = "console-model/queue.json"
+            digest = manifest["files"][rel]
+            manifest["files"][rel] = ("1" if digest[0] == "0" else "0") + digest[1:]
+            manifest_path.write_text(json.dumps(manifest))
+            after = export.stat()
+            self.assertEqual((before.st_dev, before.st_ino, before.st_mtime_ns),
+                             (after.st_dev, after.st_ino, after.st_mtime_ns))
+            with self.assertRaisesRegex(console_snapshot.SnapshotError, "^export_hash_mismatch$"):
+                pinner.historical(name)
+
+        manifest_path.write_bytes(raw)
+        path = export / "console-model" / "queue.json"
         path.write_text(path.read_text().replace("pending", "approved"))
         pinner = console_snapshot.Pinner(str(self.root))
         with self.assertRaises(console_snapshot.SnapshotError), redirect_stderr(io.StringIO()) as err:
@@ -324,6 +351,8 @@ class HoldsView(Panel):
     def test_golden_model_and_page_live_equals_export(self):
         self.seed()
         live = self.live_page()
+        target = "/holds?outcome=EXTRACT_ERROR"
+        live_filtered = self.get(target)
         self.make_export()
         model = self.holds_json()
         items = [{"sha256_prefix": p, "code": c, "detail_code": d, "attempts": a, "route": r} for p, c, d, a, r, _ in ROWS]
@@ -356,11 +385,25 @@ class HoldsView(Panel):
         for row in ROWS:
             self.assertIn("<td>%s</td>" % row[5], page)
         self.assertEqual(self.tables(page), self.tables(live))  # live and export render the same rows
+        # A filter must not narrow the totals or leave unrelated detail tables in either reader.
+        filtered = self.get(target)
+        totals, errors = self.tables(filtered)
+        self.assertEqual([totals, errors], self.tables(live_filtered))
+        self.assertEqual(totals, self.tables(page)[0])
+        self.assertIn(f'<a href="{target}">EXTRACT_ERROR</a>', totals)
+        self.assertIn('<a href="/holds">Clear filter</a>', filtered)
+        self.assertIn('<a href="/holds">Clear filter</a>', live_filtered)
+        for text in (filtered, live_filtered):
+            self.assertIn("<h2>EXTRACT_ERROR</h2>", text)
+            self.assertNotIn("aaaaaaaaaaaa", text)
+        self.assertIn("<td>999999999999</td>", errors)
+        self.assertIn("<td>cccccccccccc</td>", errors)
 
     def test_missing_invalid_or_empty_is_unavailable_never_none(self):
         self.make_export(RUN2)
         self.up()
         self.assertIn("No held documents.", self.get("/holds"))  # control: an exported empty listing is a real zero
+        self.assertIn("No held documents.", self.get("/holds?outcome=EXTRACT_ERROR"))
         self.seed()
 
         def edit(change):
@@ -393,9 +436,21 @@ class HoldsView(Panel):
         self.seed()
         self.live_page()
         before = tree_state(self.live)
-        status, _ = self.request("POST", "/holds", {"csrf_token": self.server.csrf_token})
-        self.assertEqual(status, 404)
-        self.assertEqual(self.request("GET", "/holds?id=1")[0], 400)  # no query selector, and the query is not echoed
+        fields = {"csrf_token": self.server.csrf_token}
+        for path in ("/holds", "/holds?outcome=EXTRACT_ERROR"):
+            with self.subTest(path=path):
+                self.assertEqual(self.request("POST", path, fields)[0], 404)
+
+        # Reject ambiguity (including blank fields parse_qs can otherwise drop) and never echo rejected input.
+        for query in ("outcome=NOT_AN_OUTCOME", "outcome=EXTRACTED", "outcome=extract_error", "outcome=", "outcome",
+                      "outcome=+", "outcome=EXTRACT_ERROR&outcome=EXTRACT_ERROR",
+                      "outcome=EXTRACT_ERROR&outcome=PRESERVE_PENDING", "outcome=&outcome=EXTRACT_ERROR",
+                      "outcome=EXTRACT_ERROR&%6Futcome=", "outcome=EXTRACT_ERROR&id=", "id=1",
+                      "outcome=EXTRACT_ERROR&id", "outcome=EXTRACT_ERROR&", "outcome=EXTRACT_ERROR;id=1",
+                      "outcome=EXTRACT_ERROR%ZZ", "outcome=%FF", "outcome=%3Cdfg3-canary%3E"):
+            with self.subTest(query=query):
+                self.assertNotIn("dfg3-canary", self.get("/holds?" + query, status=400))
+        self.assertIn("<h2>EXTRACT_ERROR</h2>", self.get("/holds?outcome=EXTRACT%5FERROR"))
         self.assertEqual(tree_state(self.live), before)
 
 

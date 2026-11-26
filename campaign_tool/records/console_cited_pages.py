@@ -83,19 +83,26 @@ def _cited(root, run_id):
                 _need(type(cite) is dict, "cited_pages_citation")
                 add(cite.get("document_sha256"), cite.get("page"), "fact", "%s/%s/%d" % (agency["agency_id"], field, number),
                     field, agency["agency_id"])
-    seen, documents = set(), []
+    seen, documents = {}, []
     for agency in co._list(gaps.get("agencies")):
         for request in co._list(agency.get("requests")):
             for proposal in co._list(request.get("proposals")):
                 ident = proposal.get("proposal_id")
                 _need(type(ident) is str and ident, "cited_pages_citation")
+                evidence = proposal.get("evidence_kind")
+                _need(evidence in ("document", "ledger_field"), "cited_pages_citation")
+                citation = (evidence,)
+                if evidence == "document":
+                    citation += (proposal.get("item_id"), proposal.get("page"), proposal.get("type"))
                 if ident in seen:
+                    previous = seen[ident]
+                    # JSON booleans and floats must not match integer page numbers.
+                    _need(previous == citation and all(type(a) is type(b) for a, b in zip(previous, citation)),
+                          "cited_pages_citation")
                     continue
-                seen.add(ident)
-                if proposal.get("evidence_kind") == "document":  # a ledger-field proposal cites no page
-                    documents.append((ident, proposal.get("item_id"), proposal.get("page"), proposal.get("type")))
-                else:
-                    _need(proposal.get("evidence_kind") == "ledger_field", "cited_pages_citation")
+                seen[ident] = citation
+                if evidence == "document":  # a ledger-field proposal cites no page
+                    documents.append((ident, *citation[1:]))
     if documents:
         _need(gaps.get("received_items_sha256") == hashlib.sha256(raw).hexdigest(), "cited_pages_binding")  # made from these items
     for ident, item_id, page, kind in documents:
@@ -201,6 +208,7 @@ def _page_ok(row):
             and all(row[k] is None or type(row[k]) is str for k in ("agency", "received_at"))
             and row["route"] in ROUTES and row["confidence_band"] in BANDS and row["review_state"] in REVIEWS
             and (row["route"] == "ocr") == (row["review_state"] != "not_applicable")
+            and (row["route"] == "native") == (row["confidence_band"] == "not_applicable")
             and len(text) <= MAX_PAGE_BYTES and hashlib.sha256(text).hexdigest() == row["text_sha256"]
             and type(row["citations"]) is list and row["citations"]
             and all(type(c) is dict and set(c) == {"kind", "id", "label"} and c["kind"] in KINDS

@@ -67,8 +67,8 @@ def _sha256(dir_fd, name):
 
 
 class Pinner:
-    """Pins DIR/current to one real export per request. A verified export is cached by directory identity
-    (exports are immutable); a failing pin falls back to the last good one, and to none before any."""
+    """Pins DIR/current to one real export per request. Verification is cached by directory identity and
+    manifest bytes; a failing pin falls back to the last good one, and to none before any."""
 
     def __init__(self, root):
         self.root, self.good, self.verified, self.last_code = root, None, set(), None
@@ -102,7 +102,17 @@ class Pinner:
         with self.lock:
             return self._named(name)
 
+    def historical_sealed(self, name):
+        """``(Pin, manifest bytes)`` of one installed export, both taken from the single manifest read that was verified
+        (so a caller can cite the exact bytes, and the Pin's ``exported_at`` comes from those same bytes)."""
+        _need(isinstance(name, str) and ce.NAME.fullmatch(name), "export_name_invalid")
+        with self.lock:
+            return self._named_sealed(name)
+
     def _named(self, name):
+        return self._named_sealed(name)[0]
+
+    def _named_sealed(self, name):
         root_fd, fd = aq._open_chain(self.root), None
         try:
             _need(_private_dir(os.fstat(root_fd)), "export_root_unsafe")
@@ -111,20 +121,21 @@ class Pinner:
             info = os.fstat(fd)
             _need(_private_dir(info), "export_unsafe")
             raw = _read_file(fd, ce.MANIFEST, MAX_MANIFEST)
-            _need(raw is not None, "export_manifest_invalid")
+            if raw is None:
+                raise SnapshotError("export_manifest_invalid")
             manifest = aq._strict_load(raw, "export_manifest_invalid")
             run_id, pid, files = manifest["run_id"], manifest["source_project_id"], manifest["files"]
             _need(manifest["schema"] == ce.SCHEMA and isinstance(run_id, str) and ce.RUN_ID.fullmatch(run_id)
                   and name[17:] == run_id and isinstance(pid, str) and PROJECT_ID.fullmatch(pid)
                   and isinstance(files, dict) and all(isinstance(v, str) and ce.HEX.fullmatch(v) for v in files.values()),
                   "export_manifest_invalid")
-            key = (info.st_dev, info.st_ino, info.st_mtime_ns)
+            key = (info.st_dev, info.st_ino, info.st_mtime_ns, hashlib.sha256(raw).digest())
             if key not in self.verified:
                 self._verify(fd, files)
                 self.verified.add(key)
             exported_at = manifest.get("exported_at")
             return Pin(os.path.join(self.root, "exports", name), run_id, pid, name,
-                       exported_at if isinstance(exported_at, str) else "unknown time")
+                       exported_at if isinstance(exported_at, str) else "unknown time"), raw
         finally:
             os.close(root_fd)
             if fd is not None:
@@ -217,8 +228,10 @@ class SnapshotSource:
     """The same methods over <pin.path>/console-model/*.json; one instance serves one request."""
     snapshot = True
 
-    def __init__(self, pin):
-        self.pin, self._docs = pin, {}
+    def __init__(self, pin, expected=None):
+        """``expected``: optional manifest ``files`` map; when given, every model file read must hash to its entry
+        (the bytes parsed are the bytes checked) or the load is refused as ``export_hash_mismatch``."""
+        self.pin, self._docs, self.expected = pin, {}, expected
 
     def _load(self, name, schema=ce.MODEL_SCHEMA):
         """The parsed ok model file, or the code it is unavailable with."""
@@ -229,6 +242,8 @@ class SnapshotSource:
             raw = None if model is None else _read_file(model, name, MAX_MODEL)
             if raw is None:
                 return "console_model_missing"
+            if self.expected is not None and self.expected.get(ce.MODEL_DIR + "/" + name) != hashlib.sha256(raw).hexdigest():
+                return "export_hash_mismatch"
             doc = aq._strict_load(raw, "console_model_invalid")
         except (aq.ApprovalQueueError, ce.ExportError, SnapshotError, OSError):
             return "console_model_invalid"

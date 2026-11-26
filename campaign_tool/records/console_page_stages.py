@@ -1,4 +1,4 @@
-"""GET /stages: read-only go-live evidence from archived run reports."""
+"""GET /stages: read-only proof from archived run reports."""
 import os
 import re
 from urllib.parse import parse_qs, quote
@@ -16,7 +16,9 @@ COLUMNS = (
     ("masked_by", "Masked by"),
 )
 INTRO = ("<h1>Go-live stages</h1><p>Read-only. Proven means the run report metadata qualifies; "
-         "it is machine-valid evidence, not semantic acceptance. External stages are not provable from run reports.</p>")
+         "it is machine-valid evidence, not semantic acceptance. External stages are not provable from run reports.</p>"
+         '<p>Archived run-report proof only. Open the <a href="/golive">Go-live ledger</a> '
+         'for combined evidence (qualified rehearsals, attended gates and live records) and the pipeline live count.</p>')
 # The CLI includes the directory on archive errors. Only allow named report errors with a basename.
 REPORT_ERROR = re.compile(r'''(['"])[^/\\\r\n]+\.json\1: (?:invalid report|unreadable report|duplicate run ID \w+)''')
 

@@ -101,8 +101,30 @@ class ManualEvents(unittest.TestCase):
         self.assertFalse((self.project / "processing-v1").exists())
 
     def test_cancel_and_unknown_target_write_nothing(self):
-        fields = self.form()
-        self.assertIn("ticket", fields)
+        register = self.project / "run-outputs" / RUN / "CURRENT-REQUEST-REGISTER.json"
+        doc = json.loads(register.read_text())
+        other = "agency-two <North> & West"
+        doc["requests"].append(doc["requests"][0] | {"agency": other, "agency_key": other})
+        register.write_text(json.dumps(doc))
+
+        # Looking up visible context by request alone could label both forms with the first agency.
+        first_label = "<p>Agency agency-one</p>"
+        second_label = "<p>Agency agency-two &lt;North&gt; &amp; West</p>"
+        for agency, expected, opposite in (
+            ("agency-one", first_label, second_label), (other, second_label, first_label),
+        ):
+            with self.subTest(agency=agency):
+                status, page, _ = self.request("GET", "/manual-event?" + urllib.parse.urlencode({
+                    "agency": agency, "request": "REF-1",
+                }))
+                self.assertEqual(status, 200)
+                self.assertIn("<p>Request REF-1; actor Operator &lt;one&gt;", page)
+                self.assertIn(expected, page)
+                self.assertNotIn(opposite, page)
+                self.assertNotIn(f"<p>Agency {other}</p>", page)
+                self.assertIn("ticket", Inputs(page).fields)
+                back = "/agency?" + urllib.parse.urlencode({"agency": agency})
+                self.assertIn(f'<a href="{back}">Cancel</a>', page)
         self.assertFalse(self.journal.exists())  # Cancel is navigation, not a mutation.
         self.request("GET", "/agency?agency=agency-one")
         self.assertFalse(self.journal.exists())

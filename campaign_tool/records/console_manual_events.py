@@ -193,6 +193,7 @@ def serve(handler):
         from . import console_layout
         page = console_layout.start('Manual event', 'Agencies')
         page += '<h1>Manual event</h1><p>Private; review required. Nothing is sent or published.</p>'
+        page += '<p>Agency %s</p>' % esc(agency)
         page += '<p>Request %s; actor %s (local attribution, not authenticated identity).</p>' % (esc(request), esc(handler.server.actor))
         page += '<form method="post" action="/manual-event">'
         page += "".join('<input type="hidden" name="%s" value="%s">' % (k, esc(v)) for k, v in hidden.items())

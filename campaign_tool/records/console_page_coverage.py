@@ -30,21 +30,28 @@ def _mark(new, old):
     return "" if new is None or old is None else " <small>%s</small>" % MARKS[(new > old) - (new < old)]
 
 
+def _run_url(report):
+    return "/run?id=%s" % esc(urllib.parse.quote(report["run_id"]))
+
+
 def _row(report, now, older):
     started = datetime.strptime(report["started_at"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).astimezone(runs.ZONE)
     mode = esc(now["mode"]) + (" <strong>%s</strong>" % STUB if now["stub"] else "")
+    if older is not None and (now["stub"] or older["stub"] or now["mode"] != older["mode"]):
+        mode += " <small>Not comparable to previous run</small>"
+        older = None
     cells = [esc(started.strftime("%Y-%m-%d %H:%M %Z")), mode]
-    cells += [_show(now[key]) + (_mark(now[key], older[key]) if older else "") for key, _, _ in COUNTS]
-    cells.append('<a href="/run?id=%s">Details</a>' % esc(urllib.parse.quote(report["run_id"])))
+    cells += [_show(now[key]) + (_mark(now[key], older[key]) if older is not None else "") for key, _, _ in COUNTS]
+    cells.append('<a href="%s">Details</a>' % _run_url(report))
     return "<tr>%s</tr>" % "".join("<td>%s</td>" % c for c in cells)
 
 
-def _latest(now):
+def _latest(report, now):
     items = "".join("<dt>%s: %s</dt><dd>%s</dd>" % (esc(label), _show(now[key]), esc(text)) for key, label, text in COUNTS)
     items += "<dt>Mode: %s</dt><dd>How the engine ran this report.</dd>" % esc(now["mode"])
     items += "<dt>%s</dt><dd>%s</dd>" % ((STUB, "A stub backend was used, so these counts are not evidence of real processing.") if now["stub"] else (
         "Stub backend: none reported", "No stub backend was reported for this run."))
-    return "<h2>Newest run</h2><dl>%s</dl>" % items
+    return '<h2>Newest run</h2><p><a href="%s">Open newest run details</a></p><dl>%s</dl>' % (_run_url(report), items)
 
 
 def render(history):
@@ -62,7 +69,7 @@ def render(history):
         if reports:
             rows = "".join(_row(r, counts[i], counts[i + 1] if i + 1 < len(counts) else None) for i, r in enumerate(reports[:runs.SHOWN]))
             heads = ("Started (Pacific)", "Mode") + tuple(label for _, label, _ in COUNTS) + ("Run",)
-            body.append(_latest(counts[0]))
+            body.append(_latest(reports[0], counts[0]))
             body.append('<div class="scroll" role="region" tabindex="0" aria-label="Coverage by run"><table style="min-width:60rem">'
                         "<caption>Newest %d valid runs; change marks compare with the run before</caption><thead><tr>%s</tr></thead>"
                         "<tbody>%s</tbody></table></div>" % (runs.SHOWN, "".join('<th scope="col">%s</th>' % esc(h) for h in heads), rows))

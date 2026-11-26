@@ -64,11 +64,13 @@ def alarms(path):
 
     Cleared health files are excluded. Notify failures have no clearing schema, so
     count their markers separately without claiming they are unresolved health alarms.
+    Only a complete scan can supply rows or a marker count.
     """
     result = {"state": "unknown", "rows": [], "notify_markers": 0}
     if not path or Path(path).name != "run-report.json":
         return result
     directory = Path(path).parent / "alerts"
+    rows, notify_markers = [], 0
     try:
         if not stat.S_ISDIR(directory.lstat().st_mode):
             return result
@@ -77,7 +79,7 @@ def alarms(path):
                 if index >= 1000:
                     return result
                 if re.fullmatch(r"notify-failed-.*\.json", entry.name):
-                    result["notify_markers"] += 1
+                    notify_markers += 1
                 if not pipeline_health.ALERT_RE.fullmatch(entry.name):
                     continue
                 data = _read(entry.path)
@@ -87,10 +89,10 @@ def alarms(path):
                     raise ValueError("invalid_alert")
                 if entry.name != "health-%s-%s.json" % (data["check"], data["reason_code"]):
                     raise ValueError("mismatched_alert")
-                result["rows"].append((data["check"], data["reason_code"], data["state"]))
+                rows.append((data["check"], data["reason_code"], data["state"]))
     except (OSError, ValueError, TypeError):
         return result
-    return dict(result, state="read", rows=sorted(result["rows"]))
+    return {"state": "read", "rows": sorted(rows), "notify_markers": notify_markers}
 
 
 def _service(unit, runner):

@@ -13,11 +13,13 @@ view recomputed per run and replaced atomically; nobody edits it by hand.
 Manual events (append-only, read here, written by the console): ``<project>/manual-events.jsonl``,
 one JSON object per line: ``{"event_id", "agency_id", "request_id", "type", "date", "summary",
 "actor"}`` plus optional ``"new_date"`` (extension notices and promised dates) and ``"corrects"``
-(an earlier event_id; both stay listed, the earlier one is marked superseded).
+(an event_id earlier in the journal for the same request; both stay listed, the earlier one is
+marked superseded).
 """
 from __future__ import annotations
 
 from datetime import date
+import hashlib
 import json
 import os
 import re
@@ -76,6 +78,11 @@ def _iso(day):
 
 def _canon(value):
     return json.dumps(value, ensure_ascii=False, sort_keys=True, indent=2, allow_nan=False)
+
+
+def register_sha256(register):
+    """Digest of the canonical register document this timeline was derived from (binds every register field)."""
+    return hashlib.sha256(_canon(register).encode("utf-8")).hexdigest()
 
 
 # ---------------------------------------------------------------- pure merge
@@ -160,7 +167,7 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
     _need(today is not None, "timeline_register_as_of")
     requests, matched = [], set()
     items = list((received or {}).get("items", []))
-    superseded = {m.get("corrects") for m in manual if m.get("corrects")}
+
     for row in register.get("requests", []):
         agency, request = row.get("agency_key"), row.get("ledger_request_id")
         events, draft_rows = [], []
@@ -218,15 +225,21 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
                                  "follow-up sent" if followup else "request sent",
                                  {"kind": "outbox_receipt", "key": o.get("idempotency_key"),
                                   "message_id": o.get("message_id")}))
+        manual_by_id = {}
         for m in manual:
             if not _matches(row, m.get("agency_id"), m.get("request_id")):
                 continue
-            matched.add(("manual", m.get("event_id")))
+            event_id, corrects = m.get("event_id"), m.get("corrects")
+            matched.add(("manual", event_id))
+            # Resolve against this row's earlier journal entries, before sorting by date.
+            if corrects and corrects in manual_by_id:
+                manual_by_id[corrects]["superseded"] = True
             new = [m["new_date"]] if _day(m.get("new_date")) else []
-            events.append(_event(_day(m.get("date")), m["type"], m.get("summary") or m["type"],
-                                 {"kind": "manual", "event_id": m.get("event_id"), "actor": m.get("actor")},
-                                 new_dates=new, superseded=m.get("event_id") in superseded,
-                                 corrects=m.get("corrects")))
+            event = _event(_day(m.get("date")), m["type"], m.get("summary") or m["type"],
+                           {"kind": "manual", "event_id": event_id, "actor": m.get("actor")},
+                           new_dates=new, superseded=False, corrects=corrects)
+            manual_by_id[event_id] = event
+            events.append(event)
         events = [e for e in events if e["date"] or e["type"] == "extension notice"]
         events.sort(key=lambda e: (e["date"] or "9999", e["type"], json.dumps(e["source"], sort_keys=True)))
         live = [e for e in events if not e.get("superseded")]
@@ -258,8 +271,8 @@ def build_timeline(register, received, drafts, outbox, manual, *, run_id):
         + [("outbox", o.get("idempotency_key")) for o in outbox if o.get("state") == "sent"]
         + [("manual", m.get("event_id")) for m in manual]) if t == kind and (t, key) not in matched)
                  for kind in ("item", "draft", "outbox", "manual")}
-    return {"schema": SCHEMA, "run_id": run_id, "as_of": register["as_of"], "visibility": "private",
-            "review_required": True, "requests": requests, "request_count": len(requests),
+    return {"schema": SCHEMA, "run_id": run_id, "as_of": register["as_of"], "register_sha256": register_sha256(register),
+            "visibility": "private", "review_required": True, "requests": requests, "request_count": len(requests),
             "unmatched": unmatched, "limits": list(LIMITS)}
 
 

@@ -29,7 +29,8 @@ and records-analysis.timer; without it the output is exactly as before.
 Opt-in console units (DFCON17-15): VALUES.json keys console_port (1024..65535, not 8781) and console_export_root
 (absolute), required together, optionally console_decisions_dir, also render records-console.service (loopback
 panel, never --send-config) and records-console-check.service/.timer (hourly `records console-check`). Any other
-send/bind/console key, a port equal to another rendered listener or a half pair is refused before any write.
+send/bind/console key, a port equal to another rendered listener, a half pair, or a console_decisions_dir different
+from DECISIONS_DIR (approvals journaled where the wrapper never replays them) is refused before any write.
 
 Output: run-records.sh (0700), records-run.service, records-run.timer,
 records-arrival.path, records-arrival.service, records-health.service,
@@ -186,6 +187,22 @@ def split_console(values):
     checked["CONSOLE_DECISIONS_ARGS"] = (f" --decisions-dir {checked['CONSOLE_DECISIONS_DIR']}"
                                          if "CONSOLE_DECISIONS_DIR" in checked else "")
     return rest, checked
+
+
+def check_decisions_pairing(values, console):
+    """Refuse a panel journal directory that differs from the wrapper's DECISIONS_DIR (D49 finding).
+
+    The panel appends approvals to `<console_decisions_dir>/decisions.jsonl`; the wrapper's apply step replays
+    `$DECISIONS_DIR/decisions.jsonl` and returns quietly when that file is absent. Two different directories would
+    record approvals that are never applied. The comparison is exact: the console value is already normalised, so a
+    DECISIONS_DIR that only normalises to it (`..`, `.`, `//`, trailing slash) is refused too, because `..` after a
+    symlinked component can name another directory than the lexical result. Either one alone is unchanged (staged
+    roll-out)."""
+    panel = (console or {}).get("CONSOLE_DECISIONS_DIR")
+    wrapper = values.get("DECISIONS_DIR")
+    if panel is not None and wrapper is not None and panel != wrapper:
+        raise RenderError("console_decisions_dir: differs from DECISIONS_DIR (must be the identical normalised "
+                          "path); approvals the panel records would never be applied by the wrapper")
 
 
 def check_console_listener(port, files):
@@ -378,6 +395,7 @@ def check_overlap(plans):
 def render(values, targets, out):
     values, console = split_console(values)
     check_values(values)
+    check_decisions_pairing(values, console)
     out = Path(out).resolve()
     if inside_git_checkout(out):
         raise RenderError("out: refusing to write rendered private files inside a Git checkout")

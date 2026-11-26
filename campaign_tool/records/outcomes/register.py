@@ -336,7 +336,7 @@ def answer_arrived(deliveries, occurrences, mail_rows, start, determination_text
 
 
 def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", frozenset(), None)):
-    """``holiday`` is read_holidays' result; absent leaves every output byte-identical to the legacy register."""
+    """``holiday`` is read_holidays' result; absent leaves the default clock and omits holiday metadata."""
     today = _day(as_of)
     if today is None:
         raise ValueError("as_of_invalid")
@@ -387,7 +387,12 @@ def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", froze
             issues.append("holiday_list_invalid")
         clock = deadline(row, today, issues, holidays)
         promise = promised(row, today, issues)
-        started = _day(row.get("received_at")) or _day(row.get("submitted_at"))
+        submitted = _day(row.get("submitted_at"))
+        started = _day(row.get("received_at")) or submitted
+        # Admit explicit submission separately without changing the legacy clock input.
+        if submitted and (submitted > today or "source_conflict:submitted_at" in issues
+                          or "tracker_identity_unresolved" in issues):
+            submitted = None
         deliveries = []
         for oid, occurrence in sorted(occurrences.items()):
             if row["ledger_id"] is None or row["ledger_id"] not in members[oid]:
@@ -398,7 +403,7 @@ def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", froze
                                "mail": [{"id": m["id"], "received_at": m["received_at"], "subject": _subject(m)}
                                         for m in messages.get(occurrence["original_sha256"], [])]})
         arrival = answer_arrived(deliveries, occurrences, data["mail_messages"], started,
-                                 _text(row.get("determination_at")))
+                                 clock["determination_at"])
         if arrival["state"] == "unknown":
             issues.append("arrival_unresolved")
         asked = row.get("asked") or "Unknown — request scope not recorded"
@@ -434,6 +439,7 @@ def build_register(data, tracker=(), *, as_of, gaps=(), holiday=("absent", froze
                        "production_at": row.get("production_at"), "withheld": withheld, "missing": missing,
                        "status": row.get("status") or "unknown", "deadline": clock,
                        "promised": promise, "request_date": started.isoformat() if started else None,
+                       "submitted_at": submitted.isoformat() if submitted else None,
                        "answer_arrived": arrival,
                        "next_action": action, "action_reason": reason,
                        "sources": row["sources"], "issues": sorted(set(issues)), "fulfillment": "not_assessed"})
