@@ -1,0 +1,240 @@
+"""Stage case exhibit reader: open a case, follow a difference to its locators and timeline, withhold on any break."""
+import copy
+import json
+import os
+import socket
+import tempfile
+import unittest
+from contextlib import redirect_stdout
+from io import StringIO
+from pathlib import Path
+from unittest.mock import patch
+
+from campaign_tool.records import rehearsal_case_exhibit as exhibit
+
+SHA_POLICY = "sha256:" + "a" * 64
+SHA_ORIGINAL = "b" * 64
+AGENCY, OTHER, FIELD = "ca-valley-pd", "ca-harbor-pd", "sharing_limits"
+
+
+def comparison():
+    def row(agency, field, status):
+        return {"agency_id": agency, "field": field, "status": status, "reason": "documentary_criterion_discrepancy",
+                "citation": {"label": "Civ. Code 1798.90.55(b)"}, "expected": "restrictions documented",
+                "observed": {"restrictions_documented": False},
+                "evidence": [{"locator": "page 1", "source_id": SHA_POLICY}]}
+    return {"schema": exhibit.COMPARISON_SCHEMA, "legal_conclusion": False, "review_required": True, "run_id": "run-10",
+            "rows": [row(AGENCY, FIELD, "gap"), row(AGENCY, "retention", "meets"), row(OTHER, FIELD, "gap")]}
+
+
+def timeline():
+    return {"schema": exhibit.TIMELINE_SCHEMA, "review_required": True, "run_id": "run-12",
+            "requests": [{"request_id": "req-1", "agency_key": AGENCY, "stage": "acknowledged", "issues": [],
+                          "events": [{"date": "2026-11-25", "type": "acknowledged",
+                                      "source": {"item_id": "item-1", "kind": "received_item"}}]}]}
+
+
+def received():
+    return {"legal_conclusion": False, "review_required": True,
+            "items": [{"item_id": "item-1", "request_id": "req-1", "agency_id": AGENCY, "kind": "response",
+                       "original_sha256": SHA_ORIGINAL, "diagnostics": [],
+                       "kind_basis": {"page": 1, "quote": "We have received your request."}}]}
+
+
+def case(**change):
+    docs = {"c": comparison(), "t": timeline(), "r": received()}
+    for key, edit in change.items():
+        edit(docs[key])
+    return exhibit.open_case(docs["c"], docs["t"], docs["r"], AGENCY, FIELD)
+
+
+class OpenCaseTests(unittest.TestCase):
+    def test_follows_difference_to_both_locators_and_the_timeline(self):
+        result = case()
+        self.assertEqual(result["status"], exhibit.OPEN)
+        self.assertEqual(result["stage_10_difference"]["policy_locators"], [{"locator": "page 1", "source_id": SHA_POLICY}])
+        located = result["stage_12_case"]["received_locators"]
+        self.assertEqual([(x["item_id"], x["locator"], x["original_sha256"]) for x in located],
+                         [("item-1", "page 1", SHA_ORIGINAL)])
+        self.assertEqual(result["stage_12_case"]["timeline_events"],
+                         [{"date": "2026-11-25", "type": "acknowledged", "item_id": "item-1"}])
+        self.assertIs(result["legal_conclusion"], False)
+        self.assertIn("Policy source: page 1 @ " + SHA_POLICY, exhibit.render(result))
+
+    def test_open_rendering_shows_the_difference_and_the_received_quote(self):
+        # Contract: EXHIBIT.md carries the cited difference and the quoted received item, not only their locators.
+        # Bug caught: a render that prints ids and hashes but omits expected/observed/quote.
+        text = exhibit.render(case(r=lambda d: d["items"][0]["kind_basis"].update(quote="We have\nreceived  your request.")))
+        self.assertIn("Expected: restrictions documented", text)
+        self.assertIn('Observed: {"restrictions_documented": false}', text)
+        self.assertIn("Quote: We have received your request.", text)
+
+    def test_item_ids_must_be_nonempty_and_unique(self):
+        # Contract: join on exact identifiers. Bug caught: a missing item_id on an item matches an event source that
+        # also lacks item_id (None == None), and duplicate ids make the join ambiguous.
+        def no_ids(docs):
+            del docs["items"][0]["item_id"]
+        def no_source_id(docs):
+            docs["requests"][0]["events"][0]["source"].pop("item_id")
+        def duplicate(docs):
+            docs["items"].append(copy.deepcopy(docs["items"][0]))
+        for edits in ({"r": no_ids, "t": no_source_id}, {"r": duplicate}):
+            result = case(**edits)
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["RECEIVED_ITEM_ID_INVALID"]))
+        blank = case(r=lambda d: d["items"][0].update(item_id="  "))
+        self.assertEqual(blank["reasons"], ["RECEIVED_ITEM_ID_INVALID"])
+
+    def test_a_located_item_without_a_timeline_event_withholds_the_chain(self):
+        # Contract: only a received item that a timeline event cites is exposed. Bug caught: a second located item
+        # with no event shown beside the matched one, so an incomplete chain opens.
+        def unrelated_second(docs):
+            second = copy.deepcopy(docs["items"][0])
+            second.update(item_id="item-2")
+            docs["items"].append(second)
+        result = case(r=unrelated_second)
+        self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["NO_TIMELINE_EVENT_FOR_ITEM"]))
+        self.assertNotIn("item-1", json.dumps(result))
+
+    def test_a_received_item_without_a_locator_withholds_the_whole_case(self):
+        # Contract: every received item of the selected request needs a valid locator. Bug caught: the item without
+        # one is silently dropped, so the other item opens as if the request had only that item.
+        def second_item(docs, **change):
+            second = copy.deepcopy(docs["items"][0])
+            second["item_id"] = "item-2"
+            second.update(change)
+            docs["items"].append(second)
+        def second_event(docs):
+            events = docs["requests"][0]["events"]
+            events.append({"date": "2026-11-26", "type": "response",
+                           "source": {"item_id": "item-2", "kind": "received_item"}})
+        def no_quote(docs):
+            second_item(docs)
+            del docs["items"][1]["kind_basis"]["quote"]
+        def no_hash(docs):
+            second_item(docs, original_sha256="")
+        def no_basis(docs):
+            second_item(docs, kind_basis={})
+        for edit in (no_quote, no_hash, no_basis):
+            result = case(r=edit, t=second_event)
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["RECEIVED_LOCATOR_MISSING"]),
+                             edit.__name__)
+            self.assertNotIn("item-1", json.dumps(result))
+        both = case(r=lambda d: second_item(d), t=second_event)
+        self.assertEqual(both["status"], exhibit.OPEN)
+        self.assertEqual([x["item_id"] for x in both["stage_12_case"]["received_locators"]], ["item-1", "item-2"])
+
+    def test_policy_locator_must_be_a_page(self):
+        # Contract: the policy citation names a page. Bug caught: any non-empty text ("unknown") passes as a locator.
+        for bad in ("unknown", "page", "page 0", "page one", "section 2", "page 1; page 2"):
+            result = case(c=lambda d: d["rows"][0]["evidence"][0].update(locator=bad))
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, ["POLICY_LOCATOR_MISSING"]), bad)
+        good = case(c=lambda d: d["rows"][0]["evidence"][0].update(locator="Page 12"))
+        self.assertEqual(good["stage_10_difference"]["policy_locators"][0]["locator"], "page 12")
+
+    def test_a_mail_part_citation_is_a_locator_and_never_gets_a_page(self):
+        def mail(docs):
+            docs["items"][0]["kind_basis"] = {"page": None, "part": 2, "quote": "mail quote"}
+        result = case(r=mail)
+        self.assertEqual(result["stage_12_case"]["received_locators"][0]["locator"], "message part 2")
+
+    def test_changed_agency_withholds_everywhere(self):
+        def rename_row(docs):
+            for r in docs["rows"]:
+                if r["agency_id"] == AGENCY:
+                    r["agency_id"] = "ca-unrelated-pd"
+        self.assertEqual(case(c=rename_row)["reasons"], ["NO_COMPARISON_ROW"])
+        self.assertEqual(case(t=lambda d: d["requests"][0].update(agency_key="ca-unrelated-pd"))["reasons"],
+                         ["NO_REQUEST_FOR_AGENCY"])
+        self.assertEqual(case(r=lambda d: d["items"][0].update(agency_id=OTHER))["reasons"],
+                         ["RECEIVED_ITEM_AGENCY_MISMATCH"])
+
+    def test_removed_locators_withhold_and_leak_no_content(self):
+        def drop_policy(docs):
+            docs["rows"][0]["evidence"][0].pop("locator")
+        def drop_source(docs):
+            docs["rows"][0]["evidence"][0]["source_id"] = "sha256:short"
+        def drop_quote(docs):
+            docs["items"][0]["kind_basis"].pop("quote")
+        def drop_hash(docs):
+            docs["items"][0]["original_sha256"] = ""
+        def unavailable(docs):
+            docs["items"][0]["diagnostics"] = ["page_locator_unavailable"]
+        for key, edit, code in (("c", drop_policy, "POLICY_LOCATOR_MISSING"), ("c", drop_source, "POLICY_LOCATOR_MISSING"),
+                                ("r", drop_quote, "RECEIVED_LOCATOR_MISSING"), ("r", drop_hash, "RECEIVED_LOCATOR_MISSING"),
+                                ("r", unavailable, "RECEIVED_LOCATOR_MISSING")):
+            result = case(**{key: edit})
+            self.assertEqual((result["status"], result["reasons"]), (exhibit.WITHHELD, [code]), edit.__name__)
+            self.assertNotIn("stage_10_difference", result)
+            self.assertNotIn(SHA_POLICY, json.dumps(result))
+            self.assertIn("no comparison content", exhibit.render(result))
+
+    def test_item_not_in_timeline_and_foreign_request_withhold(self):
+        self.assertEqual(case(t=lambda d: d["requests"][0]["events"][0]["source"].update(item_id="other"))["reasons"],
+                         ["NO_TIMELINE_EVENT_FOR_ITEM"])
+        self.assertEqual(case(r=lambda d: d["items"][0].update(request_id="req-2"))["reasons"], ["RECEIVED_ITEM_MISSING"])
+
+    def test_only_a_gap_row_opens_and_a_duplicate_row_is_ambiguous(self):
+        self.assertEqual(case(c=lambda d: d["rows"][0].update(status="meets"))["reasons"], ["NOT_A_DIFFERENCE"])
+        self.assertEqual(case(c=lambda d: d["rows"].append(copy.deepcopy(d["rows"][0])))["reasons"],
+                         ["AMBIGUOUS_COMPARISON_ROW"])
+
+    def test_unrecognised_or_legal_conclusion_input_is_withheld(self):
+        self.assertEqual(case(c=lambda d: d.update(schema="other"))["reasons"], ["INPUT_NOT_RECOGNISED"])
+        self.assertEqual(case(t=lambda d: d.update(legal_conclusion=True))["reasons"], ["INPUT_NOT_RECOGNISED"])
+        self.assertEqual(case(r=lambda d: d.update(review_required=False))["reasons"], ["INPUT_NOT_RECOGNISED"])
+        self.assertEqual(case(c=lambda d: d.pop("legal_conclusion"))["status"], exhibit.OPEN)  # absent: nothing claimed
+        self.assertEqual(exhibit.open_case(None, None, None, AGENCY, FIELD)["reasons"], ["INPUT_NOT_RECOGNISED"])
+
+    def test_inputs_are_not_modified(self):
+        docs = comparison(), timeline(), received()
+        before = copy.deepcopy(docs)
+        exhibit.open_case(*docs, AGENCY, FIELD)
+        self.assertEqual(docs, before)
+
+
+class CommandTests(unittest.TestCase):
+    def run_main(self, root, agency, mutate=None):
+        docs = {"comparison": comparison(), "timeline": timeline(), "received": received()}
+        if mutate:
+            mutate(docs)
+        args = []
+        for name, doc in docs.items():
+            path = root / (name + ".json")
+            path.write_text(json.dumps(doc))
+            args += ["--" + name, str(path)]
+        out = root / "out"
+        with redirect_stdout(StringIO()), patch.object(socket, "socket", side_effect=AssertionError("network")):
+            code = exhibit.main(args + ["--agency", agency, "--field", FIELD, "--out", str(out)])
+        return code, out
+
+    def test_writes_only_two_private_files_and_signals_the_status(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            code, out = self.run_main(root, AGENCY)
+            self.assertEqual(code, 0)
+            self.assertEqual(sorted(p.name for p in out.iterdir()), ["EXHIBIT.md", "exhibit.json"])
+            self.assertEqual(os.stat(out / "exhibit.json").st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads((out / "exhibit.json").read_text())["status"], exhibit.OPEN)
+
+    def test_wrong_agency_exits_nonzero_and_unreadable_input_is_withheld(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            code, out = self.run_main(Path(tmp), "ca-unrelated-pd")
+            self.assertEqual(code, 1)
+            self.assertEqual(json.loads((out / "exhibit.json").read_text())["reasons"],
+                             ["NO_REQUEST_FOR_AGENCY", "NO_COMPARISON_ROW"])
+        with tempfile.TemporaryDirectory() as tmp:
+            args = ["--comparison", tmp + "/missing", "--timeline", tmp + "/missing", "--received", tmp + "/missing",
+                    "--agency", AGENCY, "--field", FIELD, "--out", tmp + "/out"]
+            with redirect_stdout(StringIO()):
+                self.assertEqual(exhibit.main(args), 1)
+            self.assertEqual(json.loads(Path(tmp, "out", "exhibit.json").read_text())["reasons"], ["INPUT_NOT_RECOGNISED"])
+
+    def test_refuses_to_reuse_an_output_directory(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            self.run_main(Path(tmp), AGENCY)
+            with self.assertRaises(FileExistsError):
+                self.run_main(Path(tmp), AGENCY)
+
+
+if __name__ == "__main__":
+    unittest.main()

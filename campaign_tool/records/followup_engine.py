@@ -32,11 +32,12 @@ def _thread(project, route, items):
     if vehicle != "reply_in_thread":
         raise ValueError("vehicle_unknown")
     candidates = [r for r in items if (r.get("agency_id"), r.get("request_id")) ==
-                  (route["agency_key"], route["request_id"]) and r.get("received_at") is not None]
-    if not candidates:
+                  (route["agency_key"], route["request_id"])]
+    if not any(r.get("received_at") is not None for r in candidates):
         return None, None, "no_source_message"
+    # All matching receipts must be orderable before we can name the latest.
     try:
-        dated = [(_receipt_instant(r["received_at"]), r) for r in candidates]
+        dated = [(_receipt_instant(r.get("received_at")), r) for r in candidates]
     except (ValueError, OverflowError):
         return None, None, "source_message_date_invalid"
     latest = max(instant for instant, _ in dated)

@@ -180,14 +180,27 @@ class EngineTests(Base):
                     self.assertEqual(result["queued"], 0)
                     self.assertEqual(before, self.snapshot())
         self.fixture(received=[self.source(), self.source(agency_id="beta-pd", received_at="bad"),
-                               self.source(request_id="OTHER", received_at=123)])
+                               self.source(request_id="OTHER", received_at=123),
+                               self.source(request_id="OTHER", received_at=None)])
         self.assertEqual(fe.run(self.project, "r1")["would_queue"], 1)
-        for source in ({k: v for k, v in self.source().items() if k != "received_at"},
-                       self.source(received_at=None)):
+        undated = self.source(received_at=None, item_id="a" * 64)
+        missing_date = {k: v for k, v in undated.items() if k != "received_at"}
+        for source in (missing_date, undated):
             self.fixture(received=[source])
             before = self.snapshot()
             self.assertEqual(fe.run(self.project, "r1", apply=True)["manual_reasons"], {"no_source_message": 1})
             self.assertEqual(before, self.snapshot())
+            # Dropping an undated match would make the preview claim the dated receipt was latest.
+            with self.subTest(date_present="received_at" in source):
+                self.fixture(received=[self.source(), source])
+                before = self.snapshot()
+                result = fe.run(self.project, "r1")
+                self.assertEqual(before, self.snapshot())
+                self.assertEqual(result["would_queue"], 0)
+                self.assertEqual(result["provenance_unresolved"], 1)
+                self.assertEqual(result["manual_reasons"], {"source_message_date_invalid": 1})
+                self.assertEqual(result["manual"], [{"agency_id": "alpha-pd", "request_id": "OLD-1",
+                                                    "reason": "source_message_date_invalid", "unreconciled": []}])
 
     def test_instant_selection_is_campaign_local_and_replay_safe(self):
         sources_a = self.two_messages()

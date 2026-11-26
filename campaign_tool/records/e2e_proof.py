@@ -177,18 +177,18 @@ def _post(port, path, fields):
 
 
 def _seed_rows(seed):
-    """Validated (agencies, requests, join target, fact sheets) of a records-e2e-seed-v1 file; codes only."""
+    """Read the sandbox seed; accept either one legacy join target or explicit attachment targets."""
     try:
         path = Path(seed)
         if path.is_symlink() or not path.is_file() or path.stat().st_size > SEED_MAX_BYTES:
             raise ValueError
         doc = json.loads(path.read_bytes())
         text = lambda v: type(v) is str and bool(v.strip())  # noqa: E731
-        agencies, requests, join = doc["agencies"], doc["requests"], doc["join"]
+        agencies, requests = doc["agencies"], doc["requests"]
         facts = doc.get("fact_sheets")
         if (type(doc) is not dict or doc.get("schema") != SEED_SCHEMA or type(agencies) is not list
-                or type(requests) is not list or type(join) is not dict or set(join) != {"agency_id", "request_id"}
-                or not agencies or not requests or not (facts is None or type(facts) is dict)):
+                or type(requests) is not list or not agencies or not requests
+                or not (facts is None or type(facts) is dict)):
             raise ValueError
         rows = [(a["id"], a["name"], a.get("jurisdiction")) for a in agencies]
         reqs = [(r["id"], r["agency_id"], r.get("external_ref"), r.get("submitted_at"), r["status"]) for r in requests]
@@ -196,9 +196,26 @@ def _seed_rows(seed):
         owner = {r[0]: r[1] for r in reqs}
         if (len(ids) != len(rows) or len(rids) != len(reqs) or not all(text(v) for r in rows for v in r[:2])
                 or not all(text(r[0]) and text(r[1]) and text(r[4]) for r in reqs)
-                or any(r[1] not in ids for r in reqs) or owner.get(join["request_id"]) != join["agency_id"]):
+                or any(r[1] not in ids for r in reqs)):
             raise ValueError
-        return rows, reqs, (join["agency_id"], join["request_id"]), facts, _followup_block(doc.get("followup"))
+        followup = _followup_block(doc.get("followup"))
+        explicit = "document_joins" in doc
+        joins = doc["document_joins"] if explicit else [doc["join"]]
+        if (type(joins) is not list or not joins or
+                (explicit and ("join" in doc or followup is not None))):
+            raise ValueError
+        fields = {"agency_id", "request_id"} | ({"document_sha256"} if explicit else set())
+        targets = {}
+        for join in joins:
+            if type(join) is not dict or set(join) != fields:
+                raise ValueError
+            agency, request = join["agency_id"], join["request_id"]
+            digest = join.get("document_sha256")
+            if (not text(agency) or not text(request) or owner.get(request) != agency or digest in targets
+                    or (explicit and (type(digest) is not str or not SHA256.fullmatch(digest)))):
+                raise ValueError
+            targets[digest] = (agency, request)
+        return rows, reqs, targets, facts, followup
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         raise ProofError("SEED_INVALID") from None
 
@@ -237,16 +254,17 @@ def _followup_files(agency_id, request_id, external_ref, followup):
 
 
 def _apply_seed(project, seed, state=None):
-    """Sandbox-only: write canonical agencies, requests and typed joins for every admitted original, plus the
-    comparison input file. In production canonical identity comes only from the pipeline. With the optional
-    ``followup`` block only the one named attachment is joined and a one-row tracker and a settings file are
-    written (all inside this sandbox), so the proof can check what the reply's follow-up owner queued."""
+    """Write sandbox-only agencies, requests, typed joins and optional comparison inputs.
+
+    Explicit document targets must cover exactly the saved attachments and do not join the envelope.
+    Legacy seeds keep their original behavior, including the optional one-attachment follow-up fixture.
+    """
     project = Path(project)
     marker = project / MARKER
     if (project.is_symlink() or project.name != "project" or marker.is_symlink() or not marker.is_file()
             or marker.read_text(encoding="utf-8") != "e2e-proof sandbox\n"):
         raise ProofError("SEED_NOT_SANDBOX")
-    agencies, requests, (agency_id, request_id), facts, followup = _seed_rows(seed)
+    agencies, requests, targets, facts, followup = _seed_rows(seed)
     tracker_path, settings_path = project / TRACKER_NAME, project / followup_clock.SETTINGS_FILE
     if followup and (os.path.lexists(tracker_path) or os.path.lexists(settings_path)):
         raise ProofError("SEED_SETUP_REFUSED")
@@ -257,6 +275,11 @@ def _apply_seed(project, seed, state=None):
         message = [r[0] for r in db.execute("SELECT eml_sha256 FROM mail_messages")]
         if len(message) != 1 or not originals:
             raise ProofError("SEED_NO_MESSAGE")
+        explicit = None not in targets
+        if explicit:
+            if set(originals) - {message[0]} != targets.keys():
+                raise ProofError("SEED_DOCUMENT_SET_MISMATCH")
+            originals = sorted(targets)
         if followup:
             if followup["source_sha256"] == message[0] or followup["source_sha256"] not in originals:
                 raise ProofError("SEED_FOLLOWUP_SOURCE_INVALID")
@@ -267,14 +290,15 @@ def _apply_seed(project, seed, state=None):
                               separators=(",", ":"))
         db.executemany("INSERT INTO joins(id, original_sha256, agency_id, request_id, join_type, evidence, status) "
                        "VALUES(?,?,?,?,'e2e_proof_seed',?,'typed')",
-                       [(hashlib.sha256(b"e2e-seed\0" + o.encode()).hexdigest(), o, agency_id, request_id, evidence)
-                        for o in originals])
+                       [(hashlib.sha256(b"e2e-seed\0" + o.encode()).hexdigest(), o,
+                         *targets[o if explicit else None], evidence) for o in originals])
         db.execute("COMMIT")
     except sqlite3.Error:
         raise ProofError("SEED_LEDGER_REFUSED") from None
     finally:
         db.close()
     if followup:
+        agency_id, request_id = targets[None]
         external_ref = next(r[2] for r in requests if r[0] == request_id)
         tracker, settings = _followup_files(agency_id, request_id, external_ref, followup)
         _seed_file(tracker_path, tracker)

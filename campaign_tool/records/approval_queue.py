@@ -7,6 +7,7 @@ human and authorizes no outbound action by itself. Refusals raise ApprovalQueueE
 content-free message.
 """
 import argparse
+import contextlib
 import difflib
 import errno
 from itertools import islice
@@ -416,6 +417,17 @@ def load_queue(root):
     with _Store(root, False) as store:
         rows = _fold(root, store.raw())
     return [_public(rows[k]) for k in sorted(rows)]
+
+
+@contextlib.contextmanager
+def held_queue(root):
+    """Like ``load_queue`` but the shared queue lock stays held until the ``with`` block ends.
+
+    Edits, approvals and cancellations take the exclusive lock, so none can complete while the caller acts on the
+    rows it was given (it waits, then gets ``queue_busy`` after ``LOCK_SECONDS``). Read-only: creates nothing."""
+    with _Store(root, False) as store:
+        rows = _fold(root, store.raw())
+        yield [_public(rows[k]) for k in sorted(rows)]
 
 
 _ENDING_NAMES = {"\r\n": "CRLF", "\r": "CR"}
