@@ -849,6 +849,23 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def _host_ok(self):
         return console_origin.request_ok(self, post=False)
 
+    def _read_access_ok(self):
+        """D2b, with --access-keys: a GET on the public Host also needs an Access token whose claims match AND whose RS256
+        signature verifies (``console_access.identity``), so a forged token with copied claims cannot read through a missing
+        or misconfigured edge. Loopback reads are unchanged. False: the refusal was sent and nothing was read."""
+        if self.server.access_keys is None or self.headers.get_all("Host") != [self.server.public_pair[0]]:
+            return True
+        try:
+            who = console_access.identity(self.headers, self.server.access_cfg, self.server.access_keys,
+                                          self.server.access_clock())
+        except ValueError:
+            self._fail(503, "Access keys unavailable: nothing was shown")
+            return False
+        if who is None:
+            self._fail(403)
+            return False
+        return True
+
     def _begin(self):
         """Per-request options: in export mode a new dict pinned to one real export, so a swap of `current`
         during the request cannot mix two exports and shared server state is never mutated."""
@@ -880,6 +897,8 @@ class _Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         if not self._host_ok():
             return self._fail(403)
+        if not self._read_access_ok():
+            return
         if not self._begin():
             return
         if console_packets.serve(self):
@@ -1240,7 +1259,8 @@ def build_server(project=None, run_id=None, *, actor, port=0, run_report_path=No
     export_root (DFGL-16A) with run_id "auto" serves the one real export DIR/current points at, pinned per request.
     decisions_dir (DFGL-16B, needs export_root) journals decisions there instead of refusing every POST.
     access_keys (DFB-11, needs public_origin; required with public_origin and decisions_dir): owner-only JWKS file; every
-    POST then needs the public Host and a signature-verified Access token, whose email is the decision's actor.
+    POST then needs the public Host and a signature-verified Access token, whose email is the decision's actor; (D2b) every
+    GET on the public Host needs a signature-verified token too.
     """
     check_run_id(run_id)
     check_actor(actor)
@@ -1363,8 +1383,8 @@ def main(argv=None):
     parser.add_argument("--access-config", metavar="FILE",
                         help="owner-only JSON {aud,email,team_domain}; required with --public-origin")
     parser.add_argument("--access-keys", metavar="FILE",
-                        help="owner-only JWKS copy of the Access signing keys; with --public-origin every POST needs a "
-                             "signature-verified Access token (required with --decisions-dir)")
+                        help="owner-only JWKS copy of the Access signing keys; with --public-origin every POST and every "
+                             "public-Host GET needs a signature-verified Access token (required with --decisions-dir)")
     args = parser.parse_args(argv)
     timers = tuple(args.timer_unit) if args.timer_unit else DEFAULT_TIMERS
     try:
