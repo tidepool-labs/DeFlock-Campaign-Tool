@@ -56,7 +56,12 @@ def _event_ok(event, index, state):
     if not (isinstance(ident, str) and public_packets.PACKET_ID.fullmatch(ident) and _is_int(rev) and rev >= 0):
         return False
     if kind == "packet":
-        if not (isinstance(event.get("packet"), dict) and isinstance(event.get("digest"), str)):
+        body, digest = event.get("packet"), event.get("digest")
+        if not (isinstance(body, dict) and isinstance(digest, str)):
+            return False
+        # The writer stores the SHA-256 of the canonical packet (public_packets.propose); the packet id binds only the
+        # identity fields, so a copy whose digest is not that hash of the stored content is not the writer's journal.
+        if digest != hashlib.sha256(public_packets._canon(body).encode()).hexdigest():
             return False
         if rev != (state[ident][0] + 1 if ident in state else 0):  # the writer numbers revisions in order
             return False

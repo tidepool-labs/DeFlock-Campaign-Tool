@@ -186,6 +186,33 @@ class FindingsAdapterTests(unittest.TestCase):
                     adapter._events(data, T0 + 60)
                 self.refused(self.write(path, data))
 
+    def test_c3_proposal_digest_must_be_the_writers_hash_of_the_packet(self):
+        """C3: the packet id binds only identity fields, so a bug that trusted any digest string would pass a copy whose
+        proposal digest was replaced (malformed or another packet's hash) or whose content was edited under it."""
+        path = self.journal(packet())
+        good = path.read_bytes()
+        first = json.loads(good.splitlines()[0])
+        self.assertEqual(first["digest"], sha256(pp._canon(first["packet"]).encode()).hexdigest())  # writer's rule
+        self.assertEqual(adapter.records(path, utc(T0 + 60))[0]["result"], "pass")  # control: the intact copy passes
+
+        def line(**fields):
+            return (json.dumps({**first, **fields}) + "\n").encode()
+
+        edited = dict(first["packet"], title="Retention period (edited)")
+        cases = {
+            "not a sha256": line(digest="not-a-sha256"), "uppercase": line(digest=first["digest"].upper()),
+            "other content hash": line(digest=sha256(b"other").hexdigest()), "empty": line(digest=""),
+            "content edited under the digest": line(packet=edited),
+        }
+        for name, data in cases.items():
+            with self.subTest(name):
+                with self.assertRaises(ValueError):
+                    adapter._events(data, T0 + 60)
+                self.refused(self.write(path, data))
+        # control: the same edit with the digest the writer would record is structurally fine again
+        fixed = line(packet=edited, digest=sha256(pp._canon(edited).encode()).hexdigest())
+        self.assertEqual(len(adapter._events(fixed, T0 + 60)), 1)
+
     def write(self, path, data):
         path.write_bytes(data)
         return path
