@@ -9,7 +9,13 @@ from . import rehearsal_receipt
 
 DRIVER_ERROR = "REHEARSAL_DRIVER_ERROR"
 _RERUN = "re-run `records rehearse --stage X` from a git checkout"
-_FAILED, _MANUAL, _EMPTY, _OUTPUT, _SANDBOX, _ENGINE, _STALE, _MISMATCH = rehearsal_receipt._CODES
+# Bound by name, not by unpacking the tuple, so a new receipt code cannot shift these; the test that compares
+# CODES with rehearsal_receipt._CODES makes any code without plain-words text fail loudly.
+_FAILED, _MANUAL, _EMPTY, _OUTPUT = (rehearsal_receipt.FAILED, rehearsal_receipt.MANUAL, rehearsal_receipt.EMPTY,
+                                     rehearsal_receipt.OUTPUT)
+_SANDBOX, _ENGINE, _STALE, _MISMATCH = (rehearsal_receipt.SANDBOX, rehearsal_receipt.ENGINE, rehearsal_receipt.STALE,
+                                        rehearsal_receipt.MISMATCH)
+_INCOMPLETE = rehearsal_receipt.INCOMPLETE
 
 # code -> (plain reason sentence, one offline next action). Neither text may hold
 # paths, step names or outputs, and no `next` may name a live action. The reason
@@ -48,6 +54,11 @@ _TEXT = {
     _MISMATCH: (
         "The receipt was made against a different engine version than the one being checked",
         _RERUN + " at the engine version being checked",
+    ),
+    _INCOMPLETE: (
+        "The receipt claims a stage but did not come from that stage's own driver or is missing some of the "
+        "driver's required steps, so it does not count for that stage",
+        "run the stage's own driver so every required step is recorded: " + _RERUN,
     ),
     DRIVER_ERROR: (
         "The rehearsal driver crashed before it could finish its steps",

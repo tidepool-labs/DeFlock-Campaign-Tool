@@ -109,6 +109,16 @@ class C2TextPerCode(Base):
                 sentences.add(reason)
         self.assertEqual(len(sentences), len(explain_mod.CODES))
 
+    def test_c2_incomplete_stage_receipt_is_explained(self):
+        """C2: a stage 11 receipt from another driver gets its own reason. Bug caught: new code shown as unrecognized."""
+        result = {"stages": ["11"], "steps": [{"name": HIDDEN_STEP, "code": "OK", "outputs": []}],
+                  "manual_steps": [], "codes": []}
+        receipt = rehearsal_receipt.build("rehearse_x", result, self.sandbox(), NOW, NOW, ENGINE)
+        self.assertEqual(receipt["qualify_codes"], [rehearsal_receipt.INCOMPLETE])
+        reason, action = explain_mod._TEXT[rehearsal_receipt.INCOMPLETE]
+        self.assertEqual(explain_mod.explain(receipt), ["NOT QUALIFIED", f"reason: {reason}; next: {action}"])
+        self.assertIsNone(LIVE_WORDS.search(action))
+
     def test_c2_unknown_code_is_named_without_raising(self):
         """C2: an unknown code prints a fixed line. Bug caught: KeyError on a future code."""
         receipt = dict(self.build(), qualified=False, qualify_codes=["REHEARSAL_FUTURE_CODE"])
