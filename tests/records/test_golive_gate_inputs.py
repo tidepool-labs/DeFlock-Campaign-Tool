@@ -30,7 +30,7 @@ EXPECTED = {
     "s10-console": {"evidence": DIR, "pair": FILE},
     "c6-findings-on": {"evidence": DIR, "pair": FILE},
     "l17-packets": {"evidence": DIR, "pair": FILE},
-    "c5-portal-apply": {"hold_release": FILE, "evidence": DIR},
+    "c5-portal-apply": {"hold_release": FILE, "evidence": DIR, "pair": FILE},
     "a4-hostname": {"evidence": DIR, "pair": FILE},
 }
 PINS = {"s5-engine-switch": dict(wrapper=PIN, live=PIN),
