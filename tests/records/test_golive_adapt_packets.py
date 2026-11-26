@@ -188,6 +188,54 @@ class RefusalTests(Base):
             with self.subTest(label):
                 self.refused(self.copy(damaged, "t-" + label.replace(" ", "-")))
 
+    def test_c3_malformed_or_unplaceable_events_are_refused(self):
+        """C3: fold() skips any line it cannot place and reads placed lines unchecked, so a bug trusting it turns a
+        damaged copy (a canonical `approved` line with no id/revision/principal/signature appended to a written
+        journal, an orphan or stale transition, a transition out of order) into stage 17 live evidence."""
+        ident = self.written()
+        raw = self.raw()
+        lines = raw.split(b"\n")[:-1]
+        signature = next(json.loads(line) for line in lines if json.loads(line)["event"] == "approved")["signature"]
+        gone = object()
+        ts = T0 + 120
+
+        def append(**fields):
+            base = {"schema": pp.SCHEMA, "seq": len(lines), "ts": ts, "event": "rejected", "id": ident, "revision": 0,
+                    "actor": "g", "at": datetime.fromtimestamp(ts, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")}
+            event = {k: v for k, v in {**base, **fields}.items() if v is not gone}
+            return raw + adapter._canon(event).encode() + b"\n"
+
+        # controls: a well-formed later switch-off line, and an intact journal, are still stage 17 live
+        self.assertEqual(adapter.records(raw, OBSERVED)["result"], "pass")
+        off = append(event="switch", state="off", principal="g", round=1, id=gone, revision=gone, actor=gone)
+        self.assertEqual(adapter.records(off, OBSERVED)["result"], "pass")
+        bare = append(event="approved", id=gone, revision=gone, actor=gone)
+        self.assertEqual(pp.fold(json.loads(line) for line in bare.split(b"\n")[:-1])[ident]["status"], "written")
+        cases = {
+            "approved with no id/revision/principal/signature": bare,
+            "approved again after written": append(event="approved", actor=gone, principal="g@x", signature=signature),
+            "approved without signature": append(event="approved", actor=gone, principal="g@x"),
+            "rejected after written": append(),
+            "rejected missing revision": append(revision=gone), "rejected stale revision": append(revision=1),
+            "rejected orphan id": append(id="0" * 16), "rejected bool revision": append(revision=True),
+            "rejected bad actor": append(actor="../x"), "rejected blank reason": append(reason="   "),
+            "written twice": append(event="written", actor=gone, file="site-changes/x.json", file_sha256=SHA),
+            "written orphan": append(event="written", actor=gone, id="0" * 16, file="x.json", file_sha256=SHA),
+            "switch bad state": append(event="switch", state="maybe", principal="g", round=1, id=gone, revision=gone,
+                                       actor=gone),
+            "switch on unsigned": append(event="switch", state="on", principal="g@x", round=1, id=gone, revision=gone,
+                                         actor=gone),
+            "switch without round": append(event="switch", state="off", principal="g", id=gone, revision=gone,
+                                           actor=gone),
+            "packet revision skipped": append(event="packet", revision=5, actor=gone, packet=doc(),
+                                              digest=hashlib.sha256(adapter._canon(doc()).encode()).hexdigest()),
+        }
+        for label, data in cases.items():
+            with self.subTest(label):
+                with self.assertRaises(ValueError):
+                    adapter.records(data, OBSERVED)
+                self.refused(self.copy(data, "m-" + label.replace(" ", "-").replace("/", "-")))
+
     def test_c3_c4_refusal_echoes_nothing_and_writes_nothing(self):
         """C3/C4: refusals print only the one code, even for odd paths and arguments; the input is never modified.
         Bug caught: echoing a path/journal text from OSError, argparse or ValueError messages."""

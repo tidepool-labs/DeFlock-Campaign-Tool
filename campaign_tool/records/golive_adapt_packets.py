@@ -31,10 +31,48 @@ def _utc(stamp):
     return datetime.strptime(stamp, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
 
 
+def _text(value, limit):
+    return isinstance(value, str) and 0 < len(value) <= limit
+
+
+def _reason_ok(reason):  # public_packets.decide: optional, 1..500 printable characters, not only spaces
+    return reason is None or (_text(reason, 500) and reason.strip() != "" and all(ord(c) >= 32 and ord(c) != 127
+                                                                                  for c in reason))
+
+
+def _transition_ok(event, state):
+    """Check one non-packet line against what public_packets writes. ``state`` maps id -> [revision, status].
+
+    fold() silently skips a line it cannot place (unknown id, stale revision, wrong status) and reads the fields of a
+    line it does place without checking them, so every line must be one the writer could have appended here.
+    """
+    kind = event["event"]
+    if kind == "switch":  # enable(): on + principal + round + signature; turn_off(): off + actor-shaped principal + round
+        on = event.get("state") == "on"
+        return ((on or event.get("state") == "off") and _int(event.get("round")) and event["round"] >= 0
+                and (_text(event.get("principal"), 256) if on else isinstance(event.get("principal"), str)
+                     and public_packets.ACTOR.fullmatch(event["principal"]) is not None)
+                and (not on or _text(event.get("signature"), 16384)))
+    ident, rev = event.get("id"), event.get("revision")
+    if not (isinstance(ident, str) and ident in state and _int(rev) and rev == state[ident][0]):
+        return False  # a transition names the current revision of a packet proposed earlier in this journal
+    status = state[ident][1]
+    if kind == "approved":
+        ok = status == "proposed" and _text(event.get("principal"), 256) and _text(event.get("signature"), 16384)
+    elif kind == "written":
+        ok = (status == "approved" and _text(event.get("file"), 512) and isinstance(event.get("file_sha256"), str)
+              and public_packets.SHA.fullmatch(event["file_sha256"]) is not None)
+    else:  # rejected / cancelled
+        ok = (status in ("proposed", "approved") and isinstance(event.get("actor"), str)
+              and public_packets.ACTOR.fullmatch(event["actor"]) is not None and _reason_ok(event.get("reason")))
+    state[ident][1] = kind
+    return bool(ok)
+
+
 def _events(raw):
     if not raw or not raw.endswith(b"\n") or len(raw) > public_packets.MAX_JOURNAL:
         raise ValueError("invalid journal")
-    events = []
+    events, state = [], {}
     for seq, line in enumerate(raw.split(b"\n")[:-1]):
         try:
             event = json.loads(line.decode("utf-8"), parse_constant=lambda _: (_ for _ in ()).throw(ValueError()))
@@ -62,6 +100,11 @@ def _events(raw):
                     raise ValueError("invalid packet event")
             except (KeyError, TypeError):
                 raise ValueError("invalid packet event") from None
+            if event["revision"] != (state[ident][0] + 1 if ident in state else 0):  # the writer numbers in order
+                raise ValueError("invalid packet event")
+            state[ident] = [event["revision"], "proposed"]
+        elif not _transition_ok(event, state):
+            raise ValueError("invalid journal line")
         events.append(event)
     return events
 
