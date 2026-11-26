@@ -235,7 +235,11 @@ def _comparison_rows_cite_facts(ctx):
 
 
 def _single_agency_is_not_a_comparison(ctx):
-    solo = ctx["solo"] = _Run(ctx["sandbox"], "single", _AGENCIES[:1])
+    agency, name, lines, retention, sharing = _AGENCIES[0]
+    # The two replays share one receipt. A distinct control original keeps a pair citation unique across its runs.
+    control = (agency, name, ('Fictional Valley standalone control policy', *lines[1:]), retention, sharing)
+    solo = ctx["solo"] = _Run(ctx["sandbox"], "single", (control,))
+    _need(set(solo.documents.values()).isdisjoint(ctx["pair"].documents.values()), "SINGLE_AGENCY_ORIGINAL_REUSED")
     report = _comparison(solo, "SINGLE_AGENCY_COMPARISON_INVALID")
     peer = _AGENCIES[1][0]
     texts = [(solo.directory / name).read_text(encoding="utf-8") for name in ("comparison.json", "comparison.md")]

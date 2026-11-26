@@ -245,14 +245,21 @@ class HappyRunTests(DriverTestCase):
                              [("sha256:" + pdfs[agency], "page 1")])
 
     def test_04_c4_single_agency_run_has_no_peer(self):
-        """C4: with one agency the writer rates only that agency; the other agency appears nowhere.
+        """C4: one agency means no peer; the separate control cites its own policy original.
 
-        Bug caught: a writer that pads a missing peer or reuses another run's agency list."""
+        Bug caught: a padded peer or a reused policy digest makes the combined receipt's citations ambiguous.
+        """
         directory = next((self.sandbox / "proof/single/project/run-outputs").glob("run_*/"))
-        self.assertEqual({r["agency_id"] for r in self.rows(self.sandbox, "single")}, {VALLEY})
+        single = self.rows(self.sandbox, "single")
+        self.assertEqual({r["agency_id"] for r in single}, {VALLEY})
         self.assertEqual(json.loads((directory / "comparison.json").read_text())["agency_count"], 1)
         for name in ("comparison.json", "comparison.md"):
             self.assertNotIn(HARBOR, (directory / name).read_text())
+
+        pair_sources = {cite["source_id"] for row in self.rows(self.sandbox) for cite in row.get("evidence", [])}
+        solo_sources = {cite["source_id"] for row in single for cite in row.get("evidence", [])}
+        self.assertEqual((len(pair_sources), len(solo_sources)), (2, 1))
+        self.assertTrue(pair_sources.isdisjoint(solo_sources), "no-peer control reuses a reviewed pair original")
 
     def test_05_c5_fictional_inputs_and_nothing_leaves_the_sandbox(self):
         """C5: fictional names and .invalid addresses; writes stay in the sandbox, connects are loopback, no send.
