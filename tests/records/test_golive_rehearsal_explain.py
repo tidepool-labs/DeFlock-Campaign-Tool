@@ -18,8 +18,9 @@ from campaign_tool.records.run_stages import SANDBOX_MARKER
 
 ENGINE = "a" * 40
 NOW = datetime(2026, 11, 23, 12, 0, tzinfo=timezone.utc)
-SECRET_STEP = "step_home_secret_name"
-SECRET_PATH = "secret_dir/secret_output.bin"
+# Synthetic private-looking names that must never appear in the explanation.
+HIDDEN_STEP = "step_home_hiddenzq_name"
+HIDDEN_PATH = "hiddenzq_dir/hiddenzq_output.bin"
 # Words that would tell someone to act on a live system. `next` text must avoid all of them.
 LIVE_WORDS = re.compile(r"\b(start|install|switch|approve|enable|deploy|publish|send|activate|live)\b", re.I)
 
@@ -47,7 +48,7 @@ class Base(unittest.TestCase):
     def build(self, *, steps=None, manual=(), codes=(), marker=True, engine=ENGINE, outputs=(), name=None):
         sandbox = self.sandbox(name, marker)
         if steps is None:
-            steps = [{"name": SECRET_STEP, "code": "OK", "outputs": list(outputs)}]
+            steps = [{"name": HIDDEN_STEP, "code": "OK", "outputs": list(outputs)}]
         result = {"stages": ["A6"], "steps": steps, "manual_steps": list(manual), "codes": list(codes)}
         return rehearsal_receipt.build("rehearse_x", result, sandbox, NOW, NOW, engine)
 
@@ -59,7 +60,7 @@ class C1Lines(Base):
 
     def test_c1_one_reason_line_per_code_in_receipt_order(self):
         """C1: reasons follow qualify_codes order. Bug caught: reordered or merged reasons."""
-        receipt = self.build(steps=[{"name": SECRET_STEP, "code": "BAD", "outputs": []}], marker=False, engine=None)
+        receipt = self.build(steps=[{"name": HIDDEN_STEP, "code": "BAD", "outputs": []}], marker=False, engine=None)
         self.assertEqual(receipt["qualify_codes"],
                          ["REHEARSAL_FAILED_STEP", "REHEARSAL_NOT_SANDBOX", "REHEARSAL_ENGINE_UNKNOWN"])
         lines = explain_mod.explain(receipt)
@@ -85,7 +86,7 @@ class C1Lines(Base):
 
     def test_c1_codes_of_a_failed_run_are_not_called_expected(self):
         """C1: with result fail nothing is an expected refusal. Bug caught: failure codes called expected."""
-        receipt = self.build(steps=[{"name": SECRET_STEP, "code": "BAD", "outputs": []}], codes=["SOME_CODE"])
+        receipt = self.build(steps=[{"name": HIDDEN_STEP, "code": "BAD", "outputs": []}], codes=["SOME_CODE"])
         self.assertEqual(receipt["result"], "fail")
         self.assertFalse([line for line in explain_mod.explain(receipt) if line.startswith("observed")])
 
@@ -116,16 +117,16 @@ class C2TextPerCode(Base):
     def test_c2_no_paths_or_step_outputs_in_text(self):
         """C2: step names, output paths and odd codes never reach the text. Bug caught: leaking receipt contents."""
         sandbox = self.sandbox("leak")
-        (sandbox / "secret_dir").mkdir()
-        (sandbox / SECRET_PATH).write_bytes(b"x")
+        (sandbox / "hiddenzq_dir").mkdir()
+        (sandbox / HIDDEN_PATH).write_bytes(b"x")
         digest = hashlib.sha256(b"y").hexdigest()  # wrong on purpose: output mismatch
-        steps = [{"name": SECRET_STEP, "code": "BAD", "outputs": [{"path": SECRET_PATH, "sha256": digest}]}]
-        result = {"stages": ["A6"], "steps": steps, "manual_steps": ["do the secret thing"], "codes": []}
+        steps = [{"name": HIDDEN_STEP, "code": "BAD", "outputs": [{"path": HIDDEN_PATH, "sha256": digest}]}]
+        result = {"stages": ["A6"], "steps": steps, "manual_steps": ["do the hiddenzq thing"], "codes": []}
         receipt = rehearsal_receipt.build("rehearse_x", result, sandbox, NOW, NOW, None)
         receipt["qualify_codes"].append("/home/user/private/path")
         text = "\n".join(explain_mod.explain(receipt) + explain_mod.explain(dict(receipt, result="pass", codes=["/etc/x"])))
         self.assertGreaterEqual(len(receipt["qualify_codes"]), 5)
-        for leak in (SECRET_STEP, SECRET_PATH, "secret", "/home", "/etc", str(self.root), "rehearse_x"):
+        for leak in (HIDDEN_STEP, HIDDEN_PATH, "hiddenzq", "secret", "/home", "/etc", str(self.root), "rehearse_x"):
             self.assertNotIn(leak, text)
         self.assertNotIn("/", text.replace("`records rehearse --stage X`", ""))
 
@@ -254,7 +255,7 @@ class RealDriverCrash(Base):
 
     def test_c2_a_failed_run_without_a_crash_step_keeps_the_generic_reason(self):
         """C2: the crash text needs a crash step. Bug caught: any failed run with the crash code called a crash."""
-        receipt = self.build(steps=[{"name": SECRET_STEP, "code": "BAD", "outputs": []}], codes=[explain_mod.DRIVER_ERROR])
+        receipt = self.build(steps=[{"name": HIDDEN_STEP, "code": "BAD", "outputs": []}], codes=[explain_mod.DRIVER_ERROR])
         reason, action = explain_mod._TEXT["REHEARSAL_FAILED_STEP"]
         self.assertEqual(explain_mod.explain(receipt), ["NOT QUALIFIED", f"reason: {reason}; next: {action}"])
 
