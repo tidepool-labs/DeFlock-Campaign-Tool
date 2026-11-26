@@ -100,8 +100,36 @@ class AccessSweepEvidenceTests(unittest.TestCase):
                 raw = blob(text)
                 self.assertEqual(adapter.records(raw, OBSERVED, NOW), expected(raw, "fail", ["ACCESS_SWEEP_FAILED"]))
 
+    def test_c1_refusal_with_any_location_host_is_a_pass_row(self):
+        """C1: The sweep marks 401/403 `ok` whatever Location says (IPv6 literal included); that sweep is a pass row."""
+        for status, location in ((403, "http://[::1]/denied"), (403, "https://[2001:db8::1]:8443/x"), (401, None),
+                                 (403, "https://exa_mple.test/")):
+            def refuse(scheme, host, method, path, body, extra, timeout, status=status, location=location):
+                if scheme == "https":
+                    return status, ([("location", location)] if location else [])
+                return healthy(scheme, host, method, path, body, extra, timeout)
+
+            with self.subTest(status=status, location=location):
+                text = sweep(refuse)
+                self.assertEqual(lines_of(text)[-1], "PASS")
+                self.assertRegex(lines_of(text)[1], rf"^GET / {status} \S+ ok$")
+                raw = blob(text)
+                self.assertEqual(adapter.records(raw, OBSERVED, NOW), expected(raw))
+
+    def test_c5_ok_line_the_sweep_never_prints_is_refused(self):
+        """C5: `ok` on an error, a 200 or a redirect with a widened host is refused; a 403 line keeps any host."""
+        lines = lines_of(sweep())
+        method_path = lines[1].split(" ", 2)[:2]
+        for label, tail in {"error": "ERR:timeout - ok", "ok200": "200 - ok", "redirect-ipv6": "302 ::1 ok",
+                            "redirect-words": "302 team.cloudflareaccess.com extra ok"}.items():
+            with self.subTest(case=label):
+                text = "\n".join([lines[0], " ".join([*method_path, tail]), *lines[2:]]) + "\n"
+                self.assertEqual(refusal(blob(text)), "ACCESS_SWEEP_BAD_TRANSCRIPT")
+        text = "\n".join([lines[0], " ".join([*method_path, "403 ::1 ok"]), *lines[2:]]) + "\n"
+        self.assertEqual(adapter.records(blob(text), OBSERVED, NOW)["result"], "pass")
+
     def test_c5_extra_text_in_host_column_of_an_ok_line_is_refused(self):
-        """C5: Extra text between status and verdict on an `ok` line never becomes a pass (the widened host rule is FAIL-only)."""
+        """C5: Extra text in the host column of a redirect `ok` line never becomes a pass (only FAIL and 401/403 lines widen)."""
         lines = lines_of(sweep())
         self.assertTrue(lines[1].endswith(" team.cloudflareaccess.com ok"))
         for label, host in {"words": "team.cloudflareaccess.com arbitrary extra text", "ipv6": "::1", "unicode": "é.test"}.items():

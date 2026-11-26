@@ -24,11 +24,17 @@ _ACCESS_HEADER = "ACCESS CHECK"
 _ISOLATION_HEADER = "ISOLATION CHECK (not an Access check)"
 # The location-host column is `urlsplit(Location).hostname` verbatim (`-` when absent, `?` when malformed). A
 # recorded FAIL may print any host text (an IPv6 literal such as `::1`, even one with a space), so a FAIL line takes
-# any non-control text there. An `ok` line can only come from an Access host or `-`/`?`, so it keeps the strict
-# host grammar: widened text on an `ok` line is malformed and must never become a pass. The adapter never fetches
+# any non-control text there. The sweep marks a 401/403 refusal `ok` whatever its Location says (see
+# console_edge_smoke._refused_by_access), so such a line may print any host text too, IPv6 literals included. Every
+# other `ok` line is a redirect that the sweep accepted only for an Access host or the console's own host, so it keeps
+# the strict host grammar: widened text on a redirect `ok` line is malformed and must never become a pass. An `ok`
+# line with an error or any other status is one the sweep never prints, and is refused. The adapter never fetches
 # or follows that value, and the row carries codes only.
-_PROBE = re.compile(r"(GET|HEAD|OPTIONS|POST) ([!-~]+) (?:[0-9]{3}|ERR:[A-Za-z0-9_]+) ([^\x00-\x1f\x7f]+?) (ok|FAIL)")
+_PROBE = re.compile(
+    r"(GET|HEAD|OPTIONS|POST) ([!-~]+) ([0-9]{3}|ERR:[A-Za-z0-9_]+) ([^\x00-\x1f\x7f]+?) (ok|FAIL)")
 _OK_HOST = re.compile(r"[A-Za-z0-9._-]+|\?")
+_OK_REFUSED = frozenset({"401", "403"})
+_OK_REDIRECT = frozenset({"301", "302", "303", "307", "308"})
 _FOOTER_FAIL = re.compile(r"FAIL ([1-9][0-9]*) probes")
 
 
@@ -68,9 +74,11 @@ def _judge(text):
             raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
         if match.group(1) != method or not re.fullmatch(_shown(scheme, path), match.group(2)):
             raise AccessSweepRefused("ACCESS_SWEEP_PROBE_SET")
-        if match.group(4) == "ok" and not _OK_HOST.fullmatch(match.group(3)):
+        status, host, verdict = match.group(3), match.group(4), match.group(5)
+        if verdict == "ok" and status not in _OK_REFUSED and not (
+                status in _OK_REDIRECT and _OK_HOST.fullmatch(host)):
             raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
-        failures += match.group(4) == "FAIL"
+        failures += verdict == "FAIL"
     if footer_fail and int(footer_fail.group(1)) != failures:
         raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
     return failures > 0 or footer != "PASS"
