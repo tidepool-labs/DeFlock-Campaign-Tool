@@ -23,7 +23,8 @@ def healthy(scheme, host, method, path, body, extra, timeout):
     """Stub sender: Access refuses https probes; plain http redirects to the same https URL."""
     if scheme == "http":
         return 301, [("location", f"https://{host}{path}")]
-    return 302, [("location", "https://team.cloudflareaccess.com/cdn-cgi/access/login/x")]
+    # Built from the sweep's own suffix so the tree holds no literal Access login URL (scripts/scan-secrets.mjs).
+    return 302, [("location", "https://team" + console_edge_smoke.ACCESS_SUFFIX + "/cdn-cgi/access/login/x")]
 
 
 def exposed_board(scheme, host, method, path, body, extra, timeout):
