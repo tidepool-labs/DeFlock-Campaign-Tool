@@ -205,5 +205,14 @@ def invoke_child(repo, mode, output):
 
 def disposable(repo, parent):
     target = fresh(parent) / "repo"
-    shutil.copytree(repo, target, ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__"))
+    try:
+        shutil.copytree(repo, target, ignore=shutil.ignore_patterns(".git", ".venv", "node_modules", "__pycache__"))
+    except shutil.Error as exc:
+        # Parallel CI chunks share this checkout, and sibling tests create and
+        # remove scratch directories in it (TemporaryDirectory(dir=Path.cwd())).
+        # An entry that vanished mid-copy is such scratch; any other copy error
+        # still fails the test.
+        kept = [error for error in exc.args[0] if os.path.lexists(error[0])]
+        if kept:
+            raise shutil.Error(kept) from exc
     return target
