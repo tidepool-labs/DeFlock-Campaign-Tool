@@ -1,10 +1,9 @@
 """Stage 10: rehearse the policy comparison on two fictional agencies, in a sandbox.
 
-One real ``e2e_proof.replay`` runs save mail, extract and outputs on a synthetic message carrying each agency's one-page
-policy PDF. The sandbox-only seed puts both agencies and their cited fact sheets in the sandbox ledger, so the real
-fact-sheet and comparison writers (called by ``run_stages.stage_outputs``) write the files; the driver only reads them
-back. A second replay with one agency is the control: no peer may appear. The seed joins every original to one agency, so
-fact-sheet quotes follow that join; comparison citations name each agency's own document by sha256.
+One real ``e2e_proof.replay`` saves and extracts two one-page policies from a synthetic message. The sandbox seed
+binds each attachment digest to its own agency and request, and separately supplies cited comparison inputs.
+The native writers produce both exhibits; the driver checks that they cite the same policy page for each agency.
+A second replay with one agency is the control: no peer may appear.
 Nothing is sent or published. Output is review-required evidence, not a legal conclusion.
 """
 import argparse
@@ -87,7 +86,8 @@ def _inputs(base, agencies):
             "agencies": [{"id": i, "name": name, "jurisdiction": "us-ca"} for i, name, *_ in agencies],
             "requests": [{"id": i + "-req", "agency_id": i, "external_ref": i + "-1", "submitted_at": "2026-09-01",
                           "status": "open"} for i, *_ in agencies],
-            "join": {"agency_id": agencies[0][0], "request_id": agencies[0][0] + "-req"},
+            "document_joins": [{"document_sha256": digest, "agency_id": agency, "request_id": agency + "-req"}
+                               for agency, digest in digests.items()],
             "fact_sheets": {"schema": "records-agency-fact-sheets-v1", "agencies": sheets}}
     content = base / "campaign" / "content"
     content.mkdir(parents=True)
@@ -168,6 +168,7 @@ def _save_mail(ctx):
     _need(run.stage("save_mail").get("status") == "ok", "SAVE_MAIL_NOT_OK")
     held = run.query("SELECT COUNT(*) FROM mail_messages")[0][0], run.query("SELECT COUNT(*) FROM originals")[0][0]
     _need(held == (1, 1 + len(_AGENCIES)), "SAVE_MAIL_NOT_OK")
+    _need(run.stage("seed").get("status") == "ok", "FIXTURE_SEED_REFUSED")
     return [run.root / "inbox" / "00.eml"]
 
 
@@ -187,9 +188,17 @@ def _write_factsheets(ctx):
           and sheets.get("review_required") is True and sheets.get("semantic_acceptance") is False
           and sheets.get("publication_ready") is False and type(sheets.get("agencies")) is list, "FACTSHEETS_INVALID")
     by_id = {a.get("agency_id"): a for a in sheets["agencies"] if type(a) is dict}
-    _need(sorted(by_id) == sorted(run.ids), "FACTSHEET_AGENCY_MISSING")
-    quoted = [s["citation"]["document_sha256"] for s in by_id[run.ids[0]]["fields"]["retention"]["statements"]]
-    _need(run.documents[run.ids[0]] in quoted, "FACTSHEET_NOT_FROM_DOCUMENT")
+    _need(len(sheets["agencies"]) == len(run.ids) and set(by_id) == set(run.ids), "FACTSHEET_AGENCY_MISSING")
+    joins = run.query("SELECT original_sha256, agency_id, request_id FROM joins WHERE status='typed'")
+    expected = [(digest, agency, agency + "-req") for agency, digest in run.documents.items()]
+    _need(len(joins) == len(expected) and set(joins) == set(expected), "FIXTURE_JOIN_MISMATCH")
+    for agency, digest in run.documents.items():
+        sheet = by_id[agency]
+        _need(sheet.get("document_sha256s") == [digest], "FACTSHEET_NOT_FROM_DOCUMENT")
+        for field in ("retention", "outside_sharing"):
+            citations = [s["citation"] for s in sheet["fields"][field]["statements"]]
+            _need(citations and all(c.get("document_sha256") == digest and type(c.get("page")) is int
+                                    and c["page"] == 1 for c in citations), "FACTSHEET_DOCUMENT_PAGE_MISMATCH")
     return [path]
 
 
@@ -212,18 +221,25 @@ def _comparison_rows_cite_facts(ctx):
         evidence = row.get("evidence")
         _need(type(evidence) is list and evidence, "COMPARISON_ROW_UNCITED")
         for cite in evidence:
-            source = cite.get("source_id") if type(cite) is dict else None
-            _need(type(source) is str and source.startswith(_SHA) and str(cite.get("locator", "")).strip(),
-                  "COMPARISON_ROW_UNCITED")
+            if type(cite) is not dict:
+                raise _Refused("COMPARISON_ROW_UNCITED")
+            source = cite.get("source_id")
+            _need(type(source) is str and source.startswith(_SHA)
+                  and type(cite.get("locator")) is str and cite["locator"].strip(), "COMPARISON_ROW_UNCITED")
             _need(source[len(_SHA):] in known, "COMPARISON_CITES_OUTSIDE_SANDBOX")
             _need(source[len(_SHA):] == run.documents.get(row.get("agency_id")), "COMPARISON_CITES_OTHER_AGENCY")
+            _need(cite["locator"] == "page 1", "COMPARISON_DOCUMENT_PAGE_MISMATCH")
         seen.add(row.get("agency_id"))
     _need(seen == set(run.ids), "COMPARISON_ROW_UNCITED")
     return [run.directory / "comparison.json"]
 
 
 def _single_agency_is_not_a_comparison(ctx):
-    solo = ctx["solo"] = _Run(ctx["sandbox"], "single", _AGENCIES[:1])
+    agency, name, lines, retention, sharing = _AGENCIES[0]
+    # The two replays share one receipt. A distinct control original keeps a pair citation unique across its runs.
+    control = (agency, name, ('Fictional Valley standalone control policy', *lines[1:]), retention, sharing)
+    solo = ctx["solo"] = _Run(ctx["sandbox"], "single", (control,))
+    _need(set(solo.documents.values()).isdisjoint(ctx["pair"].documents.values()), "SINGLE_AGENCY_ORIGINAL_REUSED")
     report = _comparison(solo, "SINGLE_AGENCY_COMPARISON_INVALID")
     peer = _AGENCIES[1][0]
     texts = [(solo.directory / name).read_text(encoding="utf-8") for name in ("comparison.json", "comparison.md")]
