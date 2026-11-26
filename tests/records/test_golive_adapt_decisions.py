@@ -22,7 +22,8 @@ from tests.records.test_pipeline_health import report_for
 
 APPLIED, STALE = "APPLIED", "STALE_REVISION"
 ID_A, ID_B = "a1" * 32, "b2" * 32
-SECRET = "SECRET-REASON-TEXT"
+# Synthetic sensitive reason text: present in the source manifest, never in anything derived from it.
+HIDDEN_REASON = "HIDDENZQ-REASON-TEXT"
 OK_ANCHOR = {"state": "ok"}
 
 
@@ -180,7 +181,7 @@ class DecisionsEvidenceTests(unittest.TestCase):
         def drop_anchor(value):
             del value["approval_anchor"]
 
-        for anchor, edit, state in (({"state": "unavailable", "reason": SECRET}, None, "UNAVAILABLE"),
+        for anchor, edit, state in (({"state": "unavailable", "reason": HIDDEN_REASON}, None, "UNAVAILABLE"),
                                     (OK_ANCHOR, drop_anchor, "UNKNOWN")):
             with self.subTest(state=state):
                 self.make([(ID_A, APPLIED)], anchor=anchor, edit=edit)
@@ -199,17 +200,17 @@ class DecisionsEvidenceTests(unittest.TestCase):
         """C4: the row, codes and CLI output are counts/codes only; the source is the manifest bytes.
 
         Believable bug: echoing a journal id or the anchor's reason text into codes or the printed line."""
-        self.make([(ID_A, APPLIED), (ID_B, STALE)], anchor={"state": "unavailable", "reason": SECRET},
+        self.make([(ID_A, APPLIED), (ID_B, STALE)], anchor={"state": "unavailable", "reason": HIDDEN_REASON},
                   edit=lambda value: value.update(note="-----BEGIN SSH SIGNATURE----- decision text"))
         outputs = [json.dumps(self.row())]
         for flags in ((), ("--json",)):
             code, out, err = self.cli("--export-root", str(self.root), "--run-report", str(self.report_path), *flags)
             self.assertEqual(code, 1)
             outputs += [out, err]
-        self.assertIn(SECRET, self.manifest.read_text())  # the sensitive text exists in the source ...
+        self.assertIn(HIDDEN_REASON, self.manifest.read_text())  # the sensitive text exists in the source ...
         for text in outputs:
-            for secret in (ID_A, ID_B, SECRET, "SSH SIGNATURE", "decision text"):
-                self.assertNotIn(secret, text)  # ... and never in anything derived from it
+            for hidden in (ID_A, ID_B, HIDDEN_REASON, "SSH SIGNATURE", "decision text"):
+                self.assertNotIn(hidden, text)  # ... and never in anything derived from it
         self.assertEqual(self.row()["source"], {"schema": ce.SCHEMA, "name": ce.MANIFEST,
                                                 "sha256": hashlib.sha256(self.manifest.read_bytes()).hexdigest()})
 
