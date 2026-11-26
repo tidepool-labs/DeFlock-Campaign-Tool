@@ -24,7 +24,12 @@ LABEL = re.compile(r"(?<![\w-])(?:VERIFIED-IN-PACKAGE|UNVERIFIED)(?![\w-])")
 ET_SEQ = re.compile(r"(?i:\bet\s+seq\b)|\bff\.")
 ORDERED_MARKER = r"\d+[.)]"
 LIST_PREFIX = re.compile(rf"^\s*(?:[-+*]|{ORDERED_MARKER})\s+")
-ORDERED_PREFIX = re.compile(rf"^[^\S\n]*{ORDERED_MARKER}(?=[^\S\n]|\Z)")
+ORDERED_PREFIX = re.compile(rf"^[^\S\n]*{ORDERED_MARKER}(?=\s|\Z)")
+# A line holding only an ordered marker starts an item only where a new sentence
+# may start (paragraph start, or the previous line ends a sentence); otherwise it
+# is wrapped text such as the day of "March\n12." and stays a possible fact.
+MARKER_ONLY = re.compile(rf"^\s*{ORDERED_MARKER}\s*$")
+SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]]*\s*$")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?<!\bpp\.)(?<!\bp\.)(?<!\bNo\.)(?<!\be\.g\.)(?<!\bi\.e\.)\s+")
 MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 NUMWORD = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty)"
@@ -99,7 +104,9 @@ def lint(text, sections):
         # List items delimit C4 sentence spans even without terminal punctuation.
         spans, span = [], []
         for number, raw in paragraph:
-            if LIST_PREFIX.match(raw) and span:
+            starts_item = bool(LIST_PREFIX.match(raw)) or bool(
+                span and MARKER_ONLY.match(raw) and SENTENCE_END.search(span[-1][1]))
+            if starts_item and span:
                 spans.append(span)
                 span = []
             span.append((number, raw))
