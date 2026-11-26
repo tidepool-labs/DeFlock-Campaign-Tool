@@ -26,9 +26,14 @@ case = _load("stage_source_index_case", HERE.with_name("test_stage_source_index.
 idx, wb, H = summ.index_mod, summ.wb, case.H
 
 
-def fill(workbook, stage, finding, **extra):
+D10H, D10V, D11, D12 = H["harbor"][:12], H["valley"][:16], H["denial"][:12], H["part"][:12]
+OK_PROSE = "Proposal quotes the stored denial as written."
+
+
+def fill(workbook, stage, finding, cited, **extra):
     entry = next(e for e in workbook["entries"] if e["stage"] == stage)
-    entry["human"].update({"reviewer": "R", "checked_on": "2026-11-27", "finding": finding, "outcome": "read"})
+    entry["human"].update({"reviewer": "R", "checked_on": "2026-11-27", "finding": finding, "cited": cited,
+                           "outcome": "matches"})
     entry["human"].update(extra)
     return workbook
 
@@ -54,6 +59,10 @@ class SummaryTest(unittest.TestCase):
     def statuses(self, summary):
         return {s["stage"]: (s["status"], tuple(s["flags"])) for s in summary["stages"]}
 
+    def stage_of(self, stage, finding, cited, **extra):
+        summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, finding, cited, **extra))
+        return summary, self.statuses(summary)[stage]
+
     def refused(self, code, **kwargs):
         with self.assertRaises(summ.Refused) as caught:
             self.run_summary(**kwargs)
@@ -61,6 +70,7 @@ class SummaryTest(unittest.TestCase):
 
     def test_blank_workbook_is_unreviewed_never_accepted(self):
         summary = self.run_summary()
+        self.assertEqual(summary["schema"], "stage-readthrough-summary-v2")
         self.assertIs(summary["accepted"], False)
         self.assertEqual({s["status"] for s in summary["stages"]}, {"UNREVIEWED"})
         self.assertTrue(all(s["human"] is None for s in summary["stages"]))
@@ -68,15 +78,22 @@ class SummaryTest(unittest.TestCase):
         self.assertEqual([link["document_id"] for link in twelve["linked_sources"]], [H["part"]])
         self.assertEqual(sorted(link["status"] for link in twelve["unreviewed_sources"]), ["NO_LOCATOR", "UNATTRIBUTED"])
 
-    def test_finding_on_the_stage_own_sources_is_recorded_verbatim(self):
-        text = "Proposal for req-1 quotes page 1 of item %s as stored." % H["denial"][:12]
-        summary = self.run_summary(workbook=fill(self.workbook, "11", text))
-        state = self.statuses(summary)
-        self.assertEqual(state["11"], ("FINDING_RECORDED", ()))
-        self.assertEqual({state[s][0] for s in ("10", "12", "13", "14")}, {"UNREVIEWED"})
+    def test_finding_with_structured_citations_on_the_stage_own_sources_is_recorded(self):
+        cited = "document %s page 1; request req-1" % D11
+        summary, state = self.stage_of("11", OK_PROSE, cited)
+        self.assertEqual(state, ("FINDING_RECORDED", ()))
+        self.assertEqual({self.statuses(summary)[s][0] for s in ("10", "12", "13", "14")}, {"UNREVIEWED"})
         eleven = next(s for s in summary["stages"] if s["stage"] == "11")
-        self.assertEqual(eleven["human"]["finding"], text)
+        self.assertEqual(eleven["human"], {"checked_on": "2026-11-27", "outcome": "matches", "cited": cited})
+        self.assertIn("Cited (each entry checked against the linked sources): " + cited, summ.render(summary))
+        self.assertNotIn(OK_PROSE, json.dumps(summary) + summ.render(summary))
         self.assertIs(summary["accepted"], False)
+        for stage, cited in (("12", "document %s part 2;request REQ-1" % D12.upper()),
+                             ("12", "  Document   %s  Part 2 ;  " % D12),
+                             ("10", "document %s page 2; document %s page 1" % (D10H, D10V)),
+                             ("10", "document %s" % D10V)):
+            self.assertEqual(self.stage_of(stage, "Rows match what is stored.", cited)[1],
+                             ("FINDING_RECORDED", ()), cited)
 
     def test_wrong_workbook_header_alone_is_refused(self):
         wrong = copy.deepcopy(self.workbook)
@@ -113,40 +130,106 @@ class SummaryTest(unittest.TestCase):
         (self.root / "stage-13/replay/queue.jsonl").write_text("{}\n")
         self.refused("STAGE_13_EVIDENCE_CHANGED")
 
-    def test_finding_naming_another_request_document_or_page_is_withheld(self):
+    def test_citations_outside_the_stage_own_sources_are_withheld(self):
         cases = {
-            ("11", "Matches req-2 as well."): "FINDING_CITES_OTHER_REQUEST",
-            ("12", "The stray item %s is the reply." % H["stray"][:16]): "FINDING_CITES_UNLINKED_DOCUMENT",
-            ("12", "Item %s has no page." % H["nopage"][:12]): "FINDING_CITES_UNLINKED_DOCUMENT",
-            ("13", "Fee item %s is filed under 11." % H["denial"][:12]): "FINDING_CITES_UNLINKED_DOCUMENT",
-            ("11", "The denial is on page 5."): "FINDING_CITES_MISSING_PAGE",
-            ("12", "Message part 2 is on page 1."): "FINDING_CITES_MISSING_PAGE",
-            # RETURN t_8a005323 item 1: an unknown digest next to a linked one is not ignored
-            ("11", "req-1 page 1 of %s, also %s." % (H["denial"][:12], "0123456789ab" * 2)):
-                "FINDING_CITES_UNLINKED_DOCUMENT",
-            ("11", "See %s." % ("f" * 70)): "FINDING_CITES_UNLINKED_DOCUMENT",
-            # RETURN t_8a005323 item 2: a page or part is checked against the document it is written next to
-            ("10", "Harbor %s page 1 matches." % H["harbor"][:12]): "FINDING_CITES_MISSING_PAGE",
-            ("10", "Page 1 of %s matches; %s too." % (H["harbor"][:12], H["valley"][:12])): "FINDING_CITES_MISSING_PAGE",
-            ("12", "Item %s message part 3." % H["part"][:12]): "FINDING_CITES_MISSING_PART",
-            # RETURN t_d923efa8: a preposed locator binds to the document it names, never to an earlier clause
-            ("10", "%s page 2; page 2 of %s." % (H["harbor"][:12], H["valley"][:12])): "FINDING_CITES_MISSING_PAGE",
-            ("10", "%s page 2 of %s." % (H["harbor"][:12], H["valley"][:12])): "FINDING_LOCATOR_AMBIGUOUS",
-            ("10", "Item %s is the policy. It says so on page 2." % H["harbor"][:12]): "FINDING_LOCATOR_NOT_BOUND",
+            # RETURN t_03dc7263 item 1: the whole part token is compared, never a prefix of it
+            ("12", "document %s part 2.1" % D12): ("FINDING_CITES_MISSING_PART",),
+            ("12", "document %s part 2-evil" % D12): ("FINDING_CITES_MISSING_PART",),
+            ("12", "document %s part 2." % D12): ("FINDING_CITES_MISSING_PART",),
+            ("12", "document %s part \uff12" % D12): ("FINDING_CITES_MISSING_PART",),
+            ("12", "document %s part 3" % D12): ("FINDING_CITES_MISSING_PART",),
+            # RETURN t_03dc7263 item 2: a request unknown to the run is withheld, as is a known other one
+            ("11", "document %s page 1; request req-unknown" % D11): ("FINDING_CITES_UNKNOWN_REQUEST",),
+            ("11", "document %s page 1; request req-2" % D11): ("FINDING_CITES_OTHER_REQUEST",),
+            ("10", "document %s page 2; request req-1" % D10H): ("FINDING_CITES_OTHER_REQUEST",),
+            ("11", "request req-1"): ("FINDING_WITHOUT_CITATION",),
+            ("12", "document %s" % H["stray"][:16]): ("FINDING_CITES_UNLINKED_DOCUMENT",),
+            ("12", "document %s" % H["nopage"][:12]): ("FINDING_CITES_UNLINKED_DOCUMENT",),
+            ("13", "document %s page 1" % D11): ("FINDING_CITES_UNLINKED_DOCUMENT",),
+            ("11", "document %s page 1; document %s" % (D11, "0123456789ab" * 2)): ("FINDING_CITES_UNLINKED_DOCUMENT",),
+            ("11", "document %s page 5" % D11): ("FINDING_CITES_MISSING_PAGE",),
+            ("12", "document %s page 1" % D12): ("FINDING_CITES_MISSING_PAGE",),
+            ("10", "document %s page 1" % D10H): ("FINDING_CITES_MISSING_PAGE",),
+            # anything not in a listed form is never guessed at
+            ("11", "document %s page 1, request req-1" % D11): ("FINDING_CITATION_UNPARSED", "FINDING_WITHOUT_CITATION"),
+            ("11", "page 1 of document %s" % D11): ("FINDING_CITATION_UNPARSED", "FINDING_WITHOUT_CITATION"),
+            ("11", "document %s page 0" % D11): ("FINDING_CITATION_UNPARSED", "FINDING_WITHOUT_CITATION"),
+            ("11", "document %s page 1." % D11): ("FINDING_CITATION_UNPARSED", "FINDING_WITHOUT_CITATION"),
+            ("11", "document %s page 1; request req-1 req-2" % D11): ("FINDING_CITATION_UNPARSED",),
+            ("11", "document %s" % D11[:11]): ("FINDING_CITATION_UNPARSED", "FINDING_WITHOUT_CITATION"),
         }
-        for (stage, text), code in cases.items():
-            summary = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
-            self.assertEqual(self.statuses(summary)[stage], ("WITHHELD", (code,)), text)
+        for (stage, cited), codes in cases.items():
+            summary, state = self.stage_of(stage, OK_PROSE, cited)
+            self.assertEqual(state, ("WITHHELD", codes), cited)
             self.assertIsNone(next(s for s in summary["stages"] if s["stage"] == stage)["human"])
-        for stage, text in (("12", "Item %s message part 2 belongs to req-1." % H["part"][:12]),
-                            ("10", "Harbor %s page 2; valley %s page 1." % (H["harbor"][:12], H["valley"][:12])),
-                            ("10", "%s page 2; page 1 of %s." % (H["harbor"][:12], H["valley"][:12])),
-                            ("10", "%s, on page 2, differs from page 1 in document %s." % (H["harbor"][:12],
-                                                                                          H["valley"][:12])),
-                            ("10", "Page 1 of %s matches." % H["valley"][:16]),
-                            ("10", "Both policies cite page 1 and page 2.")):
-            ok = self.run_summary(workbook=fill(copy.deepcopy(self.workbook), stage, text))
-            self.assertEqual(self.statuses(ok)[stage], ("FINDING_RECORDED", ()), text)
+
+    def test_prose_is_never_read_or_carried_so_it_cannot_cite(self):
+        # RETURNs t_03dc7263, t_49c6a30f, t_6d508356, t_f01250f2 all found references hidden in free prose. The prose
+        # note now never reaches the summary: its status depends only on the structured fields, and none of its text
+        # appears in summary.json or SUMMARY.md.
+        cited = "document %s page 1; request req-1" % D11
+        for text in ("See req-unknown.", "Matches req-2 as well.", "Message part 2.1 is fine.", "Message part 2-evil.",
+                     "See deadbeefdeadbeef.", "See request 1234.", "See request unknown.", "See tickets unknown.",
+                     "See cases unknown.", "Alpha's answer differs.", "Item %s fits." % H["stray"][:16]):
+            # RETURN t_103c1b66 item 1: the reviewer field is free text too, so it is never carried either
+            summary, state = self.stage_of("11", text, cited, reviewer="See request unknown %s" % text)
+            self.assertEqual(state, ("FINDING_RECORDED", ()), text)
+            carried = json.dumps(summary) + summ.render(summary)
+            self.assertNotIn(text, carried)
+            self.assertNotIn("See request unknown", carried)
+            self.assertEqual(sorted(next(s for s in summary["stages"] if s["stage"] == "11")["human"]),
+                             ["checked_on", "cited", "outcome"])
+        # and an unknown request in the place that IS read, cited, is withheld
+        self.assertEqual(self.stage_of("11", "Fine.", cited + "; request unknown")[1],
+                         ("WITHHELD", ("FINDING_CITES_UNKNOWN_REQUEST",)))
+
+    def test_note_content_never_changes_a_status(self):
+        # RETURN t_103c1b66 item 2: the workbook check's two note comparisons (the same note under two stages, a note
+        # copied from a prior run) must not decide a status. Same structured fields => same status whatever the note.
+        eleven, twelve = "document %s page 1" % D11, "document %s part 2" % D12
+        same = fill(fill(copy.deepcopy(self.workbook), "11", "All good.", eleven), "12", "all   GOOD.", twelve)
+        self.assertIn(("11", "SAME_FINDING_UNDER_TWO_STAGES"), wb.check(same, self.agenda)[0])
+        summary = self.run_summary(workbook=same)
+        self.assertEqual((self.statuses(summary)["11"], self.statuses(summary)["12"]),
+                         (("FINDING_RECORDED", ()), ("FINDING_RECORDED", ())))
+        self.assertEqual(summary["workbook_flags"], 0)
+        prior = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", "document %s page 3" % H["fee"][:12],
+                     outcome="differs")
+        prior["entries"][3]["evidence_digest"] = "0" * 64
+        current = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", "document %s page 3" % H["fee"][:12])
+        self.assertIn(("13", "COPIED_FROM_PRIOR_RUN"), wb.check(current, self.agenda, prior)[0])
+        self.assertEqual(self.statuses(self.run_summary(workbook=current, prior=prior))["13"], ("FINDING_RECORDED", ()))
+        for note in ("x", "A long note.", "See req-unknown."):
+            varied = fill(copy.deepcopy(self.workbook), "11", note, eleven)
+            self.assertEqual(self.statuses(self.run_summary(workbook=varied))["11"], ("FINDING_RECORDED", ()), note)
+
+    def test_structured_fields_out_of_form_are_withheld(self):
+        cited = "document %s page 1" % D11
+        cases = {
+            (("outcome", "read"),): ("FINDING_OUTCOME_NOT_IN_LIST",),
+            (("outcome", "matches req-unknown"),): ("FINDING_OUTCOME_NOT_IN_LIST",),
+            (("outcome", "Matches"),): ("FINDING_OUTCOME_NOT_IN_LIST",),
+            (("checked_on", "2026-02-30"),): ("FINDING_DATE_NOT_ISO",),
+            (("checked_on", "27 Nov 2026"),): ("FINDING_DATE_NOT_ISO",),
+            (("checked_on", "2026-11-27 req-9"),): ("FINDING_DATE_NOT_ISO",),
+            (("reviewer", ""),): ("PARTIAL_HUMAN_ENTRY",),
+            (("finding", ""),): ("PARTIAL_HUMAN_ENTRY",),
+        }
+        for edits, codes in cases.items():
+            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited)
+            workbook["entries"][1]["human"].update(dict(edits))
+            state = self.statuses(self.run_summary(workbook=workbook))["11"]
+            self.assertEqual(state, ("WITHHELD", codes), edits)
+        for outcome in summ.OUTCOMES:
+            workbook = fill(copy.deepcopy(self.workbook), "11", "Fine.", cited, outcome=outcome)
+            self.assertEqual(self.statuses(self.run_summary(workbook=workbook))["11"], ("FINDING_RECORDED", ()))
+
+    def test_a_prefix_fitting_two_linked_documents_is_ambiguous(self):
+        links = [{"status": "LINKED", "requests": [], "document_id": "ab" * 6 + tail * 52,
+                  "locators": [{"kind": "page", "value": "1"}]} for tail in ("0", "1")]
+        self.assertEqual(summ._finding_flags("document %s page 1" % ("ab" * 6), links, links),
+                         ["FINDING_CITATION_AMBIGUOUS"])
+        self.assertEqual(summ._finding_flags("document %s page 1" % ("ab" * 6 + "1"), links, links), [])
 
     def test_cross_request_source_never_supports_a_finding(self):
         outputs = case.stage_outputs()
@@ -158,14 +241,16 @@ class SummaryTest(unittest.TestCase):
         root = self.root / "cross"
         root.mkdir()
         agenda, digest = case.load(case.write_case(root, outputs))
-        workbook = fill(wb.make(agenda, digest), "14", "Follow-up for req-3 cites page 1.")
+        workbook = fill(wb.make(agenda, digest), "14", "Follow up cites the reply.",
+                        "document %s page 1; request req-3" % H["followup"][:12])
         summary = summ.summarize(workbook, agenda, digest, idx.build(agenda, digest))
         fourteen = next(s for s in summary["stages"] if s["stage"] == "14")
         self.assertEqual((fourteen["status"], fourteen["flags"]), ("WITHHELD", ["FINDING_WITHOUT_LINKED_SOURCE"]))
         self.assertEqual([link["status"] for link in fourteen["unreviewed_sources"]], ["CROSS_REQUEST"])
 
     def test_swapped_stage_entries_cannot_pass(self):
-        workbook = fill(fill(copy.deepcopy(self.workbook), "10", "Harbor page 2 matches."), "11", "req-1 page 1.")
+        workbook = fill(fill(copy.deepcopy(self.workbook), "10", "Harbor matches.", "document %s page 2" % D10H),
+                        "11", OK_PROSE, "document %s page 1" % D11)
         ten, eleven = workbook["entries"][0], workbook["entries"][1]
         ten["stage"], eleven["stage"] = "11", "10"
         state = self.statuses(self.run_summary(workbook=workbook))
@@ -177,11 +262,18 @@ class SummaryTest(unittest.TestCase):
         partial = copy.deepcopy(self.workbook)
         partial["entries"][2]["human"]["finding"] = "half done"
         self.assertEqual(self.statuses(self.run_summary(workbook=partial))["12"], ("WITHHELD", ("PARTIAL_HUMAN_ENTRY",)))
-        prior = fill(copy.deepcopy(self.workbook), "13", "Fee reply cites page 3.")
+        no_cited = fill(copy.deepcopy(self.workbook), "11", OK_PROSE, "")
+        self.assertEqual(self.statuses(self.run_summary(workbook=no_cited))["11"], ("WITHHELD", ("PARTIAL_HUMAN_ENTRY",)))
+        fee = "document %s page 3; request req-2" % H["fee"][:12]
+        prior = fill(copy.deepcopy(self.workbook), "13", "Another note.", fee)
         prior["entries"][3]["evidence_digest"] = "0" * 64
-        current = fill(copy.deepcopy(self.workbook), "13", "Fee reply cites page 3.")
+        current = fill(copy.deepcopy(self.workbook), "13", "Fee reply matches.", fee)
+        self.assertEqual(self.statuses(self.run_summary(workbook=current))["13"], ("FINDING_RECORDED", ()))
         state = self.statuses(self.run_summary(workbook=current, prior=prior))
-        self.assertEqual(state["13"], ("WITHHELD", ("COPIED_FROM_PRIOR_RUN",)))
+        self.assertEqual(state["13"], ("WITHHELD", ("CITED_COPIED_FROM_PRIOR_RUN",)))
+        same_evidence = fill(copy.deepcopy(self.workbook), "13", "Another note.", fee)  # a repeat, not a copy
+        self.assertEqual(self.statuses(self.run_summary(workbook=current, prior=same_evidence))["13"],
+                         ("FINDING_RECORDED", ()))
 
     def test_cli_exit_codes_and_private_output(self):
         def write(name, value):
@@ -203,7 +295,8 @@ class SummaryTest(unittest.TestCase):
             self.assertEqual(stat.S_IMODE((out / name).stat().st_mode), 0o600)
         self.assertIs(json.loads((out / "summary.json").read_text())["accepted"], False)
         self.assertNotIn(case.QUOTE_CANARY, (out / "SUMMARY.md").read_text())
-        withheld = write("withheld.json", fill(copy.deepcopy(self.workbook), "11", "See req-2."))
+        withheld = write("withheld.json", fill(copy.deepcopy(self.workbook), "11", OK_PROSE,
+                                               "document %s page 1; request req-2" % D11))
         run = subprocess.run([sys.executable, "-B", str(SCRIPT), withheld, str(self.agenda_path), index_path],
                              capture_output=True, text=True)
         self.assertEqual(run.returncode, 1)

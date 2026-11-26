@@ -16,17 +16,38 @@ the agenda it was made from, and the source index (``stage_source_index.py``) bu
 Then each stage gets exactly one status:
 
   UNREVIEWED        the human fields are blank. Blank is never turned into a finding, a pass or acceptance.
-  FINDING_RECORDED  a person filled every field, the workbook check raised nothing and the finding names nothing
-                    outside the stage's own LINKED sources. Shown verbatim; still not acceptance.
-  WITHHELD          anything flagged: the workbook check's flags (copied or swapped entry, edited evidence, partial
-                    entry, ...) or the finding cites another request (FINDING_CITES_OTHER_REQUEST), any hex token of
-                    12+ characters that is not a prefix of a LINKED document of this stage
-                    (FINDING_CITES_UNLINKED_DOCUMENT), a page or message part that the document it is explicitly
-                    attached to ("<document> page N" or "page N of <document>") does not have
-                    (FINDING_CITES_MISSING_PAGE / FINDING_CITES_MISSING_PART; with no document named, none of the
-                    stage's LINKED documents has it), a locator attached to no named document or to two
-                    (FINDING_LOCATOR_NOT_BOUND / FINDING_LOCATOR_AMBIGUOUS), or the stage has no LINKED source at
-                    all (FINDING_WITHOUT_LINKED_SOURCE).
+  FINDING_RECORDED  a person filled every field, the workbook check raised no structural flag, ``outcome`` is one of
+                    ``matches`` / ``differs`` / ``cannot_tell``, ``checked_on`` is a real ISO date, and every entry
+                    of the structured ``cited`` field resolves exactly to the stage's own LINKED sources. The
+                    recorded finding IS ``checked_on`` + ``outcome`` + ``cited``; still not acceptance.
+  WITHHELD          anything flagged: the workbook check's structural flags (swapped, missing, duplicated or edited
+                    entry, evidence not current, partial entry), the stage has no LINKED source
+                    (FINDING_WITHOUT_LINKED_SOURCE), a structured field out of its form (FINDING_OUTCOME_NOT_IN_LIST,
+                    FINDING_DATE_NOT_ISO), the same ``outcome`` + ``cited`` copied from a ``--prior`` run whose
+                    evidence differs (CITED_COPIED_FROM_PRIOR_RUN), or a citation rule below.
+
+Free text never reaches a status or the output. The prose ``finding`` (the reviewer's own note) and ``reviewer`` must be
+non-empty (a blank one is a partial entry: presence only), but their content is NEVER parsed, compared or carried into
+the summary. So the workbook check's two content comparisons of the note (SAME_FINDING_UNDER_TWO_STAGES,
+COPIED_FROM_PRIOR_RUN) are ignored here; the structured copy check above replaces the second. Readers open the
+workbook for the note and the reviewer's name.
+
+Citations are read ONLY from ``cited``. ``cited`` is a ``;``-separated list; each entry is exactly one of (keywords
+case-insensitive, single spaces):
+
+  document <12-64 hex>                 a LINKED document of this stage, named by a unique prefix
+  document <12-64 hex> page <N>        ... and N is a page that document's own locators state
+  document <12-64 hex> part <P>        ... and P (the whole token, up to 64 non-space characters) is a message
+                                       part that document's own locators state; ``2`` never matches ``2.1``
+  request <ID>                         a request this stage's LINKED sources are tied to
+
+  FINDING_WITHOUT_CITATION          no ``document`` entry at all (a finding must point at a source)
+  FINDING_CITATION_UNPARSED         an entry in no listed form (trailing punctuation, extra words, page 0, ...)
+  FINDING_CITES_UNLINKED_DOCUMENT   the prefix is no LINKED document of this stage (cross-agency, unattributed, ...)
+  FINDING_CITATION_AMBIGUOUS        the prefix fits two LINKED documents
+  FINDING_CITES_MISSING_PAGE / FINDING_CITES_MISSING_PART   that document does not state that page or part
+  FINDING_CITES_OTHER_REQUEST       a request of another stage or source of this run
+  FINDING_CITES_UNKNOWN_REQUEST     a request that appears nowhere in this run
 
 Sources that are not LINKED (no locator, unattributed, cross-agency, cross-request) are listed as unreviewed for every
 stage. Exit 0 = nothing withheld, 1 = at least one stage withheld, 2 = refused or usage. ``accepted`` is always false.
@@ -35,21 +56,25 @@ Review aid only: it signs nothing, sends nothing, writes no ledger, index or sto
 draws no legal conclusion. The sitting evaluator stays the only verdict. Standard library only.
 """
 import argparse
+import datetime
 import importlib.util
 import json
 import re
 import sys
 from pathlib import Path
 
-SCHEMA = "stage-readthrough-summary-v1"
-NOTE = ("Summary of an attended read-through of synthetic rehearsal evidence. FINDING_RECORDED repeats what a person "
-        "wrote; it is not acceptance, a signature, a booking or a legal conclusion. UNREVIEWED and WITHHELD stages "
-        "have no finding.")
-_PAGE_MENTION = re.compile(r"\bpage\s+(\d+)\b")
-_PART_MENTION = re.compile(r"\bmessage part\s+([0-9a-z]+)\b")
-_HEX_TOKEN = re.compile(r"(?<![0-9a-z])[0-9a-f]{12,}(?![0-9a-z])")
-_ATTACHED_AFTER = re.compile(r"[ \t,:(]*(?:(?:on|at)\s+)?")  # "<document> page N", "<document>, on page N"
-_ATTACHED_BEFORE = re.compile(r"\s+(?:of|in|from)\s+(?:(?:item|document)\s+)?")  # "page N of item <document>"
+SCHEMA = "stage-readthrough-summary-v2"
+NOTE = ("Summary of an attended read-through of synthetic rehearsal evidence. A FINDING_RECORDED stage shows only "
+        "structured fields a person filled (date, outcome and checked citations); the free-text note and the "
+        "reviewer's name stay in the workbook and are not carried here. Nothing here is acceptance, a signature, a "
+        "booking or a legal conclusion. UNREVIEWED and WITHHELD stages have no finding.")
+OUTCOMES = ("matches", "differs", "cannot_tell")
+_CITE_DOCUMENT = re.compile(r"document ([0-9a-f]{12,64})(?: page ([1-9][0-9]{0,5})| part (\S{1,64}))?",
+                            re.IGNORECASE | re.ASCII)
+_CITE_REQUEST = re.compile(r"request (\S{1,128})", re.IGNORECASE | re.ASCII)
+_ISO_DATE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
+CARRIED_FIELDS = ("checked_on", "outcome", "cited")  # never "finding" or "reviewer": free text is not carried
+PROSE_DERIVED_FLAGS = ("SAME_FINDING_UNDER_TWO_STAGES", "COPIED_FROM_PRIOR_RUN")  # workbook flags that read the note
 
 
 def _load_sibling(name):
@@ -71,56 +96,70 @@ def _canonical(value):
     return json.dumps(value, sort_keys=True, separators=(",", ":"))
 
 
-def _mentions(text, identifier):
-    return re.search(r"(?<![\w-])" + re.escape(identifier.lower()) + r"(?![\w-])", text) is not None
-
-
-def _finding_flags(text, stage_links, all_links):
-    """Flags for a filled finding that names something outside this stage's LINKED sources.
-
-    Every hex token of 12 or more characters must be a prefix of a LINKED document of this stage (other digests do not
-    belong in a finding). A ``page N`` / ``message part P`` mention is checked only against the document it is
-    explicitly attached to, written either as ``<document> page N`` (``<document>, on page N`` and similar) or as
-    ``page N of <document>`` (``of``/``in``/``from``, optionally ``item``/``document``). When the finding names a
-    document, a locator attached to none (FINDING_LOCATOR_NOT_BOUND) or to two different documents
-    (FINDING_LOCATOR_AMBIGUOUS) is withheld; no pairing is guessed across clauses. With no document named at all, a
-    locator must be one of some LINKED document of the stage.
-    """
+def _form_flags(human):
+    """Flags for structured human fields outside their form. Free-text fields are never inspected."""
     flags = []
+    if human["outcome"] not in OUTCOMES:
+        flags.append("FINDING_OUTCOME_NOT_IN_LIST")
+    try:
+        if not _ISO_DATE.fullmatch(human["checked_on"]):
+            raise ValueError
+        datetime.date.fromisoformat(human["checked_on"])
+    except ValueError:
+        flags.append("FINDING_DATE_NOT_ISO")
+    return flags
+
+
+def _structured(human):
+    return human.get("outcome", ""), " ".join(human.get("cited", "").split()).lower()
+
+
+def _human(entry):
+    human = (entry or {}).get("human")
+    if not isinstance(human, dict):
+        return {field: "" for field in wb.HUMAN_FIELDS}
+    return {field: str(human.get(field) or "").strip() for field in wb.HUMAN_FIELDS}
+
+
+def _finding_flags(cited, stage_links, all_links):
+    """Flags for ``cited`` entries that are not exactly this stage's LINKED sources (see module doc)."""
     linked = [link for link in stage_links if link["status"] == "LINKED"]
     if not linked:
         return ["FINDING_WITHOUT_LINKED_SOURCE"]
     own_requests = {req.lower() for link in linked for req in link["requests"]}
     known_requests = {req.lower() for link in all_links for req in link["requests"]}
-    if any(_mentions(text, req) for req in known_requests - own_requests):
-        flags.append("FINDING_CITES_OTHER_REQUEST")
-    named = []  # (start, end, linked links the token names)
-    for match in _HEX_TOKEN.finditer(text):
-        targets = [link for link in linked if link["document_id"].startswith(match.group(0))]
+    flags = []
+    documents = 0
+    for raw in cited.split(";"):
+        entry = " ".join(raw.split())
+        if not entry:
+            continue
+        request = _CITE_REQUEST.fullmatch(entry)
+        document = _CITE_DOCUMENT.fullmatch(entry)
+        if request:
+            value = request.group(1).lower()
+            if value not in own_requests:
+                flags.append("FINDING_CITES_OTHER_REQUEST" if value in known_requests
+                             else "FINDING_CITES_UNKNOWN_REQUEST")
+            continue
+        if not document:
+            flags.append("FINDING_CITATION_UNPARSED")
+            continue
+        documents += 1
+        prefix, page, part = document.group(1).lower(), document.group(2), document.group(3)
+        targets = [link for link in linked if link["document_id"].startswith(prefix)]
         if not targets:
             flags.append("FINDING_CITES_UNLINKED_DOCUMENT")
-            return flags  # a locator next to an unlinked document cannot be checked against anything
-        named.append((match.start(), match.end(), targets))
-    for pattern, kind, code in ((_PAGE_MENTION, "page", "FINDING_CITES_MISSING_PAGE"),
-                                (_PART_MENTION, "part", "FINDING_CITES_MISSING_PART")):
-        for match in pattern.finditer(text):
-            value = str(int(match.group(1))) if match.group(1).isdigit() else match.group(1)
-            if named:
-                bound = [(start, targets) for start, end, targets in named
-                         if (end <= match.start() and _ATTACHED_AFTER.fullmatch(text[end:match.start()]))
-                         or (start >= match.end() and _ATTACHED_BEFORE.fullmatch(text[match.end():start]))]
-                if not bound:
-                    flags.append("FINDING_LOCATOR_NOT_BOUND")
-                    continue
-                if len(bound) > 1:
-                    flags.append("FINDING_LOCATOR_AMBIGUOUS")
-                    continue
-                targets = bound[0][1]
-            else:
-                targets = linked
-            if not any(loc["kind"] == kind and loc["value"].lower() == value
-                       for link in targets for loc in link["locators"]):
-                flags.append(code)
+        elif len(targets) > 1:
+            flags.append("FINDING_CITATION_AMBIGUOUS")
+        elif page is not None and not any(loc["kind"] == "page" and loc["value"] == page
+                                          for loc in targets[0]["locators"]):
+            flags.append("FINDING_CITES_MISSING_PAGE")
+        elif part is not None and not any(loc["kind"] == "part" and loc["value"].lower() == part.lower()
+                                          for loc in targets[0]["locators"]):
+            flags.append("FINDING_CITES_MISSING_PART")
+    if not documents:
+        flags.append("FINDING_WITHOUT_CITATION")
     return sorted(set(flags))
 
 
@@ -142,10 +181,16 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
     rebuilt = index_mod.build(agenda, agenda_sha)  # same refusals as the index: evidence must still be on disk, unchanged
     if _canonical(rebuilt) != _canonical(index):
         raise Refused("INDEX_NOT_REPRODUCIBLE")
-    flags, states = wb.check(workbook, agenda, prior)
+    flags, _states = wb.check(workbook, agenda, prior)  # refusals and structural flags; note-content flags dropped
     by_stage = {}
     for stage, code in flags:
-        by_stage.setdefault(stage, []).append(code)
+        if code not in PROSE_DERIVED_FLAGS:
+            by_stage.setdefault(stage, []).append(code)
+    expected = {entry["stage"]: entry["evidence_digest"] for entry in wb.make(agenda, "-")["entries"]}
+    prior_by_stage = {}
+    for entry in (prior or {}).get("entries") or []:
+        if isinstance(entry, dict) and entry.get("stage") in wb.STAGES:
+            prior_by_stage.setdefault(entry["stage"], entry)
     entries = {}
     for entry in workbook["entries"]:
         if isinstance(entry, dict) and entry.get("stage") in wb.STAGES:
@@ -154,15 +199,18 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
     stages = []
     for stage in rebuilt["stages"]:
         name = stage["stage"]
-        human = (entries.get(name) or {}).get("human")
-        human = {field: str((human or {}).get(field) or "").strip() for field in wb.HUMAN_FIELDS} \
-            if isinstance(human, dict) else {field: "" for field in wb.HUMAN_FIELDS}
+        human = _human(entries.get(name))
+        filled = any(human.values())
         stage_flags = list(by_stage.get(name, []))
-        if states[name] == "FILLED" and not stage_flags:
-            stage_flags += _finding_flags(" ".join(human["finding"].split()).lower(), stage["links"], all_links)
+        if filled and not stage_flags:
+            stage_flags += _form_flags(human) + _finding_flags(human["cited"], stage["links"], all_links)
+            old = prior_by_stage.get(name)
+            if old is not None and old.get("evidence_digest") != expected[name] \
+                    and all(_structured(_human(old))) and _structured(_human(old)) == _structured(human):
+                stage_flags.append("CITED_COPIED_FROM_PRIOR_RUN")
         if stage_flags:
             status = "WITHHELD"
-        elif states[name] == "FILLED":
+        elif filled:
             status = "FINDING_RECORDED"
         else:
             status = "UNREVIEWED"
@@ -170,11 +218,12 @@ def summarize(workbook, agenda, agenda_sha, index, prior=None):
         stages.append({"stage": name, "status": status, "flags": sorted(set(stage_flags)),
                        "evidence_digest": stage["evidence_digest"], "engine": stage["engine"],
                        "receipt_sha256": stage["receipt_sha256"],
-                       "human": human if status == "FINDING_RECORDED" else None,
+                       "human": {field: human[field] for field in CARRIED_FIELDS}
+                                if status == "FINDING_RECORDED" else None,
                        "linked_sources": linked,
                        "unreviewed_sources": [link for link in stage["links"] if link["status"] != "LINKED"]})
     return {"schema": SCHEMA, "note": NOTE, "accepted": False, "main_commit": agenda["main_commit"],
-            "agenda_sha256": agenda_sha, "workbook_flags": len(flags), "stages": stages}
+            "agenda_sha256": agenda_sha, "workbook_flags": sum(len(codes) for codes in by_stage.values()), "stages": stages}
 
 
 def render(summary):
@@ -184,9 +233,9 @@ def render(summary):
         out.append("## Stage %s: %s%s" % (stage["stage"], stage["status"],
                                           ("  (" + ", ".join(stage["flags"]) + ")") if stage["flags"] else ""))
         if stage["human"]:
-            out += ["Reviewer %s on %s, outcome %s" % (stage["human"]["reviewer"], stage["human"]["checked_on"],
-                                                       stage["human"]["outcome"]),
-                    "Finding (as written): " + stage["human"]["finding"]]
+            out += ["Checked on %s, outcome %s" % (stage["human"]["checked_on"], stage["human"]["outcome"]),
+                    "Cited (each entry checked against the linked sources): " + stage["human"]["cited"],
+                    "Reviewer's name and note: in the workbook only (free text is not carried or checked here)"]
         for title, key in (("Linked sources", "linked_sources"), ("Unreviewed sources", "unreviewed_sources")):
             out.append(title + ":" + ("" if stage[key] else " none"))
             for link in stage[key]:

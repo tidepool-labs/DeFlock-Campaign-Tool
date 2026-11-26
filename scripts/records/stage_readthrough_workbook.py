@@ -6,8 +6,14 @@ usage: stage_readthrough_workbook.py make AGENDA.json --out DIR
 
 ``make`` turns the agenda that the five-driver runner feeds (``stage-review-agenda-v1``) into one workbook: for each
 of stages 10 to 14 the engine, the receipt, the driver hash, every step output (path and sha256) the human is to open,
-the next human check, and BLANK fields for the reviewer, the date, the finding and the outcome. It refuses to make a
-workbook unless all five stages are READY_FOR_HUMAN_CHECK on the same engine as the main commit.
+the next human check, and BLANK fields for the reviewer, the date, the finding, the citations and the outcome. It
+refuses to make a workbook unless all five stages are READY_FOR_HUMAN_CHECK on the same engine as the main commit.
+
+``cited`` (new in v2) is where the reviewer writes every reference, ``;``-separated, e.g.
+``document 0a1b2c3d4e5f page 2; request req-7``; ``stage_readthrough_summary.py`` checks each entry against the
+stage's linked sources, takes ``outcome`` only from matches / differs / cannot_tell, and never reads or carries the
+prose finding (the reviewer's own note). A v1 workbook has no ``cited`` field and is not read as current; a v1
+workbook is still accepted as ``--prior`` for copy detection.
 
 ``check`` reads a (partly) filled workbook against the current agenda and prints flags; it never fills a field and never
 says a stage is accepted. Flags: a stage missing, duplicated or unknown, an entry whose evidence is not the current
@@ -27,11 +33,12 @@ import stat
 import sys
 from pathlib import Path
 
-SCHEMA = "stage-readthrough-workbook-v1"
+SCHEMA = "stage-readthrough-workbook-v2"
+PRIOR_SCHEMAS = ("stage-readthrough-workbook-v1", SCHEMA)
 AGENDA_SCHEMA = "stage-review-agenda-v1"
 READY = "READY_FOR_HUMAN_CHECK"
 STAGES = ("10", "11", "12", "13", "14")
-HUMAN_FIELDS = ("reviewer", "checked_on", "finding", "outcome")
+HUMAN_FIELDS = ("reviewer", "checked_on", "finding", "cited", "outcome")
 NOTE = ("Review aid for an attended read-through. The human fields are blank on purpose and are filled only by the "
         "person who opened the evidence. Nothing here is acceptance, a signature, a booking or a legal conclusion.")
 MAX_INPUT = 8 * 1024 * 1024
@@ -117,7 +124,9 @@ def render(workbook):
         out += ["  - %s %s: %s  sha256 %s" % (ref["step"], ref["code"], ref["path"], ref["sha256"][:12])
                 for ref in entry["references"]]
         out += ["Next human check: " + str(entry["next_human_check"]),
-                "Reviewer: ____   Date: ____   Outcome: ____", "Finding: ____", ""]
+                "Reviewer: ____   Date (YYYY-MM-DD): ____   Outcome (matches | differs | cannot_tell): ____",
+                "Note (your own words; stays in this workbook, never read as a citation): ____",
+                "Cited (document <hex> [page N | part P]; request <id>): ____", ""]
     return "\n".join(out)
 
 
@@ -139,7 +148,7 @@ def check(workbook, agenda, prior=None):
     flags += [(stage, "MISSING_STAGE") for stage in STAGES if stage not in seen]
     prior_by_stage = {}
     if prior is not None:
-        if not isinstance(prior, dict) or prior.get("schema") != SCHEMA:
+        if not isinstance(prior, dict) or prior.get("schema") not in PRIOR_SCHEMAS:
             raise Refused("PRIOR_WORKBOOK_NOT_RECOGNISED")
         prior_by_stage = {e.get("stage"): e for e in prior.get("entries") or [] if isinstance(e, dict)}
     findings = {}
