@@ -12,6 +12,7 @@ import json
 import os
 from pathlib import Path
 import stat
+import sys
 
 from . import golive_gate
 
@@ -91,12 +92,20 @@ def ready(report):
     return all(item["state"] == MAPPED_OK for item in report.values())
 
 
+def _show(text):
+    """Escape non-printing characters so one name or hint stays on one text line."""
+    text = str(text)
+    if text.isprintable():
+        return text
+    return "".join(ch if ch.isprintable() else ascii(ch)[1:-1] for ch in text)
+
+
 def _line(name, item):
     if item["state"] == UNUSED:
-        hint = f" (closest required name: {item['hint']})" if item["hint"] else ""
-        return f"{name} unused: {UNUSED}{hint}"
+        hint = f" (closest required name: {_show(item['hint'])})" if item["hint"] else ""
+        return f"{_show(name)} unused: {UNUSED}{hint}"
     used = ", ".join(json.dumps(label) for label in item["used_by"])
-    return f"{name} {item['kind']}: {item['state']} (used by {used})"
+    return f"{_show(name)} {item['kind']}: {item['state']} (used by {used})"
 
 
 def _scrub(message, paths):
@@ -106,8 +115,22 @@ def _scrub(message, paths):
     return message
 
 
+class _Parser(argparse.ArgumentParser):
+    """argparse quotes offending argument values (e.g. 'unrecognized arguments: --imput
+    copy=/private/x'); print a fixed diagnostic instead so no supplied path reaches stderr."""
+
+    BAD_ARGS = "invalid command line: expected --spec PATH [--input NAME=PATH ...] [--json] (values not shown)"
+
+    def error(self, message):
+        self.refuse(self.BAD_ARGS)
+
+    def refuse(self, message):
+        self.print_usage(sys.stderr)
+        self.exit(2, f"{self.prog}: error: {message}\n")
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
+    parser = _Parser(description=__doc__, allow_abbrev=False)
     parser.add_argument("--spec", required=True, type=Path)
     parser.add_argument("--input", action="append", default=[], metavar="NAME=PATH")
     parser.add_argument("--json", action="store_true", help="print a JSON report rather than one line per name")
@@ -123,9 +146,9 @@ def main(argv=None):
         report = check(spec, inputs)
     except OSError as exc:
         # str(OSError) embeds the filename; keep only the reason so no path reaches stderr.
-        parser.error(f"cannot read --spec: {exc.strerror or type(exc).__name__}")
+        parser.refuse(f"cannot read --spec: {exc.strerror or type(exc).__name__}")
     except (ValueError, RecursionError) as exc:
-        parser.error(_scrub(str(exc), [args.spec, *inputs.values(), *(p.partition("=")[2] for p in args.input)]))
+        parser.refuse(_scrub(str(exc), [args.spec, *inputs.values(), *(p.partition("=")[2] for p in args.input)]))
     ok = ready(report)
     if args.json:
         print(json.dumps({"gate_id": spec["gate_id"], "ready": ok, "inputs": report}, indent=2))

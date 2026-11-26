@@ -329,6 +329,57 @@ class CliTests(InputFixture):
         self.assertIn("cannot use <path>", err)
         self.assertNotIn(marker, err)
 
+    def test_c4_option_typo_and_other_parse_errors_echo_no_value(self):
+        """RETURN t_455fcda9 (1): argparse quoted the unrecognized argument, path included."""
+        marker = "private-marker"
+        leaky = f"copy={self.root / marker / 'copy.bin'}"
+        spec = gate_spec("s8-units")
+        for args in (("--imput", leaky), (f"--imput={leaky}",), ("--input", leaky, "--jsn"),
+                     ("--input",), (leaky,)):
+            with self.subTest(args=args):
+                code, out, err = self.run_cli(spec, *args)
+                self.assertEqual((code, out), (2, ""))
+                self.assertIn("error: invalid command line", err)
+                for leaked in (marker, str(self.root), "copy.bin"):
+                    self.assertNotIn(leaked, err)
+        # Missing --spec still exits 2 and says nothing path-like either.
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as err, \
+                self.assertRaises(SystemExit) as raised:
+            inputs.main(["--input", leaky])
+        self.assertEqual(raised.exception.code, 2)
+        self.assertNotIn(marker, err.getvalue())
+        # The earlier sanitized diagnostics keep their own text (missing-spec protection preserved).
+        code, out, err = self.run_cli(spec, "--input", "noequals")
+        self.assertEqual((code, out), (2, ""))
+        self.assertIn("--input requires a distinct NAME=PATH", err)
+
+    def test_c3_control_characters_in_names_and_hints_stay_on_one_line(self):
+        """RETURN t_455fcda9 (2): one text line per input even for names with line breaks."""
+        good = self.root / "good"
+        good.write_bytes(b"x")
+        odd = "co\npy"
+        spec = one({**CheckStateTests.PRESENT, "input": odd, "label": "odd"})
+        for extra, hint_name in (("cop\ry", odd), ("zz\u2028top", None), ("tab\tname", None)):
+            with self.subTest(extra=extra):
+                code, out, err = self.run_cli(spec, "--input", f"{odd}={good}", "--input", f"{extra}={good}")
+                self.assertEqual((code, err), (1, ""))
+                lines = out.split("\n")
+                self.assertEqual(lines[-1], "")
+                self.assertEqual(len(lines[:-1]), 2, out)
+                self.assertEqual(lines[0], 'co\\npy file: MAPPED_OK (used by "odd")')
+                self.assertTrue(lines[1].startswith(ascii(extra)[1:-1] + " unused: UNUSED"), lines[1])
+                if hint_name:
+                    self.assertTrue(lines[1].endswith("(closest required name: co\\npy)"), lines[1])
+                self.assertTrue(all(ch.isprintable() for line in lines for ch in line))
+                # JSON keeps the exact values; matching is unchanged.
+                code, out, _ = self.run_cli(spec, "--input", f"{odd}={good}", "--input", f"{extra}={good}", "--json")
+                report = json.loads(out)["inputs"]
+                self.assertEqual(report[odd]["state"], "MAPPED_OK")
+                self.assertEqual(report[extra], {"state": "UNUSED", "hint": hint_name})
+        # Positive control: an ordinary name prints unchanged.
+        code, out, err = self.run_cli(one(CheckStateTests.PRESENT), "--input", f"copy={good}")
+        self.assertEqual((code, out, err), (0, 'copy file: MAPPED_OK (used by "copy")\n', ""))
+
     def test_c4_output_names_and_states_only(self):
         """C4: neither contents, digests nor paths reach stdout or stderr, in text or JSON form."""
         gate_id = "s6a-trust-mount"
