@@ -139,6 +139,59 @@ class AccessSweepEvidenceTests(unittest.TestCase):
                 text = "\n".join([lines[0], bent, *lines[2:]]) + "\n"
                 self.assertEqual(refusal(blob(text)), "ACCESS_SWEEP_BAD_TRANSCRIPT")
 
+    def test_c5_ok_line_matches_the_sweeps_own_judge(self):
+        """C5: An `ok` line is accepted exactly when console_edge_smoke.judge can print `ok` for that line's probe
+        scheme, status and host column (the oracle is the sweep's own judge, never a copied rule)."""
+        lines = lines_of(sweep())
+        https_at = 1
+        http_at = next(i for i, line in enumerate(lines) if " http://" in line)
+        access = "team" + console_edge_smoke.ACCESS_SUFFIX
+        statuses = (200, 204, 301, 302, 303, 307, 308, 400, 401, 403, 404, 500)
+        for at, scheme in ((https_at, "https"), (http_at, "http")):
+            method, shown = lines[at].split(" ")[:2]
+            path = shown if scheme == "https" else shown[len("http://" + HOST):]
+            locations = (None, f"https://{access}/x", f"http://{access}/x", f"https://{HOST}{path}",
+                         f"https://{HOST}/elsewhere", f"http://{HOST}{path}", "https://other.example/",
+                         "https://[::1]/", "https://[2001:db8::1]:8443/x", "https://[::1/")
+            seen, can_ok = set(), set()
+            for status in statuses:
+                for location in (*locations, "repeated"):
+                    if location == "repeated":
+                        headers = [("location", f"https://{access}/x"), ("location", f"https://{access}/y")]
+                    else:
+                        headers = [("location", location)] if location else []
+                    column = (str(status), console_edge_smoke._location(headers)[1] or "-")
+                    seen.add(column)
+                    if console_edge_smoke.judge("access", HOST, scheme, path, status, headers) == "ok":
+                        can_ok.add(column)
+            self.assertIn(("302", access), can_ok)
+            self.assertIn(("403", "::1"), can_ok)
+            self.assertEqual(("301", HOST) in can_ok, scheme == "http")
+            for status, host in sorted(seen):
+                with self.subTest(scheme=scheme, status=status, host=host):
+                    bent = f"{method} {shown} {status} {host} ok"
+                    raw = blob("\n".join([*lines[:at], bent, *lines[at + 1:]]) + "\n")
+                    if (status, host) in can_ok:
+                        self.assertEqual(adapter.records(raw, OBSERVED, NOW), expected(raw))
+                    else:
+                        self.assertEqual(refusal(raw), "ACCESS_SWEEP_BAD_TRANSCRIPT")
+
+    def test_c5_https_probe_redirect_ok_is_refused(self):
+        """C5 (t_0b3a427d): the sweep prints FAIL for 301/307/308 on an https probe, so such an `ok` line is refused,
+        whatever the host; 302/303 `ok` needs an Access host and `?`/`-` hosts never pass a redirect."""
+        lines = lines_of(sweep())
+        method_path = lines[1].split(" ", 2)[:2]
+        access = "team" + console_edge_smoke.ACCESS_SUFFIX
+        for tail in (f"301 {access} ok", f"307 {access} ok", f"308 {access} ok", f"301 {HOST} ok", f"308 {HOST} ok",
+                     f"302 {HOST} ok", f"303 {HOST} ok", "302 ? ok", "302 - ok", "301 - ok"):
+            with self.subTest(tail=tail):
+                text = "\n".join([lines[0], " ".join([*method_path, tail]), *lines[2:]]) + "\n"
+                self.assertEqual(refusal(blob(text)), "ACCESS_SWEEP_BAD_TRANSCRIPT")
+        for tail in (f"302 {access} ok", f"303 {access} ok"):
+            with self.subTest(tail=tail):
+                text = "\n".join([lines[0], " ".join([*method_path, tail]), *lines[2:]]) + "\n"
+                self.assertEqual(adapter.records(blob(text), OBSERVED, NOW)["result"], "pass")
+
     def test_c2_truncated_transcript_with_pass_footer_is_refused(self):
         """C2: Any probe line dropped, or one extra, under a pasted `PASS` footer is a count refusal."""
         lines = lines_of(sweep())

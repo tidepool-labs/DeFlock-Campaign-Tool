@@ -24,17 +24,15 @@ _ACCESS_HEADER = "ACCESS CHECK"
 _ISOLATION_HEADER = "ISOLATION CHECK (not an Access check)"
 # The location-host column is `urlsplit(Location).hostname` verbatim (`-` when absent, `?` when malformed). A
 # recorded FAIL may print any host text (an IPv6 literal such as `::1`, even one with a space), so a FAIL line takes
-# any non-control text there. The sweep marks a 401/403 refusal `ok` whatever its Location says (see
-# console_edge_smoke._refused_by_access), so such a line may print any host text too, IPv6 literals included. Every
-# other `ok` line is a redirect that the sweep accepted only for an Access host or the console's own host, so it keeps
-# the strict host grammar: widened text on a redirect `ok` line is malformed and must never become a pass. An `ok`
-# line with an error or any other status is one the sweep never prints, and is refused. The adapter never fetches
-# or follows that value, and the row carries codes only.
+# any non-control text there. An `ok` line is accepted only when the sweep's own access-mode rule
+# (console_edge_smoke.judge / _refused_by_access) can print `ok` for that probe scheme, status and host column; see
+# _ok_possible. Anything else is a line the sweep never prints, and is refused. The adapter never fetches or follows
+# that value, and the row carries codes only.
 _PROBE = re.compile(
     r"(GET|HEAD|OPTIONS|POST) ([!-~]+) ([0-9]{3}|ERR:[A-Za-z0-9_]+) ([^\x00-\x1f\x7f]+?) (ok|FAIL)")
-_OK_HOST = re.compile(r"[A-Za-z0-9._-]+|\?")
 _OK_REFUSED = frozenset({"401", "403"})
-_OK_REDIRECT = frozenset({"301", "302", "303", "307", "308"})
+_OK_ACCESS_REDIRECT = frozenset({"302", "303"})
+_OK_UPGRADE_REDIRECT = frozenset({"301", "302", "307", "308"})
 _FOOTER_FAIL = re.compile(r"FAIL ([1-9][0-9]*) probes")
 
 
@@ -49,6 +47,24 @@ class AccessSweepRefused(ValueError):
 def _shown(scheme, path):
     """Pattern for the path column the checked-out sweep prints for one probe."""
     return re.escape(path) if scheme == "https" else r"http://[a-z0-9.-]+" + re.escape(path)
+
+
+def _ok_possible(scheme, path, shown, status, host):
+    """True when the checked-out sweep can print `ok` for this probe line in access mode.
+
+    It mirrors console_edge_smoke.judge over what a transcript line shows (probe scheme, status, location-host
+    column): a 401/403 refusal with any Location; a 302/303 whose Location host ends with the Access suffix (the sweep
+    also requires an https Location, which the line does not show); and, for a plain http probe only, a
+    301/302/307/308 to the console's own host (the host printed in the http:// path column; the sweep also requires
+    an https Location with the same path). Every other status, including errors and 301/307/308 on an https probe,
+    is FAIL in the sweep. tests/records/test_golive_adapt_access.py checks this against judge() itself."""
+    if status in _OK_REFUSED:
+        return True
+    if status in _OK_ACCESS_REDIRECT and host.endswith(console_edge_smoke.ACCESS_SUFFIX):
+        return True
+    if scheme != "http" or status not in _OK_UPGRADE_REDIRECT:
+        return False
+    return host == shown[len("http://"):len(shown) - len(path)]
 
 
 def _judge(text):
@@ -75,8 +91,7 @@ def _judge(text):
         if match.group(1) != method or not re.fullmatch(_shown(scheme, path), match.group(2)):
             raise AccessSweepRefused("ACCESS_SWEEP_PROBE_SET")
         status, host, verdict = match.group(3), match.group(4), match.group(5)
-        if verdict == "ok" and status not in _OK_REFUSED and not (
-                status in _OK_REDIRECT and _OK_HOST.fullmatch(host)):
+        if verdict == "ok" and not _ok_possible(scheme, path, match.group(2), status, host):
             raise AccessSweepRefused("ACCESS_SWEEP_BAD_TRANSCRIPT")
         failures += verdict == "FAIL"
     if footer_fail and int(footer_fail.group(1)) != failures:
