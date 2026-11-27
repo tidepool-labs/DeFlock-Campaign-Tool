@@ -91,7 +91,11 @@ class MappedReportedTests(unittest.TestCase):
         agency = self.agencies[index]
         agency.update(verified=True, verification={"source_url": "https://example.invalid/contact", "checked_on": "2026-01-15"},
                       flock_transparency_slug=slug)
-        agency["profile"] = {**agency.get("profile", {}), "transparency": snapshots}
+        profile = agency.setdefault("profile", {})
+        if snapshots is None:
+            profile.pop("transparency", None)
+        else:
+            profile["transparency"] = snapshots
 
     def snap(self, cameras, checked=CHECKED):
         return {"checked_on": checked, "source_url": URL, "cameras": cameras}
@@ -146,16 +150,16 @@ class MappedReportedTests(unittest.TestCase):
 
     def test_newest_only_and_missing_is_not_zero(self):
         older = self.snap(50, "2025-11-15")
-        cases = {"newest null with an older count": [{**self.snap(None), "cameras": None}, older],
+        cases = {"newest null with an older count": [self.snap(None), older],
                  "no snapshot": None,
+                 "empty snapshot list": [],
                  "snapshot without a camera key": [{"checked_on": CHECKED, "source_url": URL, "retention_days": 30}]}
         for label, snapshots in cases.items():
             with self.subTest(label):
-                self.agencies = json.loads(self.agencies_path.read_text())
-                if snapshots is not None:
-                    self.portal(snapshots)
+                self.portal(snapshots)
                 self.assertEqual(self.section(self.build()), "")
         self.portal([self.snap(7)])
+        self.assertEqual(paragraph_texts(self.section(self.build())), [sentences(7, CHECKED, 3, MAP_DAY), CAVEAT])
         self.set_map(3, name="Pine")  # a boundary exists, but none named for this city: missing is not zero
         self.assertEqual(self.section(self.build()), "")
         shutil.rmtree(self.map_dir)  # no map at all
@@ -213,21 +217,14 @@ class MappedReportedTests(unittest.TestCase):
         self.assertEqual({p.name for p in self.public.rglob("*")}, before)
 
     def test_cards_and_ineligible_bytes_unchanged(self):
-        real = Site.agency_mapped_reported_block
         off = lambda self, agency: ""  # noqa: E731
         variants = {"no snapshot": None, "null cameras": [self.snap(None)], "newest null": [self.snap(None), self.snap(5, "2025-11-15")]}
         for label, snapshots in variants.items():
             with self.subTest(label):
-                self.agencies = json.loads(self.agencies_path.read_text())
-                if snapshots is not None:
-                    self.portal(snapshots)
+                self.portal(snapshots)
                 with mock.patch.object(Site, "agency_mapped_reported_block", off):
                     disabled = self.build()
-                with mock.patch.object(Site, "agency_mapped_reported_block", real):
-                    enabled = self.build()
-                self.assertEqual(sorted(disabled), sorted(enabled))
-                self.assertEqual([p for p in enabled if enabled[p] != disabled[p]], [])
-        self.agencies = json.loads(self.agencies_path.read_text())
+                self.assertEqual(self.build(), disabled)
         self.portal([self.snap(4242)])
         with mock.patch.object(Site, "agency_mapped_reported_block", off):
             disabled = self.build()
