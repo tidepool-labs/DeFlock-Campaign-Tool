@@ -583,8 +583,11 @@ counted from the very rows shown, and a seventh count for `no_records_stated` on
 public requests are listed yet." after the zero counts and shows no table. **What the states mean (DF1125-08).** After the
 note, a page with rows lists each state that appears in its rows once, in the same state order as the counts, as a heading
 "What the states mean" and a definition list: the state word, then one fixed sentence saying what that state does and does
-not establish (awaiting response is not a statement that an answer is late; partly answered and answered are the agency's
-statement that it responded, and we have not necessarily checked that every record asked for was produced; declined in
+not establish (awaiting response is not a statement that an answer is late; acknowledged, partly answered and answered
+describe what we recorded, never a statement attributed to the agency: acknowledged is at least one recorded step such as
+a receipt, an extension or a fee estimate with no records produced yet, partly answered is records produced but not every
+part answered in full, answered is records produced and an answer for every listed part, possibly across several
+productions, and for both we have not necessarily checked that every record asked for was produced; declined in
 writing is the refusal as recorded, not a judgement of whether it was lawful; withdrawn means we withdrew it; no responsive
 records stated is the agency's statement, not proof that none exist). The sentences never use the agency's words, pass the
 legal-claim guard, and are the labels `requests.meaning_heading` and `requests.meaning_<state>`; a page with no rows has no

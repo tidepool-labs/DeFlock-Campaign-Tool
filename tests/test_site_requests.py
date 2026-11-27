@@ -328,8 +328,17 @@ class SiteRequestsTests(unittest.TestCase):
                          ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Declined in writing",
                           "Withdrawn", "No responsive records stated"])  # page order, not input order
         said = dict((html.unescape(t), html.unescape(s)) for t, s in meanings)
-        self.assertEqual(said["Answered"], "The agency says it has responded in full. "
+        self.assertEqual(said["Answered"], "We have recorded records produced and an answer for every part of the request "
+                                           "we listed (records produced or no responsive records stated), possibly across "
+                                           "several productions. "
                                            "We have not necessarily checked that every record we asked for was produced.")
+        # the derived states describe what we recorded, never a statement attributed to the agency (kit_asked.state_of
+        # derives them from produced/scope steps, possibly across productions, or from any step such as a fee estimate)
+        for state in ("Acknowledged", "Partly answered", "Answered"):
+            self.assertTrue(said[state].startswith("We have recorded "), state)
+            self.assertNotIn("The agency", said[state], state)
+        self.assertIn("not necessarily checked that every record", said["Partly answered"])
+        self.assertIn("no records produced yet", said["Acknowledged"])
         self.assertIn("not a judgement of whether the refusal was lawful", said["Declined in writing"])
         self.assertIn("not proof that none exist", said["No responsive records stated"])
         self.assertIn("This does not say an answer is late.", said["Awaiting response"])

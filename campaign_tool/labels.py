@@ -281,10 +281,15 @@ DEFAULTS = {
     "requests.meaning_heading": "What the states mean",
     "requests.meaning_awaiting_response": ("We have sent the request and have not recorded a reply. "
                                            "This does not say an answer is late."),
-    "requests.meaning_acknowledged": "The agency told us it received the request.",
-    "requests.meaning_partly_answered": ("The agency says it has responded in part. "
+    # what the campaign recorded (kit_asked.state_of), never a statement attributed to the agency
+    "requests.meaning_acknowledged": ("We have recorded at least one step on the request since sending it, such as a "
+                                      "receipt, an extension or a fee estimate, but no records produced yet."),
+    "requests.meaning_partly_answered": ("We have recorded that records were produced, but not that every part of the "
+                                         "request was answered in full. "
                                          "We have not necessarily checked that every record we asked for was produced."),
-    "requests.meaning_answered": ("The agency says it has responded in full. "
+    "requests.meaning_answered": ("We have recorded records produced and an answer for every part of the request we "
+                                  "listed (records produced or no responsive records stated), possibly across several "
+                                  "productions. "
                                   "We have not necessarily checked that every record we asked for was produced."),
     "requests.meaning_declined_in_writing": ("The agency refused in writing, as we recorded it. "
                                              "This is not a judgement of whether the refusal was lawful."),
