@@ -596,9 +596,6 @@ class TimelineTests(unittest.TestCase):
         # DF1109-08: the packet now also states the finding's Updates and counterevidence; assert and strip exactly those.
         self.assertEqual(other[PACKET].count(PACKET_UPDATES), 1)
         other[PACKET] = strip_packet_counterevidence(self, PACKET, other[PACKET].replace(PACKET_UPDATES, b"", 1))
-        # DF1125-08: requests.html now lists "What the states mean" for its one answered row; assert and strip exactly that.
-        other["requests.html"], meanings = REQUEST_MEANINGS.subn(b"", other["requests.html"])
-        self.assertEqual(meanings, 1)
         self.assertEqual(digest(other), MAIN_POPULATED_OTHER_DIGEST)
         self.assertNotEqual(populated["timeline.html"], new["timeline.html"])
         sentinel = "SYNTHETIC-PRIVATE-SENTINEL-DO-NOT-PUBLISH"
@@ -608,8 +605,6 @@ class TimelineTests(unittest.TestCase):
 
 
 # DF1109-07 pins: sha256 over sorted (path, bytes) of builds made with the pre-change timeline.py (main 45551bd9).
-# DF1125-08: the populated pin predates the requests.html "What the states mean" block, stripped by REQUEST_MEANINGS.
-REQUEST_MEANINGS = re.compile(rb"<h3>What the states mean</h3><dl>(?:<dt>[^<]*</dt><dd>[^<]*</dd>)+</dl>")
 MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f6295bf55abc"  # pragma: allowlist secret -- public rendered-file SHA-256
 # DF1109-10: the populated build now writes data/officials.*, so data.html and data/datapackage.json list them (main pin 7bd8a5ce).
 # DF1109-09 recaptured MAIN_POPULATED_OTHER_DIGEST on top of that: its tree holds search.html/search.js, which now also search agencies and meetings.

@@ -16,7 +16,7 @@ from campaign_tool.cli import read_config
 from campaign_tool.content import ASKED_STATES, ContentError, load_content
 from campaign_tool.labels import DEFAULTS
 from campaign_tool.legal_claims import legal_advisories, legal_claims
-from campaign_tool.site import REQUESTS_FILTER_CSS, Site, asked_sentence, build_site, preview_site
+from campaign_tool.site import MEANING_STATES, REQUESTS_FILTER_CSS, Site, asked_sentence, build_site, preview_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
@@ -325,52 +325,40 @@ class SiteRequestsTests(unittest.TestCase):
         self.build()
         meanings = self.meanings()
         self.assertEqual([html.unescape(term) for term, _ in meanings],
-                         ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Declined in writing",
-                          "Withdrawn", "No responsive records stated"])  # page order, not input order
+                         ["Awaiting response", "Declined in writing", "Withdrawn",
+                          "No responsive records stated"])  # page order, not input order; no derived state
         said = dict((html.unescape(t), html.unescape(s)) for t, s in meanings)
-        self.assertEqual(said["Answered"], "We have recorded an answer to every part of the request, whether records, a "
-                                           "statement that there are none or another reply. "
-                                           "We have not necessarily checked that every record we asked for was produced.")
-        # the derived states say only the category we recorded and what we have not recorded, never an agency statement
-        for state in ("Acknowledged", "Partly answered", "Answered"):
-            self.assertTrue(said[state].startswith("We have recorded "), state)
-            self.assertNotIn("The agency", said[state], state)
-        self.assertIn("not necessarily checked that every record", said["Partly answered"])
-        self.assertIn("but not that any records were produced", said["Acknowledged"])
         self.assertIn("not a judgement of whether the refusal was lawful", said["Declined in writing"])
         self.assertIn("not proof that none exist", said["No responsive records stated"])
         self.assertIn("This does not say an answer is late.", said["Awaiting response"])
-        # a subset lists only the states in the table, still in page order; duplicates list a state once
+        self.assertEqual(said["Withdrawn"], "We withdrew the request.")
+        # a subset lists only the defined states in the table, still in page order; duplicates list a state once
         self.asked(MIXED)
         self.build()
-        self.assertEqual([html.unescape(t) for t, _ in self.meanings()],
-                         ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Withdrawn"])
-        self.asked({SHERIFF: [item("One", "2026-10-01", "answered")]})
-        self.build()
-        self.assertEqual([t for t, _ in self.meanings()], ["Answered"])
+        self.assertEqual([html.unescape(t) for t, _ in self.meanings()], ["Awaiting response", "Withdrawn"])
 
-    def test_state_meanings_hold_for_organizer_entered_states(self):  # DF1125-08 r2
-        # Organizer-entered rows carry the state alone (no tracker link, no steps): e.g. "answered" where the agency sent an
-        # explanation and no records. The list is chosen from the public state only, so its words for the derived states
-        # may not claim that records were produced, several productions, or anything the agency said.
-        rows = [item("Explained, no records", "2026-10-01", "answered"), item("Some", "2026-10-02", "partly_answered"),
-                item("Receipt", "2026-10-03", "acknowledged")]
+    def test_derived_states_have_no_meaning(self):  # DF1125-08 fallback after three returns (dossier)
+        # The list is chosen from asked[].state alone. An organizer-entered row (no tracker link) carries nothing but the
+        # state: e.g. "answered" for a two-part request whose reply addressed only one part. No fixed sentence for
+        # acknowledged / partly answered / answered is true on that path, so none is shown, in English or the draft Spanish.
+        rows = [item("Policy and fee schedule (reply explained the fee schedule only)", "2026-10-01", "answered"),
+                item("Some", "2026-10-02", "partly_answered"), item("Receipt", "2026-10-03", "acknowledged")]
         self.assertFalse(any("request" in row for row in rows))  # not linked to a tracked request
         self.asked({POLICE: rows})
         self.build()
-        said = dict((html.unescape(t), html.unescape(s)) for t, s in self.meanings())
-        self.assertEqual(sorted(said), ["Acknowledged", "Answered", "Partly answered"])
-        for state, sentence in said.items():
-            claim = sentence.split(". ")[0]  # the caveat sentence after it is a negative statement
-            self.assertEqual(claim.count("records were produced"), claim.count("not that any records were produced"), state)
-            for phrase in ("records produced", "productions", "The agency", "agency said", "we listed"):
-                self.assertNotIn(phrase, claim, state)
-        self.assertIn("another reply", said["Answered"])  # an explanation without records is still described truthfully
-        self.assertIn("not necessarily checked that every record", said["Answered"])
+        page = self.read("requests.html")
+        self.assertEqual(self.meanings(), [])
+        self.assertNotIn("What the states mean", page)
+        self.assertNotIn("<dl>", page)
+        self.assertNotIn("every part", page)
+        rows.append(item("Gone", "2026-10-04", "withdrawn"))  # a defined state alongside them lists that state alone
+        self.asked({POLICE: rows})
+        self.build()
+        self.assertEqual([t for t, _ in self.meanings()], ["Withdrawn"])
         es = json.loads((REPO_ROOT / "examples" / "labels" / "es.json").read_text(encoding="utf-8"))["labels"]
-        for key in ("requests.meaning_acknowledged", "requests.meaning_partly_answered", "requests.meaning_answered"):
-            self.assertNotIn("entregaron registros", es[key])  # the draft Spanish makes no production claim either
-            self.assertNotIn("registros entregados", es[key])
+        for state in ("acknowledged", "partly_answered", "answered"):
+            self.assertNotIn(f"requests.meaning_{state}", DEFAULTS)
+            self.assertNotIn(f"requests.meaning_{state}", es)
 
     def test_no_rows_no_meanings_and_page_otherwise_unchanged(self):  # DF1125-08
         self.asked({})
@@ -389,17 +377,18 @@ class SiteRequestsTests(unittest.TestCase):
         self.assertEqual(site.requests_html()["html"], with_list.replace(block, ""))
 
     def test_state_meanings_follow_labels(self):  # DF1125-08
-        labels = {"requests.meaning_heading": 'States & "words"', "requests.meaning_answered": "Says & done.",
-                  "requests.state_answered": "Done"}
+        labels = {"requests.meaning_heading": 'States & "words"', "requests.meaning_withdrawn": "Says & done.",
+                  "requests.state_withdrawn": "Done"}
         (self.content / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": labels}), encoding="utf-8")
-        self.asked({POLICE: [item("Plain", "2026-10-01", "answered")]})
+        self.asked({POLICE: [item("Plain", "2026-10-01", "withdrawn")]})
         self.build()
         page = self.read("requests.html")
         self.assertIn('<h3>States &amp; &quot;words&quot;</h3><dl><dt>Done</dt><dd>Says &amp; done.</dd></dl>', page)
         self.assertNotIn("What the states mean", page)
 
     def test_state_meanings_pass_the_wording_guards(self):  # DF1125-08
-        keys = ["requests.meaning_heading"] + [f"requests.meaning_{state}" for state in ASKED_STATES]
+        keys = ["requests.meaning_heading"] + [f"requests.meaning_{state}" for state in MEANING_STATES]
+        self.assertTrue(set(MEANING_STATES) <= set(ASKED_STATES))
         self.assertEqual(sorted(k for k in DEFAULTS if k.startswith("requests.meaning_")), sorted(keys))
         for key in keys:
             self.assertEqual(legal_claims(DEFAULTS[key]), [], key)

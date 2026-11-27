@@ -581,19 +581,16 @@ asked date or today's date. The lead gives the number of rows and a count for ea
 `awaiting_response`, `acknowledged`, `partly_answered`, `answered`, `declined_in_writing`, `withdrawn` (zero counts included),
 counted from the very rows shown, and a seventh count for `no_records_stated` only when at least one row uses it; no state is inferred and nothing says a response is late. With no rows the page says "No
 public requests are listed yet." after the zero counts and shows no table. **What the states mean (DF1125-08).** After the
-note, a page with rows lists each state that appears in its rows once, in the same state order as the counts, as a heading
+note, a page lists each of four states that appears in its rows once, in the same state order as the counts, as a heading
 "What the states mean" and a definition list: the state word, then one fixed sentence saying what that state does and does
-not establish (awaiting response is not a statement that an answer is late; acknowledged, partly answered and answered
-say only which category we recorded and what we have not recorded, because the list is chosen from `asked[].state` alone
-and the same words must hold for a tracker-derived state and for an organizer-entered one: never a statement attributed to
-the agency and never a claim that records were produced. Acknowledged is some recorded progress such as a receipt, an
-extension or a fee estimate, but not that any records were produced; partly answered is a recorded partial answer, but not
-that every part was answered in full; answered is a recorded answer to every part, whether records, a statement that
-there are none or another reply; for both we have not necessarily checked that every record asked for was produced; declined in
-writing is the refusal as recorded, not a judgement of whether it was lawful; withdrawn means we withdrew it; no responsive
-records stated is the agency's statement, not proof that none exist). The sentences never use the agency's words, pass the
-legal-claim guard, and are the labels `requests.meaning_heading` and `requests.meaning_<state>`; a page with no rows has no
-list and is otherwise byte-identical to before. It reuses the `.glance-table` markup, so rows
+not establish (awaiting response is not a statement that an answer is late; declined in writing is the refusal as
+recorded, not a judgement of whether it was lawful; withdrawn means we withdrew it; no responsive records stated is the
+agency's statement, not proof that none exist). Acknowledged, partly answered and answered get no sentence
+(`site.MEANING_STATES`): the list is chosen from `asked[].state` alone, and an organizer-entered row carries only the state,
+with no record of what was produced or which parts were answered, so no fixed sentence about those three is true on every
+path. The sentences never use the agency's words, pass the legal-claim guard, and are the labels
+`requests.meaning_heading` and `requests.meaning_<state>`; a page with none of the four states (including a page with no
+rows) has no list and is otherwise byte-identical to before. It reuses the `.glance-table` markup, so rows
 stack on phones with each cell's header, and adds no CSP rule (a script, style and asset only with the filter below). It is linked as "What we have
 asked for" in the footer between the findings feed and Corrections (on every page), is listed once in `sitemap.xml` (with
 `base_url`, no `lastmod`), `requests.html` is a generated path (`public-assets/requests.html` is refused) and `requests` is a

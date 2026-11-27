@@ -330,9 +330,8 @@ class LabelsTest(unittest.TestCase):
                   "requests.fee_status_waived", "requests.no_records_sentence", "requests.no_records_sentence_dated",
                   "requests.state_no_records_stated", "requests.withheld_sections",
                   # DF1125-08: the fixture lists no asked items, so no state meaning renders (tests/test_site_requests.py)
-                  "requests.meaning_acknowledged", "requests.meaning_answered", "requests.meaning_awaiting_response",
-                  "requests.meaning_declined_in_writing", "requests.meaning_heading", "requests.meaning_no_records_stated",
-                  "requests.meaning_partly_answered", "requests.meaning_withdrawn",
+                  "requests.meaning_awaiting_response", "requests.meaning_declined_in_writing", "requests.meaning_heading",
+                  "requests.meaning_no_records_stated", "requests.meaning_withdrawn",
 
                   "schedule.join_many", "schedule.join_two", "schedule.ordinal_1", "schedule.ordinal_2",
                   "schedule.ordinal_3", "schedule.ordinal_4", "schedule.ordinal_last", "schedule.rule",

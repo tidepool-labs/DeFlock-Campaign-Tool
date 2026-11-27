@@ -56,6 +56,9 @@ VENDOR_MAX_BYTES = 4 * 1024 * 1024
 SOURCES_FILTER_ASSET = Path(__file__).parent / "assets" / "sources-filter.js.tmpl"  # DF1103-12
 MEETINGS_FILTER_ASSET = Path(__file__).parent / "assets" / "meetings-filter.js.tmpl"  # DF1622-09
 REQUESTS_FILTER_ASSET = Path(__file__).parent / "assets" / "requests-filter.js.tmpl"  # DF1622-08
+# DF1125-08: the states whose word alone says what we recorded. Acknowledged, partly answered and answered are left out:
+# the list is chosen from asked[].state, and an organizer-entered row has no part-level or production facts behind it.
+MEANING_STATES = ("awaiting_response", "declined_in_writing", "withdrawn", "no_records_stated")
 # Appended to style.css only with the requests filter: the mobile table rule makes rows display:block, so [hidden] needs help.
 REQUESTS_FILTER_CSS = ("#requests-table tbody tr[hidden]{display:none}\n"
                        "@media print{#requests-table tbody tr[hidden]{display:table-row!important}}\n")
@@ -1639,8 +1642,8 @@ class Site:
         return REQUESTS_FILTER_ASSET.read_text(encoding="utf-8")
 
     def requests_meanings(self, states):
-        """DF1125-08: one fixed sentence per request state shown on the page, in ASKED_STATES order; "" with no rows."""
-        shown = [state for state in ASKED_STATES if state in states]
+        """DF1125-08: one fixed sentence per MEANING_STATES state shown on the page, in ASKED_STATES order; "" if none."""
+        shown = [state for state in ASKED_STATES if state in states and state in MEANING_STATES]
         if not shown:
             return ""
         return (f'<h3>{self.t("requests.meaning_heading")}</h3><dl>'
