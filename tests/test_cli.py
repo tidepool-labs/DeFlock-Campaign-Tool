@@ -421,7 +421,6 @@ class StatementCommandCLITests(unittest.TestCase):
     """DF1109-13: the real parser and dispatch of statement add|remove|list (exit codes, exact stdout, no echo)."""
 
     def setUp(self):
-        import shutil
         from datetime import date, timedelta
         temporary = tempfile.TemporaryDirectory(prefix="synthetic-statement-cli-")
         self.addCleanup(temporary.cleanup)
