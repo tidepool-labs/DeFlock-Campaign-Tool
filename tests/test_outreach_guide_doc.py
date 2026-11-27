@@ -12,6 +12,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -235,6 +236,65 @@ class OutreachGuideTests(unittest.TestCase):
             self.assertEqual(code, 2, refused)
             self.assertIn("cannot be combined with", out + err)
         self.assertEqual(tree(self.root), settled)  # refused combinations write nothing
+
+    def test_check_boundaries_the_guide_warns_about(self):
+        """DF1125-10 r1: the limits the guide states for press check, newsletter --check, flyer --event and --finding."""
+        text = read(GUIDE)
+        # platform drafts cannot be narrowed by --finding
+        code, out, err = self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky",
+                                                            "--finding", "$FINDING_ID"])
+        self.assertEqual(code, 2)
+        self.assertIn("--finding needs --thread", out + err)
+        self.assertIn("`--finding needs --thread`", text)
+        self.assertNotIn("Without `--finding`", text)
+        # an edited press copy without its draft header is `not checked`, exit 3
+        self.assertEqual(self.run_command("campaign_tool", ["press", "draft", "--directory", "$CAMPAIGN",
+                                                            "--finding", "$FINDING_ID"])[0], 0)
+        self.assertEqual(self.run_command("campaign_tool", ["press", "check", "--directory", "$CAMPAIGN"])[0], 0)
+        release = next((self.root / "kit/press").glob("*.md"))
+        edited = release.with_name(release.stem + "-edited.md")
+        edited.write_text(release.read_text(encoding="utf-8").split("\n", 1)[1], encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool", ["press", "check", "--directory", "$CAMPAIGN"])
+        self.assertEqual(code, 3)
+        self.assertIn(f"{edited.name}: not checked", out)
+        for promise in ("`not checked` means the tool could not check it", "Anything other than `ok` needs review by hand",
+                        "Even `ok` is not clearance to reuse a draft"):
+            self.assertIn(promise, text)
+        # newsletter --check does not look at campaign events: a changed venue and time still match
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        soon = now + timedelta(days=3)
+        events = self.root / "content" / "events.json"
+        row = {"id": "teach-in", "title": "Records teach-in", "starts_at": soon.isoformat(),
+               "ends_at": (soon + timedelta(hours=2)).isoformat(), "venue": "Cedar Library room 1",
+               "description_md": "A fictional teach-in."}
+        events.write_text(json.dumps([row]), encoding="utf-8")
+        newsletter = ["--directory", "$CAMPAIGN", "--from-content"]
+        result = self.run_command("campaign_tool.newsletter", newsletter)
+        self.assertEqual(result[0], 0, result)
+        draft = (self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")
+        self.assertIn("Cedar Library room 1", draft)
+        moved = soon + timedelta(hours=1)
+        row.update(venue="Cedar Town Hall", starts_at=moved.isoformat(), ends_at=(moved + timedelta(hours=2)).isoformat())
+        events.write_text(json.dumps([row]), encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertIn("Cedar Library room 1", (self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
+        self.assertIn("not campaign events", text)
+        self.assertIn("Check every event detail and the draft text yourself", text)
+        # flyer --event: the cutoff is 00:00 UTC today, so an event that already ended today still gets a flyer
+        midnight = now.replace(hour=0, minute=0, second=0)
+        row.update(id="earlier-today", starts_at=midnight.isoformat(), ends_at=(midnight + timedelta(seconds=1)).isoformat())
+        yesterday = dict(row, id="yesterday", starts_at=(midnight - timedelta(seconds=1)).isoformat())
+        events.write_text(json.dumps([row, yesterday]), encoding="utf-8")
+        flyer = ["flyer", "--directory", "$CAMPAIGN", "--event"]
+        self.assertEqual(self.run_command("campaign_tool", flyer + ["earlier-today"])[0], 0)
+        for suffix in (".html", ".txt"):
+            self.assertTrue((self.root / "kit/flyer" / f"event-earlier-today{suffix}").exists())
+        self.assertNotEqual(self.run_command("campaign_tool", flyer + ["yesterday"])[0], 0)
+        self.assertFalse((self.root / "kit/flyer/event-yesterday.txt").exists())
+        self.assertIn("one that starts before 00:00 UTC today is refused", text)
+        self.assertIn("Check that the event is still upcoming before you use the flyer", text)
 
     def test_refusal_and_edit_guidance_is_honest(self):
         social = ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky"]

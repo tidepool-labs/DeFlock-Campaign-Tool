@@ -39,7 +39,7 @@ python3 -m campaign_tool social --directory "$CAMPAIGN" --platform x --platform 
 
 Reference: [social drafts per platform](PUBLICATION.md#social-drafts-per-platform-never-posted) and [social drafts](PUBLICATION.md#social-drafts-never-posted). Each platform counts length its own way (X 280 weighted with links as 23, Bluesky 300 characters with the full link, Mastodon 500). Only the title is shortened. If a draft cannot fit, the whole run stops and names the platform. Drafts are in `kit/social/PLATFORM/`.
 
-- Without `--finding` this drafts **every** published finding, not just `ID`.
+- Platform drafts always cover **every** published finding, not just `ID`. `--finding` belongs to a thread (task 3): `social --platform bluesky --finding ID` without `--thread` is refused with `--finding needs --thread`.
 - A draft you edited is kept; the fresh text goes to `kit/social/PLATFORM.suggested/`. Stale drafts (finding no longer published) are listed, never deleted.
 - `social --directory D --check` (add `--text` for a report grouped by folder) reads every private draft folder it finds: `kit/social/`, each platform folder, the meeting, outcome, thread and event folders and their `.suggested` copies. It writes nothing and exits 3 on any problem. It also checks `kit/social/` itself, which only `social` without `--platform` fills, so a campaign that made only platform drafts sees each finding there as `missing`. `--check` cannot be combined with `--platform`, `--meetings`, `--outcomes`, `--events` or `--thread`. Reference: [checking every draft folder](PUBLICATION.md#checking-every-draft-folder-read-only).
 
@@ -97,7 +97,7 @@ Before you reuse an older release or letter, check it against the published find
 python3 -m campaign_tool press check --directory "$CAMPAIGN"
 ```
 
-It reads the drafts in `kit/press/`, `kit/press/letters/` and their `.suggested` folders and names each one `ok` or `stale` (for example a cited finding withdrawn, no longer published or corrected after the date in the file name, or a meeting named in a letter's closing cancelled or past). It rewrites, sends and publishes nothing.
+It reads the drafts in `kit/press/`, `kit/press/letters/` and their `.suggested` folders and gives each one a status. `stale` means, for example, a cited finding withdrawn, no longer published or corrected after the date in the file name, or a meeting named in a letter's closing cancelled or past. `not checked` means the tool could not check it: an ordinary edited copy whose first `<!-- DRAFT: ... -->` line was removed, an unrecognized letter closing, or finding or meeting files it cannot trust. A symlink, special file or unreadable file is named `not regular` or `unreadable`. It exits 0 only when every draft is `ok` and 3 otherwise. Anything other than `ok` needs review by hand. Even `ok` is not clearance to reuse a draft: it only means these checks passed (it does not notice a rescheduled meeting, a changed summary or a new finding the draft does not cite). It rewrites, sends and publishes nothing.
 
 ## 6. The flyer
 
@@ -105,7 +105,7 @@ It reads the drafts in `kit/press/`, `kit/press/letters/` and their `.suggested`
 python3 -m campaign_tool flyer --directory "$CAMPAIGN" --max-findings 3
 ```
 
-Reference: [campaign flyer](PUBLICATION.md#campaign-flyer-never-printed-or-posted). Output: `kit/flyer/flyer.html` and `flyer.txt`, not `public/`. An existing flyer is refused. Look at it first; `--replace` overwrites your edits and is not the edit-keeping protocol of the social drafts. For one upcoming campaign event instead, `flyer --directory "$CAMPAIGN" --event EVENT_ID` writes `kit/flyer/event-EVENT_ID.html` and `.txt` ([event flyer](PUBLICATION.md#event-flyer)); it cannot be combined with `--max-findings`, and an unknown or past event is refused. Printing and handing out are outside this guide.
+Reference: [campaign flyer](PUBLICATION.md#campaign-flyer-never-printed-or-posted). Output: `kit/flyer/flyer.html` and `flyer.txt`, not `public/`. An existing flyer is refused. Look at it first; `--replace` overwrites your edits and is not the edit-keeping protocol of the social drafts. For one upcoming campaign event instead, `flyer --directory "$CAMPAIGN" --event EVENT_ID` writes `kit/flyer/event-EVENT_ID.html` and `.txt` ([event flyer](PUBLICATION.md#event-flyer)); it cannot be combined with `--max-findings`, and an unknown event or one that starts before 00:00 UTC today is refused. That cutoff is the start of the current UTC day, not the current time (task 4 uses the current time, so there an event that has already started is past): an event that started, or even ended, earlier today in UTC still gets a flyer. Check that the event is still upcoming before you use the flyer. Printing and handing out are outside this guide.
 
 ## 7. The newsletter draft
 
@@ -115,7 +115,7 @@ python3 -m campaign_tool.newsletter --directory "$CAMPAIGN" --from-content
 
 Reference: [drafts](NEWSLETTER.md#drafts) and [offline sends](NEWSLETTER.md#offline-sends). Output: `kit/newsletter-draft.html`, `.txt` and `.json`. Read which findings were left out (a correction or the date window), every link, the unsubscribe placeholder and any meeting details, which must be verified. `--since YYYY-MM-DD` overrides the private last-send boundary. `--site PUBLIC_FOLDER` checks links only if that built folder already exists; it never shows that anything was delivered or published. Copy edits you want to keep somewhere private before you run it again. A draft run cannot be recorded as a sent issue, and this guide never records one.
 
-Before you reuse a draft made earlier, run `python3 -m campaign_tool.newsletter --directory "$CAMPAIGN" --check` to see whether it still matches the campaign's content ([draft provenance and `--check`](NEWSLETTER.md#draft-provenance-and---check-df1622-13)). It takes no other flag except `--json`, writes nothing, and compares findings, corrections and meetings only (not requests, records, the map or decisions). Exit 0 prints `draft matches current content ...`; exit 3 lists each difference with the command to rebuild. A draft made without `--from-content` cannot be checked and also exits 3.
+Before you reuse a draft made earlier, run `python3 -m campaign_tool.newsletter --directory "$CAMPAIGN" --check` to see whether it still matches the campaign's content ([draft provenance and `--check`](NEWSLETTER.md#draft-provenance-and---check-df1622-13)). It takes no other flag except `--json`, writes nothing, and compares findings, corrections and meetings only (not campaign events, requests, records, the map or decisions, even though the draft can list events). It is a limited provenance check: it does not read the rendered draft, so a changed event venue or time still prints the match line. Check every event detail and the draft text yourself before reuse. Exit 0 prints `draft matches current content ...`; exit 3 lists each difference with the command to rebuild. A draft made without `--from-content` cannot be checked and also exits 3.
 
 ## 8. The newsletter approval card (described, not run)
 
