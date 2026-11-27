@@ -15,11 +15,20 @@ from tests.test_site_requests import COUNCIL, EXAMPLE, MIXED, POLICE, SHERIFF, T
 MAIN_EMPTY_SHA = "030d63ca65230ea196fb2738f656e00f3e42ad7d38ac7df0289a167ec7e78eb4"  # pragma: allowlist secret - nonsecret page digest
 MAIN_ONE_SHA = "e42b856ac5cccc183f90ac5c286c86d4dbbc5874d4bbb881c3e953993b105472"  # pragma: allowlist secret - nonsecret page digest
 ONE = {POLICE: [item("Plain", "2026-10-01")]}
+# DF1125-08 adds exactly this "What the states mean" block to the ONE page; without it the page is still main's bytes.
+ONE_MEANINGS = ('<h3>What the states mean</h3><dl><dt>Awaiting response</dt><dd>We have sent the request and have not recorded a '
+                'reply. This does not say an answer is late.</dd></dl>')
 FORM = re.compile(r'<form class="sources-filter" id="requests-filter"[^>]*>')
 
 
 def sha(text):
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def without_meanings(page):
+    """The ONE page minus its single DF1125-08 block, to compare with the pre-filter main digest."""
+    assert page.count(ONE_MEANINGS) == 1, "the ONE page must carry the state-meaning block once"
+    return page.replace(ONE_MEANINGS, "")
 
 
 class RequestsFilterTests(unittest.TestCase):
@@ -54,7 +63,7 @@ class RequestsFilterTests(unittest.TestCase):
         self.assertEqual(sha(self.page(empty)), MAIN_EMPTY_SHA)
         self.assertNotIn("requests/filter.js", empty)
         one = self.build(ONE)
-        self.assertEqual(sha(self.page(one)), MAIN_ONE_SHA)
+        self.assertEqual(sha(without_meanings(self.page(one))), MAIN_ONE_SHA)
         self.assertNotIn("requests/filter.js", one)
         self.assertNotIn(b"requests-table", one["style.css"])
         self.assertNotIn("requests-filter", self.page(one))
@@ -137,7 +146,7 @@ class RequestsFilterTests(unittest.TestCase):
         for name in set(base) - {"requests.html"}:  # no other page, script or site-data.js sees these keys
             self.assertTrue(files[name] == base[name], name)
         disabled = self.build(ONE, labels)
-        self.assertEqual(sha(self.page(disabled)), MAIN_ONE_SHA)
+        self.assertEqual(sha(without_meanings(self.page(disabled))), MAIN_ONE_SHA)
         self.assertNotIn("requests/filter.js", disabled)
         with self.assertRaises(ContentError):
             self.build(MIXED, {"js.requests_count": "{shown} of {nope}"})

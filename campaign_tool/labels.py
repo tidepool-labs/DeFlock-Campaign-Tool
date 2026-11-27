@@ -277,6 +277,20 @@ DEFAULTS = {
     "requests.withheld_sections": "The agency cited Government Code sections {sections} when withholding records.",
     "requests.note": ("Each row is a request we have listed on an agency's page, in the state we last recorded. "
                       "This page does not say any response is late."),
+    # DF1125-08: "What the states mean", one fixed sentence per state shown on the page (never a legal conclusion)
+    "requests.meaning_heading": "What the states mean",
+    "requests.meaning_awaiting_response": ("We have sent the request and have not recorded a reply. "
+                                           "This does not say an answer is late."),
+    "requests.meaning_acknowledged": "The agency told us it received the request.",
+    "requests.meaning_partly_answered": ("The agency says it has responded in part. "
+                                         "We have not necessarily checked that every record we asked for was produced."),
+    "requests.meaning_answered": ("The agency says it has responded in full. "
+                                  "We have not necessarily checked that every record we asked for was produced."),
+    "requests.meaning_declined_in_writing": ("The agency refused in writing, as we recorded it. "
+                                             "This is not a judgement of whether the refusal was lawful."),
+    "requests.meaning_withdrawn": "We withdrew the request.",
+    "requests.meaning_no_records_stated": ("The agency stated it has no responsive records. "
+                                           "This is the agency's statement, not proof that none exist."),
     "requests.empty": "No public requests are listed yet.",
     "requests.caption": "Every public request across agencies, newest first",
     "requests.col_agency": "Agency", "requests.col_topic": "Topic", "requests.col_asked_on": "Asked on",

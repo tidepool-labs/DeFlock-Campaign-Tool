@@ -14,6 +14,8 @@ from unittest import mock
 
 from campaign_tool.cli import read_config
 from campaign_tool.content import ASKED_STATES, ContentError, load_content
+from campaign_tool.labels import DEFAULTS
+from campaign_tool.legal_claims import legal_advisories, legal_claims
 from campaign_tool.site import REQUESTS_FILTER_CSS, Site, asked_sentence, build_site, preview_site
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -309,6 +311,71 @@ class SiteRequestsTests(unittest.TestCase):
                      "data/sources.json", "data/sources.csv", "data/meetings.json", "site-data.js", "app.js", "search.js"):
             self.assertTrue(bare[name] == first[name], name)
         self.assertNotIn(b"requests", bare["data/findings.json"] + bare["data/meetings.json"])
+
+    MEANING = re.compile(r'<p>Each row is a request[^<]*</p><h3>What the states mean</h3><dl>(.*?)</dl>', re.S)
+
+    def meanings(self):
+        """-> [(term, sentence)] of the "What the states mean" list, [] when the page has none."""
+        match = self.MEANING.search(self.read("requests.html"))
+        return re.findall(r"<dt>(.*?)</dt><dd>(.*?)</dd>", match.group(1)) if match else []
+
+    def test_state_meanings_follow_page_state_order(self):  # DF1125-08
+        items = [item(f"T{n}", f"2026-10-{n:02d}", state) for n, state in enumerate(reversed(ASKED_STATES), 1)]
+        self.asked({POLICE: items})
+        self.build()
+        meanings = self.meanings()
+        self.assertEqual([html.unescape(term) for term, _ in meanings],
+                         ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Declined in writing",
+                          "Withdrawn", "No responsive records stated"])  # page order, not input order
+        said = dict((html.unescape(t), html.unescape(s)) for t, s in meanings)
+        self.assertEqual(said["Answered"], "The agency says it has responded in full. "
+                                           "We have not necessarily checked that every record we asked for was produced.")
+        self.assertIn("not a judgement of whether the refusal was lawful", said["Declined in writing"])
+        self.assertIn("not proof that none exist", said["No responsive records stated"])
+        self.assertIn("This does not say an answer is late.", said["Awaiting response"])
+        # a subset lists only the states in the table, still in page order; duplicates list a state once
+        self.asked(MIXED)
+        self.build()
+        self.assertEqual([html.unescape(t) for t, _ in self.meanings()],
+                         ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Withdrawn"])
+        self.asked({SHERIFF: [item("One", "2026-10-01", "answered")]})
+        self.build()
+        self.assertEqual([t for t, _ in self.meanings()], ["Answered"])
+
+    def test_no_rows_no_meanings_and_page_otherwise_unchanged(self):  # DF1125-08
+        self.asked({})
+        self.build()
+        page = self.read("requests.html")
+        self.assertNotIn("What the states mean", page)
+        self.assertNotIn("<dl>", page)
+        self.asked({POLICE: [item("Plain", "2026-10-01", "withdrawn")]})
+        self.build()
+        with_list = self.read("requests.html")
+        block = '<h3>What the states mean</h3><dl><dt>Withdrawn</dt><dd>We withdrew the request.</dd></dl>'
+        self.assertEqual(with_list.count(block), 1)
+        model = load_content(self.root, TODAY)
+        site = Site(self.root, read_config(self.root), model, today=TODAY)
+        site.requests_meanings = lambda states: ""  # the same page without the list: the only difference is the block
+        self.assertEqual(site.requests_html()["html"], with_list.replace(block, ""))
+
+    def test_state_meanings_follow_labels(self):  # DF1125-08
+        labels = {"requests.meaning_heading": 'States & "words"', "requests.meaning_answered": "Says & done.",
+                  "requests.state_answered": "Done"}
+        (self.content / "labels.json").write_text(json.dumps({"schema_version": 1, "labels": labels}), encoding="utf-8")
+        self.asked({POLICE: [item("Plain", "2026-10-01", "answered")]})
+        self.build()
+        page = self.read("requests.html")
+        self.assertIn('<h3>States &amp; &quot;words&quot;</h3><dl><dt>Done</dt><dd>Says &amp; done.</dd></dl>', page)
+        self.assertNotIn("What the states mean", page)
+
+    def test_state_meanings_pass_the_wording_guards(self):  # DF1125-08
+        keys = ["requests.meaning_heading"] + [f"requests.meaning_{state}" for state in ASKED_STATES]
+        self.assertEqual(sorted(k for k in DEFAULTS if k.startswith("requests.meaning_")), sorted(keys))
+        for key in keys:
+            self.assertEqual(legal_claims(DEFAULTS[key]), [], key)
+            self.assertEqual(legal_advisories(DEFAULTS[key]), [], key)
+            for word in ("required", "violation", "illegal", "unlawful"):
+                self.assertNotIn(word, DEFAULTS[key].lower(), key)
 
 
 if __name__ == "__main__":

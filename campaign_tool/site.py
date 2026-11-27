@@ -1638,6 +1638,15 @@ class Site:
         """requests/filter.js: the packaged template, read only when the filter is enabled."""
         return REQUESTS_FILTER_ASSET.read_text(encoding="utf-8")
 
+    def requests_meanings(self, states):
+        """DF1125-08: one fixed sentence per request state shown on the page, in ASKED_STATES order; "" with no rows."""
+        shown = [state for state in ASKED_STATES if state in states]
+        if not shown:
+            return ""
+        return (f'<h3>{self.t("requests.meaning_heading")}</h3><dl>'
+                + "".join(f'<dt>{self.t("requests.state_" + state)}</dt><dd>{self.t("requests.meaning_" + state)}</dd>'
+                          for state in shown) + "</dl>")
+
     def requests_html(self):
         """/requests.html (DF1103-13): one table of every public asked item across agencies; the lead counts the same rows."""
         rows = self.request_rows()
@@ -1662,6 +1671,7 @@ class Site:
                   + "</tbody></table>") if rows else f'<p>{self.t("requests.empty")}</p>')
         main = (f'    <section class="section" id="content"><div class="section-heading"><div>'
                 f'<h2>{self.t("requests.title")}</h2></div></div>{lead}<p>{self.t("requests.note")}</p>'
+                + self.requests_meanings(states)
                 + (self.requests_filter_form(rows) if filtered else "") + table
                 + (f'<p class="sources-filter-empty" id="requests-filter-empty" hidden>{self.t("js.requests_empty")}</p>'
                    if filtered else "") + '</section>\n')

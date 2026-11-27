@@ -51,11 +51,19 @@ def tree(public):
     return {p.relative_to(public).as_posix(): (p.read_bytes(), p.stat().st_mode) for p in sorted(public.rglob("*")) if p.is_file()}
 
 
-def digest(public):
+def digest(public, strip_meanings=False):
+    """Whole-tree digest; strip_meanings drops requests.html's single DF1125-08 "What the states mean" block first, so the
+    pre-DF1125-08 main digest still pins every other byte of the tree."""
     sha = hashlib.sha256()
     for name, (data, _) in tree(public).items():
+        if strip_meanings and name == "requests.html":
+            data, count = MEANINGS_BLOCK.subn(b"", data)
+            assert count == 1, "requests.html must carry the state-meaning block once"
         sha.update(name.encode() + b"\0" + data + b"\0")
     return sha.hexdigest()
+
+
+MEANINGS_BLOCK = re.compile(rb"<h3>What the states mean</h3><dl>(?:<dt>[^<]*</dt><dd>[^<]*</dd>)+</dl>")
 
 
 class AnswerDetailTests(unittest.TestCase):
@@ -343,7 +351,7 @@ class AnswerDetailTests(unittest.TestCase):
         self.asked(LEGACY_ASKED)
         self.build()
         first = tree(self.public)
-        self.assertEqual(digest(self.public), MAIN_LEGACY_DIGEST)
+        self.assertEqual(digest(self.public, strip_meanings=True), MAIN_LEGACY_DIGEST)
         page = self.text("requests.html")
         self.assertIn("Withdrawn (1)</p>", page)  # six counts, nothing after: no seventh zero count
         self.assertNotIn("No responsive records stated", page)
