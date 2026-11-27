@@ -25,7 +25,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 FINDING_ID, SLUG = "fnd_0000000000000001", "cedar-policy-posted"
 WARNING = "These offline commands post, send and publish nothing. A draft is not approval to use it."
 ORDER = ["1. Read the finding first", "2. Social posts, one draft per platform", "3. A thread for one finding",
-         "4. Posts for meetings", "5. Press release and letter to the editor", "6. The flyer",
+         "4. Posts for meetings, meeting outcomes and campaign events", "5. Press release and letter to the editor", "6. The flyer",
          "7. The newsletter draft", "8. The newsletter approval card (described, not run)",
          "9. Record coverage you received", "10. What the tool never does"]
 
@@ -126,7 +126,7 @@ class OutreachGuideTests(unittest.TestCase):
                 self.assertTrue(namespace.thread == ("--thread" in tokens))
         self.assertEqual(list_modes, {False, True})
         for needed in (("campaign_tool", ("social",)), ("campaign_tool", ("press", "draft")),
-                       ("campaign_tool", ("press", "letter")), ("campaign_tool", ("flyer",)),
+                       ("campaign_tool", ("press", "letter")), ("campaign_tool", ("press", "check")), ("campaign_tool", ("flyer",)),
                        ("campaign_tool", ("content", "coverage", "add")),
                        ("campaign_tool", ("content", "coverage", "remove")),
                        ("campaign_tool", ("supporters", "list")),
@@ -205,6 +205,36 @@ class OutreachGuideTests(unittest.TestCase):
         for promise in ("not co-sign approval", "`content-check`", "private record without public entry",
                         "SITE-CONTENT.md#supporting-organizations"):
             self.assertIn(promise, section)
+
+    def test_check_commands_behave_as_the_guide_says(self):
+        """DF1125-10: social --check reads every draft folder, press check and newsletter --check are read-only."""
+        text = read(GUIDE)
+        self.assertNotIn("reads only the older", text)
+        self.assertIn("PUBLICATION.md#checking-every-draft-folder-read-only", text)
+        results = self.run_guide()
+        self.assertIn("kit/press/letters/", results["press check"][1])
+        before = tree(self.root)
+        check = ["social", "--directory", "$CAMPAIGN", "--check", "--text"]
+        code, out, _ = self.run_command("campaign_tool", check)
+        self.assertEqual(code, 3)  # the guide: platform-only drafts leave kit/social/ itself missing
+        for folder in ("kit/social:", "kit/social/x:", "kit/social/bluesky:", "kit/social/mastodon:",
+                       "kit/social/threads/bluesky:", "kit/social/meetings/bluesky:",
+                       "kit/social/outcomes/bluesky:", "kit/social/events/bluesky:"):
+            self.assertIn(folder, out)
+        self.assertIn(f"{SLUG}: missing", out)
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertEqual(tree(self.root), before)  # both checks wrote nothing
+        self.assertEqual(self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN"])[0], 0)
+        self.assertEqual(self.run_command("campaign_tool", check)[0], 0)
+        settled = tree(self.root)
+        for refused in (["--thread", "--finding", "$FINDING_ID", "--within-days", "3"], ["--events", "--check"],
+                        ["--outcomes", "--meetings"], ["--check", "--platform", "x"]):
+            code, out, err = self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN"] + refused)
+            self.assertEqual(code, 2, refused)
+            self.assertIn("cannot be combined with", out + err)
+        self.assertEqual(tree(self.root), settled)  # refused combinations write nothing
 
     def test_refusal_and_edit_guidance_is_honest(self):
         social = ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky"]
