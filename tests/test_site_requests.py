@@ -328,17 +328,15 @@ class SiteRequestsTests(unittest.TestCase):
                          ["Awaiting response", "Acknowledged", "Partly answered", "Answered", "Declined in writing",
                           "Withdrawn", "No responsive records stated"])  # page order, not input order
         said = dict((html.unescape(t), html.unescape(s)) for t, s in meanings)
-        self.assertEqual(said["Answered"], "We have recorded records produced and an answer for every part of the request "
-                                           "we listed (records produced or no responsive records stated), possibly across "
-                                           "several productions. "
+        self.assertEqual(said["Answered"], "We have recorded an answer to every part of the request, whether records, a "
+                                           "statement that there are none or another reply. "
                                            "We have not necessarily checked that every record we asked for was produced.")
-        # the derived states describe what we recorded, never a statement attributed to the agency (kit_asked.state_of
-        # derives them from produced/scope steps, possibly across productions, or from any step such as a fee estimate)
+        # the derived states say only the category we recorded and what we have not recorded, never an agency statement
         for state in ("Acknowledged", "Partly answered", "Answered"):
             self.assertTrue(said[state].startswith("We have recorded "), state)
             self.assertNotIn("The agency", said[state], state)
         self.assertIn("not necessarily checked that every record", said["Partly answered"])
-        self.assertIn("no records produced yet", said["Acknowledged"])
+        self.assertIn("but not that any records were produced", said["Acknowledged"])
         self.assertIn("not a judgement of whether the refusal was lawful", said["Declined in writing"])
         self.assertIn("not proof that none exist", said["No responsive records stated"])
         self.assertIn("This does not say an answer is late.", said["Awaiting response"])
@@ -350,6 +348,29 @@ class SiteRequestsTests(unittest.TestCase):
         self.asked({SHERIFF: [item("One", "2026-10-01", "answered")]})
         self.build()
         self.assertEqual([t for t, _ in self.meanings()], ["Answered"])
+
+    def test_state_meanings_hold_for_organizer_entered_states(self):  # DF1125-08 r2
+        # Organizer-entered rows carry the state alone (no tracker link, no steps): e.g. "answered" where the agency sent an
+        # explanation and no records. The list is chosen from the public state only, so its words for the derived states
+        # may not claim that records were produced, several productions, or anything the agency said.
+        rows = [item("Explained, no records", "2026-10-01", "answered"), item("Some", "2026-10-02", "partly_answered"),
+                item("Receipt", "2026-10-03", "acknowledged")]
+        self.assertFalse(any("request" in row for row in rows))  # not linked to a tracked request
+        self.asked({POLICE: rows})
+        self.build()
+        said = dict((html.unescape(t), html.unescape(s)) for t, s in self.meanings())
+        self.assertEqual(sorted(said), ["Acknowledged", "Answered", "Partly answered"])
+        for state, sentence in said.items():
+            claim = sentence.split(". ")[0]  # the caveat sentence after it is a negative statement
+            self.assertEqual(claim.count("records were produced"), claim.count("not that any records were produced"), state)
+            for phrase in ("records produced", "productions", "The agency", "agency said", "we listed"):
+                self.assertNotIn(phrase, claim, state)
+        self.assertIn("another reply", said["Answered"])  # an explanation without records is still described truthfully
+        self.assertIn("not necessarily checked that every record", said["Answered"])
+        es = json.loads((REPO_ROOT / "examples" / "labels" / "es.json").read_text(encoding="utf-8"))["labels"]
+        for key in ("requests.meaning_acknowledged", "requests.meaning_partly_answered", "requests.meaning_answered"):
+            self.assertNotIn("entregaron registros", es[key])  # the draft Spanish makes no production claim either
+            self.assertNotIn("registros entregados", es[key])
 
     def test_no_rows_no_meanings_and_page_otherwise_unchanged(self):  # DF1125-08
         self.asked({})

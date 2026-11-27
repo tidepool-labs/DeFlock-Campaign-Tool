@@ -584,10 +584,12 @@ public requests are listed yet." after the zero counts and shows no table. **Wha
 note, a page with rows lists each state that appears in its rows once, in the same state order as the counts, as a heading
 "What the states mean" and a definition list: the state word, then one fixed sentence saying what that state does and does
 not establish (awaiting response is not a statement that an answer is late; acknowledged, partly answered and answered
-describe what we recorded, never a statement attributed to the agency: acknowledged is at least one recorded step such as
-a receipt, an extension or a fee estimate with no records produced yet, partly answered is records produced but not every
-part answered in full, answered is records produced and an answer for every listed part, possibly across several
-productions, and for both we have not necessarily checked that every record asked for was produced; declined in
+say only which category we recorded and what we have not recorded, because the list is chosen from `asked[].state` alone
+and the same words must hold for a tracker-derived state and for an organizer-entered one: never a statement attributed to
+the agency and never a claim that records were produced. Acknowledged is some recorded progress such as a receipt, an
+extension or a fee estimate, but not that any records were produced; partly answered is a recorded partial answer, but not
+that every part was answered in full; answered is a recorded answer to every part, whether records, a statement that
+there are none or another reply; for both we have not necessarily checked that every record asked for was produced; declined in
 writing is the refusal as recorded, not a judgement of whether it was lawful; withdrawn means we withdrew it; no responsive
 records stated is the agency's statement, not proof that none exist). The sentences never use the agency's words, pass the
 legal-claim guard, and are the labels `requests.meaning_heading` and `requests.meaning_<state>`; a page with no rows has no
