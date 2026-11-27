@@ -88,7 +88,6 @@ def _point_checks(problems, map_dir, library):
     path = map_dir / "point-checks.json"
     if not history_present(path):
         return
-    nodes = set()
     try:
         nodes = point_nodes(_read_json(map_dir / "cameras.geojson", MAX_GEOJSON_BYTES))
     except (ContentError, AttributeError, TypeError, OSError):
@@ -301,7 +300,6 @@ def content_problems(root, limit=LIMIT, faq_out=None, statements_out=None, today
             _attempt(problems, label, lambda: check_finding_agencies(finding, known, label))
 
     from .agency_actions import action_problems  # local: agency_actions imports content
-    from .content import SOURCES_UNKNOWN
     from .content_suspected import read_suspected
     suspected = read_suspected(root, agencies, library if library is not None else SOURCES_UNKNOWN, today, problems)
     if suspected is not None:

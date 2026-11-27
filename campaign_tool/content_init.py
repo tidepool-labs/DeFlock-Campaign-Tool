@@ -383,7 +383,7 @@ def init_content(root, source_root=None):
 
 def init_from(root, source_root):
     """Copy only explicitly allowed public branding, validating before publication."""
-    from .content import SLUG, load_pages
+    from .content import SLUG
     from .labels import load_labels, MAX_LABELS_BYTES
     root, source_root = Path(root), Path(source_root)
     target = root / "content"
