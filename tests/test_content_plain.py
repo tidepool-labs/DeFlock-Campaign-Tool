@@ -618,7 +618,7 @@ class BoundedReadTests(Case):
         for how in ("symlink", "fifo", "directory"):
             with self.subTest(how=how):
                 path = self.put("page")
-                real_open, calls = os.open, []
+                real_open = os.open
 
                 def swap(target, flags, *args, **kwargs):
                     if flags & os.O_DIRECTORY:

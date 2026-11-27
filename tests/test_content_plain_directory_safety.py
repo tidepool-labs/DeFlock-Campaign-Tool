@@ -293,8 +293,6 @@ class DescriptorLifecycleTests(Case):
                 self.assertTrue(flags_seen)
                 self.assertTrue(all(flag & forbidden == 0 for flag in flags_seen))
                 self.assertIn(sentinel, [int(n) for n in self.open_fds()])
-                setUp_tree = self.base / "reset"
-                del setUp_tree
                 self.setUp()
 
     def test_engine_failure_still_closes_everything(self):
