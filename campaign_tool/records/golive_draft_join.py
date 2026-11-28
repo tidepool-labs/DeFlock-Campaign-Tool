@@ -11,6 +11,11 @@ kind AND have a mail-draft row in the Drafts mailbox (placed / found_existing) i
 
 Read-only on the export; it never opens the live project or the mailbox and prints no draft text, address or subject,
 only ids, kind, state and digests. A PASS is machine-valid evidence for a reviewer, not a semantic acceptance.
+
+``--evidence-row`` prints, instead of the result, a JSON array with ONE stage-13 ``records-golive-evidence-v1`` live
+row whose source is the cited manifest (``EXPORT.json`` and the same SHA-256): a pass only when the join passed, else a
+fail with the join's code. Save it to a file and record it with ``golive_record live``. An unverified export prints no
+row (exit 2).
 """
 import argparse
 import hashlib
@@ -20,8 +25,9 @@ import sys
 import time
 from datetime import datetime, timezone
 
-from . import approval_queue as aq, console_export as ce, console_snapshot as cs, draft_templates, mail_drafts
+from . import approval_queue as aq, console_export as ce, console_snapshot as cs, draft_templates, golive_record, mail_drafts
 
+STAGE = "13"
 REPLY_KINDS = ("reply-extension", "appeal-denial", "fee-reply")
 IN_MAILBOX = ("placed", "found_existing")
 DEFAULT_MAX_AGE_HOURS = 36.0
@@ -135,6 +141,12 @@ def render(result, as_json):
     return ("PASS " if result["code"] is None else result["code"] + " ") + fields
 
 
+def evidence_row(result, now=None):
+    """The one stage-13 live row for this result, bound to the manifest digest the result cites."""
+    now = datetime.now(timezone.utc) if now is None else now
+    return golive_record.live_row(STAGE, result["code"], ce.SCHEMA, result["manifest_sha256"], ce.MANIFEST, now)
+
+
 def _args(argv):
     parser = argparse.ArgumentParser(prog="golive_draft_join", description="Confirm one reply draft by queue id and revision in one pinned export.")
     parser.add_argument("--export-root", required=True)
@@ -142,7 +154,9 @@ def _args(argv):
     parser.add_argument("--queue-id", required=True)
     parser.add_argument("--revision", required=True, type=int)
     parser.add_argument("--max-age-hours", type=float, default=DEFAULT_MAX_AGE_HOURS)
-    parser.add_argument("--json", action="store_true")
+    out = parser.add_mutually_exclusive_group()
+    out.add_argument("--json", action="store_true")
+    out.add_argument("--evidence-row", action="store_true", help="print one stage-13 live evidence row (JSON array)")
     args = parser.parse_args(argv)
     if not ID.fullmatch(args.queue_id) or args.revision < 0 or not args.max_age_hours > 0:
         parser.error("queue id, revision or max age out of range")
@@ -158,7 +172,7 @@ def main(argv=None):
         print(json.dumps({"code": "EXPORT_UNVERIFIED", "reason": reason}, sort_keys=True) if args.json
               else "EXPORT_UNVERIFIED reason=" + reason)
         return 2
-    print(render(result, args.json))
+    print(json.dumps([evidence_row(result)], sort_keys=True) if args.evidence_row else render(result, args.json))
     return 0 if result["code"] is None else 1
 
 

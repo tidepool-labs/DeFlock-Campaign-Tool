@@ -116,6 +116,16 @@ def from_gate(path, now):
             for stage in dict.fromkeys(receipt["stages"])]
 
 
+def live_row(stage, code, schema, digest, name, now):
+    """One validated live row for a go-live check that read the file ``name`` (bytes hashing to ``digest``).
+
+    It is a pass only when the check's ``code`` is None; otherwise it is a fail
+    carrying that one code. ``golive_record live`` accepts it unchanged.
+    """
+    return _record(stage, "live", code is None, now, None, schema, digest, name, "pipeline",
+                   [] if code is None else [code])
+
+
 _MAX_LIVE_ROWS = 28  # one row per catalogue stage at most
 
 
