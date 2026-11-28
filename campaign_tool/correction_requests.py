@@ -2,6 +2,7 @@
 published finding and the decision, never who asked; nothing is sent or published. The site build does not read it,
 with one explicit off-by-default exception: site.json corrections.show_request_counts true makes the build call
 ``quarterly_counts``, which publishes per-quarter counts only (never text, ids, dates or anything about who asked)."""
+import hashlib
 import json
 import os
 import re
@@ -17,7 +18,10 @@ NAME = "correction-requests.json"
 STATES = ("open", "accepted", "declined")
 REQUIRED = ("id", "finding_id", "received_on", "summary", "state")
 DECIDED = ("decided_on", "note")
+LINK = "correction"  # DF1125-01: optional on an accepted request, {"date", "note_sha256"} of the correction that answered it
+LINK_KEYS = ("date", "note_sha256")
 DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _today(today):
@@ -35,6 +39,23 @@ def _correction_day(correction):
     """Calendar day of a loaded correction. The content loader admits dates with strptime %Y-%m-%d (so 2026-3-5 is
     valid); compare days, never the strings. Comparison only: the stored string is what gets displayed."""
     return datetime.strptime(correction["date"], "%Y-%m-%d").date()
+
+
+def _note_sha256(correction):
+    return hashlib.sha256(correction["note"].encode("utf-8")).hexdigest()
+
+
+def _check_link(where, item):
+    """An optional ``correction`` link: only on an accepted request, exactly a YYYY-MM-DD date and a sha256 hex digest."""
+    link = item[LINK]
+    if item["state"] != "accepted":
+        raise _unreadable(f"{where} has a {LINK!r} link but is not accepted")
+    if not isinstance(link, dict) or sorted(link) != sorted(LINK_KEYS):
+        raise _unreadable(f"{LINK!r} in {where} must be an object with exactly date and note_sha256")
+    if _date(link["date"]) is None:
+        raise _unreadable(f"'{LINK}.date' in {where} is not a YYYY-MM-DD date")
+    if not isinstance(link["note_sha256"], str) or not SHA256.match(link["note_sha256"]):
+        raise _unreadable(f"'{LINK}.note_sha256' in {where} is not a sha256 hex digest")
 
 
 def _path(root):
@@ -55,7 +76,7 @@ def _check_request(index, item):
     where = f"requests[{index}]"
     if not isinstance(item, dict):
         raise _unreadable(f"{where} is not an object")
-    if unknown := [key for key in item if key not in REQUIRED + DECIDED]:
+    if unknown := [key for key in item if key not in REQUIRED + DECIDED + (LINK,)]:
         raise _unreadable(f"unknown key {unknown[0]!r} in {where}")
     decided = item.get("state") in STATES[1:]
     if missing := [key for key in REQUIRED + DECIDED * decided if key not in item]:
@@ -68,6 +89,8 @@ def _check_request(index, item):
         raise _unreadable(f"{bad[0]!r} in {where} is not text")
     if bad := [key for key in ("received_on",) + ("decided_on",) * decided if _date(item[key]) is None]:
         raise _unreadable(f"{bad[0]!r} in {where} is not a YYYY-MM-DD date")
+    if LINK in item:
+        _check_link(where, item)
     return item["id"]
 
 
@@ -185,11 +208,15 @@ def add(root, finding_id, received, summary, today=None):
         return request
 
 
-def decide(root, request_id, decision, on, note, today=None):
+def decide(root, request_id, decision, on, note, today=None, correction_date=None):
     """Record accepted or declined for an open request; decided requests are final. ``accepted`` needs a
-    correction on the finding dated on or after the request (record it first with ``finding correct``)."""
+    correction on the finding dated on or after the request (record it first with ``finding correct``).
+    ``correction_date`` (accepted only, DF1125-01) links the request to the one correction dated that day, which must
+    lie from the received date through the decision date; the log stores its date and note hash."""
     if decision not in STATES[1:]:
         raise ValueError("decision must be accepted or declined")
+    if correction_date is not None and decision != "accepted":
+        raise ValueError("--correction-date is only for accepted")
     path, today = _path(root), _today(today)
     with _locked(path.parent, ".correction-requests.lock"):
         path = _path(root)
@@ -202,13 +229,24 @@ def decide(root, request_id, decision, on, note, today=None):
         day, note = _day(on, "--on", today), _text(note, "--note")
         if day.isoformat() < request["received_on"]:
             raise ValueError(f"--on {on} is before the request was received ({request['received_on']})")
+        link = {}
         if decision == "accepted":
             finding = _published(root, request["finding_id"])
             received = date.fromisoformat(request["received_on"])
             if not any(_correction_day(c) >= received for c in finding["corrections"]):
                 raise ValueError("accept only after recording the correction: finding correct "
                                  f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
-        request.update(state=decision, decided_on=day.isoformat(), note=note)
+            if correction_date is not None:
+                linked = _day(correction_date, "--correction-date", today)
+                if not received <= linked <= day:
+                    raise ValueError(f"--correction-date {correction_date} is outside this request's window "
+                                     f"({request['received_on']} through the decision date {day.isoformat()})")
+                same = [c for c in finding["corrections"] if _correction_day(c) == linked]
+                if len(same) != 1:
+                    raise ValueError(f"--correction-date {correction_date}: the finding has {len(same)} corrections "
+                                     "dated that day; exactly one is needed")
+                link = {LINK: {"date": linked.isoformat(), "note_sha256": _note_sha256(same[0])}}
+        request.update(state=decision, decided_on=day.isoformat(), note=note, **link)
         _write_private(path, document, ".correction-requests-", text=_admit(document))
         return request
 
@@ -337,14 +375,25 @@ def _render_reply(request, finding, base):
         lines += [f"We received your correction request about this finding on {request['received_on']}. "
                   "It is being reviewed, and we will write again when a decision has been recorded."]
     elif state == "accepted":
-        window = date.fromisoformat(request["received_on"]), date.fromisoformat(request["decided_on"])
-        matches = [c["date"] for c in finding["corrections"]
-                   if window[0] <= _correction_day(c) <= window[1]] if finding else []
         lines += ["We accepted your correction request about this finding.", "",
-                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}",
-                  "Correction date: " + (matches[0] if len(matches) == 1 else "[EDIT ME: confirm the correction date]"),
-                  "", "Recorded decision note:", _quote(request["note"]), "",
-                  "[EDIT ME: confirm the correction addressed this request]"]
+                  f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}"]
+        if LINK in request:  # DF1125-01: the recorded link names the correction; only its current presence is checked
+            link = request[LINK]
+            linked = [c for c in finding["corrections"] if _correction_day(c) == date.fromisoformat(link["date"])
+                      and _note_sha256(c) == link["note_sha256"]] if finding else []
+            if linked:
+                lines += [f"Correction date: {linked[0]['date']}", "", "Correction note:", _quote(linked[0]["note"])]
+            else:
+                lines += [f"Correction date: [EDIT ME: the linked correction dated {link['date']} is no longer on the "
+                          "finding; confirm it]"]
+            lines += ["", "Recorded decision note:", _quote(request["note"])]
+        else:
+            window = date.fromisoformat(request["received_on"]), date.fromisoformat(request["decided_on"])
+            matches = [c["date"] for c in finding["corrections"]
+                       if window[0] <= _correction_day(c) <= window[1]] if finding else []
+            lines += ["Correction date: " + (matches[0] if len(matches) == 1 else "[EDIT ME: confirm the correction date]"),
+                      "", "Recorded decision note:", _quote(request["note"]), "",
+                      "[EDIT ME: confirm the correction addressed this request]"]
     else:
         lines += ["We reviewed your correction request about this finding and did not accept it.", "",
                   f"Received on: {request['received_on']}", f"Decision date: {request['decided_on']}", "",

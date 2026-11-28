@@ -47,7 +47,8 @@ from `site.json`. The site sends nothing and stores nothing: there is no form, s
 ## Logging requests
 
 Log each request privately with `correction-request add --finding ID --received D --summary T`
-and later `decide --id N accepted|declined --on D --note T`; only `private/correction-requests.json`
+and later `decide --id N accepted|declined --on D --note T` (accepted may add `--correction-date C`, see "Drafting a
+reply"); only `private/correction-requests.json`
 (0600) is written. Record what was asked, never who asked: no names or contact details. `accepted`
 is refused until the finding has a correction dated on or after the request (`finding correct`);
 `doctor` names requests open over 14 days. Reply by hand; the tool sends and publishes nothing.
@@ -69,8 +70,15 @@ name or address, and the log is never changed.
   acceptance or takedown is promised.
 - **accepted:** states the decision date and your recorded note (quoted, unchanged). The correction date is taken from the
   finding only when exactly one correction is dated from the received date through the decision date inclusive; with none or
-  several the draft says `[EDIT ME: confirm the correction date]`. The log keeps no link to a correction, so every accepted
-  draft also says `[EDIT ME: confirm the correction addressed this request]`.
+  several the draft says `[EDIT ME: confirm the correction date]`, and it also says
+  `[EDIT ME: confirm the correction addressed this request]`. To link the request to the correction that answered it,
+  accept with `decide --id N accepted --on D --note T --correction-date C`: the finding must carry exactly one
+  correction dated C (none or several that day is refused, naming the count), C must lie from the received date through
+  the decision date, and the log stores that correction's date and a hash of its note on the request (nothing is
+  written on a refusal). The draft for a linked request then states that correction's date and quotes its note, with
+  neither marker; if the finding no longer carries a correction with that date and note, it says
+  `[EDIT ME: the linked correction dated C is no longer on the finding; confirm it]`. Accepting without the flag, and
+  logs written before it existed, work as before.
 - **declined:** says the request was not accepted and quotes the recorded note as the reason.
 
 The finding URL (`base_url` + `/findings/<slug>.html`) appears only when the finding is currently published and
