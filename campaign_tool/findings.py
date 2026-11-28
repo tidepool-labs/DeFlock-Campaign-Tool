@@ -157,6 +157,10 @@ def _text(name, value, limit):
         raise ValueError(f"--{name} is longer than {limit} characters")
     if any(unicodedata.category(ch) == "Cc" for ch in value):
         raise ValueError(f"--{name} contains control characters")
+    try:  # e.g. undecodable command-line bytes: the private log could never store it
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"--{name} is not valid UTF-8 text; nothing was written") from None
     return value.strip()
 
 
@@ -1175,8 +1179,13 @@ def _open_log(root):
     return log_fd
 
 
+def _log_line(entry):
+    """The exact bytes one log entry appends; a writer builds them before it writes anything else."""
+    return (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _append(log_fd, entry):
-    os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    os.write(log_fd, entry if isinstance(entry, bytes) else _log_line(entry))
     os.fsync(log_fd)
 
 
@@ -1193,6 +1202,7 @@ def _fitting(document, label, operation, sort_keys):
 def _write_logged(root, folder, target, document, entry):
     """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
     data = _fitting(document, f"content/findings/{target.name}", entry["action"], True).encode("utf-8")  # before the log
+    line = _log_line(entry)  # DF1125-04: an entry that cannot be logged refuses before the finding is written
     log_fd = _open_log(root)  # a bad log refuses before the finding is written, never leaving an unlogged publish
     try:
         fd, temporary = tempfile.mkstemp(dir=folder, prefix=".publish-", suffix=".tmp")
@@ -1208,7 +1218,7 @@ def _write_logged(root, folder, target, document, entry):
         finally:
             if os.path.lexists(temporary):
                 os.unlink(temporary)
-        _append(log_fd, entry)
+        _append(log_fd, line)
     finally:
         os.close(log_fd)
 

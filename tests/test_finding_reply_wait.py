@@ -5,11 +5,13 @@ Run from the repository root: python3 -B -m unittest tests.test_finding_reply_wa
 """
 import json
 import os
+import subprocess
 import sys
 import time
 import unittest
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
@@ -127,6 +129,44 @@ class ReplyWaitTests(reply_tests.ReplyBase):
                       done.stdout)
         self.assertNotIn(REASON, done.stdout + done.stderr)
         self.assertEqual(self.last_log()["before_reply_deadline"]["reason"], REASON)
+
+    def test_a_reason_that_is_not_utf8_text_is_refused_before_any_write(self):
+        self.pending()
+        bad = "vote moved \udcff up"  # what undecodable command-line bytes become
+        self.refused("--before-reply-deadline is not valid UTF-8 text; nothing was written", findings.publish,
+                     self.root, self.draft, "Pat Organizer", before_reply_deadline=bad)
+        # Second layer: even an entry that slipped past validation cannot leave an unlogged publish.
+        with mock.patch.object(findings, "_text", side_effect=lambda name, value, limit: value.strip()):
+            self.refused_raw(UnicodeEncodeError, findings.publish, self.root, self.draft, "Pat Organizer",
+                             before_reply_deadline=bad)
+        self.assertFalse(self.published().exists())
+
+    def test_cli_refuses_a_reason_that_is_not_utf8_text_and_changes_nothing(self):
+        self.pending()
+        log = self.root / "private" / "publication-log.jsonl"
+        before_log = log.read_bytes() if log.exists() else None
+        before_tree = self.tree()
+        arguments = ["finding", "publish", self.draft, "--directory", self.root, "--approved-by", "Pat Organizer",
+                     "--before-reply-deadline", b"vote moved \xff up MARKER-7Q"]
+        result = subprocess.run([sys.executable, "-B", "-m", "campaign_tool",
+                                 *(a if isinstance(a, bytes) else os.fsencode(str(a)) for a in arguments)],
+                                cwd=REPO_ROOT, capture_output=True, timeout=30,
+                                env=dict(os.environ, LC_ALL="C.UTF-8", PYTHONUTF8="1"))
+        stderr = result.stderr.decode("utf-8", "replace")
+        self.assertEqual(result.returncode, 1, stderr)
+        self.assertNotIn("Traceback", stderr)
+        self.assertIn("--before-reply-deadline is not valid UTF-8 text; nothing was written", stderr)
+        self.assertNotIn(b"MARKER-7Q", result.stdout + result.stderr)
+        self.assertFalse(self.published().exists())
+        self.assertEqual(log.read_bytes() if log.exists() else None, before_log)
+        self.assertEqual(self.tree(), before_tree)
+
+    def refused_raw(self, error, call, *args, **kwargs):
+        before_draft, before = self.draft.read_bytes(), self.tree()
+        with self.assertRaises(error):
+            call(*args, **kwargs)
+        self.assertEqual(self.draft.read_bytes(), before_draft)
+        self.assertEqual(self.tree(), before)
 
 
 if __name__ == "__main__":
