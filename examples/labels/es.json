@@ -320,6 +320,8 @@
     "agency.check_page": "(página {page})",
     "agency.law_package": "Paquete legal: {status}.",
     "agency.law_package_unavailable": "estado no disponible",
+    "agency.law_status_draft": "borrador, sin revisión legal",
+    "agency.law_status_reviewed": "revisado el {date}",
     "agency.page": "Página de la agencia",
     "agency.page_description": "Registros y hallazgos de {name}",
     "agency.published_findings": "Hallazgos publicados",

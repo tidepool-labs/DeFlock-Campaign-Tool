@@ -268,7 +268,8 @@ class LabelsTest(unittest.TestCase):
         reading = ["agency.check_page", "agency.contract_check_addressed", "agency.contract_check_checked",
                    "agency.contract_check_checklist", "agency.contract_check_heading", "agency.contract_check_link",
                    "agency.contract_check_not_found", "agency.contract_check_scope", "agency.contract_check_unclear",
-                   "agency.law_package", "agency.law_package_unavailable", "agency.policy_check_addressed",
+                   "agency.law_package", "agency.law_package_unavailable", "agency.law_status_draft",
+                   "agency.law_status_reviewed", "agency.policy_check_addressed",
                    "agency.policy_check_checked", "agency.policy_check_heading", "agency.policy_check_link",
                    "agency.policy_check_not_found", "agency.policy_check_unclear"]
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",

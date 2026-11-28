@@ -232,6 +232,7 @@ DEFAULTS = {
     "agency.contract_check_link": "the linked contract", "agency.contract_check_checklist": "Checklist: draft.",
     "agency.check_page": "(page {page})", "agency.law_package": "Law package: {status}.",
     "agency.law_package_unavailable": "status unavailable",
+    "agency.law_status_draft": "draft, not legally reviewed", "agency.law_status_reviewed": "reviewed on {date}",
     "agency.page": "Agency page", "agency.page_description": "Records and findings for {name}",
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",

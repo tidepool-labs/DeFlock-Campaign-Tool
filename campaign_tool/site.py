@@ -676,10 +676,10 @@ class Site:
                 self.rule_citations = {rule["rule_id"]: rule["citation"] for rule in package["rules"]}
                 self.law_status = law_status(package)
         # DF1207-06: the checklist's own package (never the campaign's) gives the label shown with a posted-policy reading.
-        self.checklist_law_status = None
+        self.checklist_package = None
         if any(a.get("policy_check") for a in model["agencies"]):
             try:
-                self.checklist_law_status = law_status(law.load_package(CHECKLIST_JURISDICTION))
+                self.checklist_package = law.load_package(CHECKLIST_JURISDICTION)
             except (OSError, ValueError):
                 pass
         # DF1207-07: the rule's citation and the package label come from the shipped package by rule id; absent -> no Rule line.
@@ -1334,7 +1334,8 @@ class Site:
         items = "".join(f'<li>{e(item["label"])}: {self.t("agency.policy_check_" + item["status"])}'
                         + self.check_page(item) + "</li>" for item in check["elements"])
         link = f'<a href="{e(check["policy_url"])}" rel="noopener noreferrer">{self.t("agency.policy_check_link")}</a>'
-        status = e(self.checklist_law_status) if self.checklist_law_status else self.t("agency.law_package_unavailable")
+        status = (self.law_status_label(self.checklist_package) if self.checklist_package
+                  else self.t("agency.law_package_unavailable"))
         return (f'<section class="policy-check"><h4>{self.t("agency.policy_check_heading")}</h4><ul>{items}</ul>'
                 f'<p>{self.t("agency.policy_check_checked", date=date_label(check["checked_on"]), policy=link)} '
                 f'{self.t("agency.law_package", status=status)}</p></section>')
@@ -1342,6 +1343,12 @@ class Site:
     def check_page(self, item):
         """DF1125-09: `` (page N)`` after a policy- or contract-check element that records its page; "" otherwise."""
         return " " + self.t("agency.check_page", page=e(str(item["page"]))) if "page" in item else ""
+
+    def law_status_label(self, package):
+        """DF1125-09: law_status() through labels.json; the review date is kept as the package records it."""
+        if package["status"] == "reviewed":
+            return self.t("agency.law_status_reviewed", date=e(package["reviewed_at"]))
+        return self.t("agency.law_status_draft")
 
     def pre_meeting_section(self, agency):
         """DF1207-07: the public meeting an organizer found before the camera program, or that none has been found yet.

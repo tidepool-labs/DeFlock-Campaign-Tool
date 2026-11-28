@@ -24,7 +24,8 @@ POLICY_KEYS = ("agency.policy_check_heading", "agency.policy_check_addressed", "
 CONTRACT_KEYS = ("agency.contract_check_heading", "agency.contract_check_addressed", "agency.contract_check_unclear",
                  "agency.contract_check_not_found", "agency.contract_check_scope", "agency.contract_check_checked",
                  "agency.contract_check_link", "agency.contract_check_checklist")
-SHARED_KEYS = ("agency.check_page", "agency.law_package", "agency.law_package_unavailable")
+SHARED_KEYS = ("agency.check_page", "agency.law_package", "agency.law_package_unavailable", "agency.law_status_draft",
+               "agency.law_status_reviewed")
 KEYS = POLICY_KEYS + CONTRACT_KEYS + SHARED_KEYS
 POLICY_URL, CONTRACT_URL = "https://example.org/cedar/alpr-policy.pdf", "https://example.org/cedar/contract.pdf?id=7&v=2"
 POLICY_IDS = ("authorized_purposes", "authorized_users_training", "security_monitoring", "sharing_restrictions",
@@ -165,6 +166,25 @@ class ReadingLabelsTests(unittest.TestCase):
                         for piece in fragments(key):
                             self.assertNotIn(piece, html)
         self.assertIn(f"OVR{KEYS.index('agency.law_package')}: ", section(self.read("agencies/cedar.html"), "policy-check"))
+        for name in ("agencies/cedar.html", "agencies.html"):  # the shipped checklist package is a draft
+            with self.subTest(page=name):
+                policy = section(self.read(name), "policy-check")
+                self.assertIn(f"OVR{KEYS.index('agency.law_package')}: OVR{KEYS.index('agency.law_status_draft')}:", policy)
+                self.assertNotIn(DEFAULTS["agency.law_status_draft"], policy)
+
+    def test_reviewed_status_is_a_label_and_keeps_the_review_date(self):
+        self.write_fixture()
+        reviewed = {"status": "reviewed", "reviewed_at": "2026-09-15", "rules": []}
+        with mock.patch("campaign_tool.site.law", load_package=mock.Mock(return_value=reviewed)):
+            self.build()
+        self.assertIn("Law package: reviewed on 2026-09-15.</p>", section(self.read("agencies/cedar.html"), "policy-check"))
+        with mock.patch("campaign_tool.site.law", load_package=mock.Mock(return_value=reviewed)):
+            self.build({key: ES[key] for key in KEYS})
+        for name in ("agencies/cedar.html", "agencies.html"):
+            with self.subTest(page=name):
+                policy = section(self.read(name), "policy-check")
+                self.assertIn("Paquete legal: revisado el 2026-09-15.</p>", policy)
+                self.assertNotIn("reviewed on", policy)
 
     def test_spanish_draft_builds(self):
         self.write_fixture()
@@ -173,6 +193,11 @@ class ReadingLabelsTests(unittest.TestCase):
         self.assertIn(ES["agency.policy_check_heading"], policy)
         self.assertNotIn(DEFAULTS["agency.policy_check_heading"], policy)
         self.assertIn(ES["agency.contract_check_scope"], section(self.read("agencies/cedar.html"), "contract-check"))
+        for name in ("agencies/cedar.html", "agencies.html"):  # the status text too, not just the heading
+            with self.subTest(page=name):
+                policy = section(self.read(name), "policy-check")
+                self.assertIn("Paquete legal: borrador, sin revisión legal.</p>", policy)
+                self.assertNotIn(DEFAULTS["agency.law_status_draft"], policy)
 
 
 if __name__ == "__main__":
