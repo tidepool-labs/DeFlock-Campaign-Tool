@@ -443,6 +443,15 @@ every field as `<file>[n].profile.policy_check.<field>` on one line. The agency 
 ("addressed (page N)", "not found in the posted policy" or "unclear"), the check date, a link to the posted policy and the
 law package status label. It is an organizer's reading of what the document says, not a finding about compliance, and
 `not found` is never read as more than that. Nothing is fetched; the section is not in card JS, open data or feeds.
+Its wording follows `labels.json` (DF1125-09): `agency.policy_check_heading`, `agency.policy_check_addressed`,
+`agency.policy_check_unclear`, `agency.policy_check_not_found`, `agency.policy_check_checked` (`{date}`, `{policy}`),
+`agency.policy_check_link`, `agency.check_page` (`{page}`), `agency.law_package` (`{status}`),
+`agency.law_package_unavailable`, `agency.law_status_draft` and `agency.law_status_reviewed` (`{date}`, the package's
+review date as recorded); the contract reading below uses `agency.contract_check_heading`,
+`agency.contract_check_addressed`, `agency.contract_check_unclear`, `agency.contract_check_not_found`,
+`agency.contract_check_scope`, `agency.contract_check_checked` (`{date}`, `{contract}`), `agency.contract_check_link`,
+`agency.contract_check_checklist` and `agency.check_page`. The defaults are the English above; Spanish drafts are in
+`examples/labels/es.json`.
 
 An agency's optional `profile.pre_implementation_meeting` records the public meeting an organizer found before the
 agency's ALPR program started, for the public-comment rule in Civ. Code § 1798.90.55(a):
