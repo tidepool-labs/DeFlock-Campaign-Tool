@@ -20,7 +20,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 TODAY = date(2026, 11, 1)  # build instant 2026-11-01T00:00:00Z
 POLICE, SHERIFF = "ca-cedar-police", "ca-cedar-county-sheriff"
 STRIP = re.compile(r'<section class="section" id="standings">(.*?)</section>', re.S)
-ITEM = re.compile(r'<li><a href="([^"]*)">([^<]*)</a>: <strong>([^<]*)</strong></li>')
+ITEM = re.compile(r'<li><a href="([^"]*)">([^<]*)</a>: <strong>([^<]*)</strong>(?: <small class="map-as-of">[^<]*(?:<time [^>]*>[^<]*</time>\)?)?</small>)?</li>')
 DEADLINE = re.compile(r'<p class="comment-deadline">Next verified written-comment deadline: '
                       r'<a href="([^"]*)">([^<]*)</a>, <time datetime="([^"]*)">([^<]*)</time></p>')
 CAMERA_LABEL = "Community-mapped camera points; ownership unconfirmed"

@@ -18,10 +18,10 @@ from tests.test_content_suspected import Case, DAY, REPO, entry
 # Whole planned trees, captured independently from main 67d04d8d, not candidate output.
 # Public digests use eight-character chunks so credential scanning stays enabled.
 BASELINE = {
-    'map': ''.join('fa711c35 41560a0e dd7d3905 1c765df1 1a90d077 19152cfc 5ab4b076 27f30d19'.split()),
-    'no-map': ''.join('0349022f 836f9914 f7b2a7e9 745c1f3c 37470bdf 70db4d47 f942fc5b 4e4e04dc'.split()),
-    'no-base': ''.join('3137a3ba 1595a0b4 07262a2f b4bbee4c f25d0c2f c12a4513 c262fc63 4a27d94f'.split()),
-    'labels': ''.join('de145b81 2b3e0392 d99a4fc0 dd97f1b6 46c93c50 308544b5 fcf1648f cace2625'.split()),
+    'map': ''.join('c08d2341 38e3a474 507d9b2e 1026dd4a 67338a58 8f734cc6 ecd1ab7c 724f1e2c'.split()),
+    'no-map': ''.join('790437df dfcf81d0 17bd0fbf c928a0a1 fd8f2fd3 fc68e79a 4d83372c cf950d87'.split()),
+    'no-base': ''.join('bddf897c 026f50f0 cd8f67d7 205f8247 45f32d17 19d51418 1ab19e84 c722ba1d'.split()),
+    'labels': ''.join('64dc53a1 2a1f3ae4 cefd6500 68c0c0d8 b35c6550 f51eea6c 467e71aa 5e4cb071'.split()),
 }
 FOOTER = b'<p><a href="/suspected.html">Suspected locations</a></p>'
 

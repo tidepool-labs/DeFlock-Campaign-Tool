@@ -204,7 +204,7 @@ class AgencyCompareTests(unittest.TestCase):
     def test_no_ranking_or_score_wording(self):
         banned = re.compile(r"best|worst|rank|score", re.I)
         keys = [key for key in DEFAULTS if key.startswith("agencies.glance_")]
-        self.assertEqual(len(keys), 16)
+        self.assertEqual(len(keys), 17)
         self.assertEqual([key for key in keys if key != "agencies.glance_note" and banned.search(DEFAULTS[key])], [])
         # The note's only such word is the disclaimer itself.
         self.assertEqual(DEFAULTS["agencies.glance_note"], "Numbers are as each source reported them on the date "

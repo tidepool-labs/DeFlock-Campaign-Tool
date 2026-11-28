@@ -545,6 +545,9 @@ searches in the last 30 days and retention days from the newest `profile.transpa
 to the contract source, `contract.cost` as stated (`$12,345.60 per year`, linked to the contract source with its checked
 date; "not checked" without a cost) and the number of `asked` items linked to that card's `#<slug>-asked` list (0 shows "0"),
 then "Latest report" (DF0237-02, see `profile.reports`).
+The note above the table ends "Records items asked is our own count on DATE." (DF1125-07, label
+`agencies.glance_asked_counted`), DATE being the build date: that column is the campaign's own build-time tally, not a
+number a source reported.
 A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
@@ -559,12 +562,15 @@ status or kit agencies; `/requests.html`); asked items answered or partly answer
 findings (corrected ones once, no drafts or withdrawn; `/findings/`); and community-mapped camera points, labelled
 "Community-mapped camera points; ownership unconfirmed" (every validated Point feature in the configured public cameras
 GeoJSON, whatever the city boundaries or list caps; zero without a map; `/cameras.html`). A mapped point is not evidence
-of agency ownership. Without a map, `cameras.html` is an empty page with the same disclaimer so the link resolves, it is
+of agency ownership. The camera-points row ends "(map data as of DATE)" with the map's own OpenStreetMap day from
+`map/snapshot.json`, or "(map date unknown)" without one (no snapshot, a null `osm_base` or no map), never the build
+date; under the list, "Counts as of DATE." gives the build date (DF1125-07). Without a map, `cameras.html` is an
+empty page with the same disclaimer so the link resolves, it is
 in the sitemap, and `cameras` is always a reserved page slug. One extra line, "Next verified written-comment deadline",
 shows the earliest `participation.written_comment.deadline` among noncancelled upcoming meetings that is strictly after
 the build date at 00:00 UTC (ties by meeting id), in its own UTC offset, linked to the meeting page; with none the line is
 absent. The strip reads only assembled public content and the configured public map, never `kit/`. Labels: `standings.*`
-and `cameras.empty`.
+(including `standings.as_of`, `standings.map_as_of`, `standings.map_date_unknown`) and `cameras.empty`.
 
 #### What we have asked for (`requests.html`)
 
