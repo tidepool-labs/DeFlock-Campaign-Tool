@@ -169,6 +169,22 @@ def _identity(record):
     return record["source"]["sha256"], record["stage"], record["kind"]
 
 
+def _covered(old, record):
+    """True when ``old`` already covers ``record`` (a replay to refuse).
+
+    One record per source, stage and kind, with ONE append-only recovery for
+    live evidence: a single later pass may follow a fail on the same source
+    (for example a join first run for the wrong queue id or revision on the
+    same verified export). The fail stays on record and the newest row is the
+    pass. Nothing follows a pass, a second fail is not recorded, and a pass
+    that is not newer than the recorded fail is refused (run the check again).
+    """
+    if _identity(old) != _identity(record):
+        return False
+    return not (record["kind"] == "live" and old["result"] == "fail" and record["result"] == "pass"
+                and record["recorded_at"] > old["recorded_at"])
+
+
 def _rename_new(dir_fd, scratch, name):
     # Linux RENAME_NOREPLACE, as used by the rehearsal receipt writer. A plain
     # rename would clobber an existing filename even with our advisory lock.
@@ -209,7 +225,7 @@ def append(record, evidence_dir):
                     raise ValueError("evidence directory is full")
                 if entry.name.endswith(".json"):
                     old = golive_evidence._read_at(dir_fd, entry.name)
-                    if _identity(old) == _identity(record):
+                    if _covered(old, record):
                         raise EvidenceDuplicate()
         scratch = f".golive-{uuid4().hex}.tmp"
         fd = os.open(scratch, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600, dir_fd=dir_fd)

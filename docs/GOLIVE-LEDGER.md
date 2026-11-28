@@ -83,6 +83,13 @@ export manifest (`EXPORT.json`, the same SHA-256 the join prints), a pass only
 when the join passed, otherwise a fail carrying the join's code. An unverified
 export prints no row (exit 2), so there is nothing to record.
 
+With `--evidence-row` the age limit stays at most the policy default (36 h;
+a wider `--max-age-hours` is refused, plain output keeps it). If a join was
+first run for the wrong queue id or revision, its fail row stays on record and
+ONE later pass for the same export may follow it; nothing is recorded for that
+export after a pass, and a pass older than the recorded fail is refused (run
+the join again).
+
 ```sh
 python3 -B -m campaign_tool.records.golive_draft_join --export-root ROOT --name EXPORT --queue-id ID --revision N --evidence-row > scratch/s13.json
 python3 -B -m campaign_tool.records.golive_record live scratch/s13.json --evidence scratch/golive-evidence

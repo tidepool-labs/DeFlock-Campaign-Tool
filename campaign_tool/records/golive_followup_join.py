@@ -209,6 +209,9 @@ def _args(argv):
     args = parser.parse_args(argv)
     if not ID.fullmatch(args.queue_id) or args.revision < 0 or not (math.isfinite(args.max_age_hours) and args.max_age_hours > 0):
         parser.error("queue id, revision or max age out of range")
+    if args.evidence_row and args.max_age_hours > DEFAULT_MAX_AGE_HOURS:
+        # Live evidence keeps the policy age limit; a wider limit stays diagnostic output only.
+        parser.error(f"--evidence-row needs --max-age-hours of at most {DEFAULT_MAX_AGE_HOURS:g}")
     return args
 
 
