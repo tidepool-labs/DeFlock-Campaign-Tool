@@ -509,7 +509,8 @@ draft usage policy"), record it with `--direction TEXT --return-by YYYY-MM-DD [-
   continuation and every other key as stored. `--vote`, `--votes`, `--recording-*` and `--continued-to*` are refused here
   (`direction-only mode cannot be combined with FLAG`), and the minutes mode refuses every direction flag
   (`minutes mode cannot be combined with direction flags`). A full `--replace` of the outcome drops an omitted direction
-  (as it drops omitted votes); the minutes-only `--replace` keeps it. There is no way to clear a direction by itself.
+  (as it drops omitted votes); the minutes-only `--replace` keeps it. To remove a mistaken direction by itself, use
+  `--clear direction` (see [Clearing a direction or the counts](#clearing-a-direction-or-the-counts)).
 
 `--direction` is one line of 1 to 200 plain-text characters, kept exactly as given (no leading or trailing space, no
 angle brackets, control characters or tabs). `--return-by` is a real calendar day on or after the meeting's own date
@@ -553,7 +554,8 @@ ASCII decimal digits only, 0 to 999 (leading zeros are read as the integer): `--
   mode refuses `--vote`, `--votes`, `--recording-*`, `--continued-to*` and the direction flags
   (`counts-only mode cannot be combined with FLAG`); minutes mode refuses the count flags; a partial set of creation
   flags still names what is missing. A full `--replace` of the outcome drops omitted counts (as it drops omitted votes);
-  the minutes-only and direction-only `--replace` keep them. There is no way to clear counts by themselves.
+  the minutes-only and direction-only `--replace` keep them. To remove mistaken counts by themselves, use
+  `--clear counts` (below).
 
 The three keys are stored flat on the outcome (`spoke`, `written`, `comment_source_url`, https, at most 500 characters,
 the source required with a count and not alone); `build` and `content-check` refuse a hand-edited null, boolean, float,
@@ -564,6 +566,18 @@ are the record's literal totals, not a count of unique people, support or opposi
 The wording is the `meeting.comments_both`, `meeting.comments_spoke` and `meeting.comments_written` labels (Spanish draft
 in `examples/labels/es.json`). A meeting without counts is byte-identical to before; `today` is unchanged.
 `data/meetings.json` carries `spoke`, `written` and `comment_source_url` on the outcome.
+
+### Clearing a direction or the counts
+
+`meetings-outcome --directory D --id ID --clear direction` removes the three direction keys (`direction`, `return_by`,
+`direction_source`) from a recorded outcome; `--clear counts` removes the three count keys (`spoke`, `written`,
+`comment_source_url`). It is one atomic write after the whole meeting is validated; the result, verifier, votes,
+recording, minutes, continuation, the other group and every other key stay exactly as stored. Afterwards the meeting
+page, `today` and `data/meetings.json` show the outcome as if that group had never been recorded. Refused with nothing
+written: a meeting with no recorded outcome (`--clear direction: needs a recorded outcome`), a group that is not there
+(`--clear counts: nothing to clear; meeting ID has no public comment counts recorded`), a cancelled meeting, and
+`--clear` together with any other outcome flag, `--replace` included (`--clear cannot be combined with FLAG`). Success
+prints the updated outcome and `Cleared direction only. Nothing was published.` (or `Cleared counts only. ...`).
 
 ## Regular meeting schedules
 
