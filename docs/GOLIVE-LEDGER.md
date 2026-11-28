@@ -63,6 +63,20 @@ printed filenames: an earlier append can succeed before a later one is refused.
 The recorder rechecks rehearsal age but does not know the target engine and does
 not re-read sandbox outputs. Keep the original receipts for review.
 
+Live rows come from an adapter, not from a receipt. Save the adapter's `--json`
+output (a JSON array of evidence rows, e.g. from `golive_adapt_facts` or
+`golive_adapt_gaps`) to a file and record it; `--stage` keeps one row:
+
+```sh
+python3 -B -m campaign_tool.records.golive_record live scratch/facts.json --stage 9 --evidence scratch/golive-evidence
+```
+
+Every row must be valid `live` evidence that is not dated in the future, with
+no failure codes on a pass and each stage at most once; otherwise nothing is
+written. The rows are stored as the adapter wrote them (their SHA-256 links to
+the output file the adapter read). A recorded live row is observed proof only:
+the ledger can show `LIVE` with a gap under **Next**, which is not a go-live.
+
 ## 3. Read the ledger and the live count
 
 Use the phone console's **Go-live** page for the configured view. For the same

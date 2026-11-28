@@ -116,6 +116,41 @@ def from_gate(path, now):
             for stage in dict.fromkeys(receipt["stages"])]
 
 
+_MAX_LIVE_ROWS = 28  # one row per catalogue stage at most
+
+
+def from_live(path, now):
+    """Return the live rows of one adapter ``--json`` array, validated together.
+
+    The adapters (for example golive_adapt_facts, golive_adapt_gaps) already
+    bind each row to the output file they read; this only checks the rows and
+    refuses anything that is not plainly live evidence. Nothing is returned
+    unless every row is valid, so a bad row never leaves a partial record.
+    """
+    rows, _digest, _name = _read_receipt(path)
+    if not isinstance(rows, list) or not rows:
+        raise ValueError("live input must be a non-empty JSON array of evidence rows")
+    if len(rows) > _MAX_LIVE_ROWS:
+        raise ValueError(f"live input has more than {_MAX_LIVE_ROWS} rows")
+    stages = set()
+    for row in rows:
+        golive_evidence.validate(row)
+        # Rehearsal and gate evidence must come from their receipts, never
+        # from a hand-written array passed through the live path.
+        if row["kind"] != "live":
+            raise ValueError("live input row is not kind live")
+        if row["actor"] == "rehearsal":
+            raise ValueError("live input row has a rehearsal actor")
+        if datetime.fromisoformat(row["recorded_at"].replace("Z", "+00:00")) > rehearsal_receipt._utc(now):
+            raise ValueError("live input row is future-dated")
+        if row["result"] == "pass" and row["codes"]:
+            raise ValueError("live input pass row carries failure codes")
+        if row["stage"] in stages:
+            raise ValueError("live input names a stage twice")
+        stages.add(row["stage"])
+    return rows
+
+
 def _identity(record):
     return record["source"]["sha256"], record["stage"], record["kind"]
 
@@ -180,8 +215,8 @@ def append(record, evidence_dir):
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    parser.add_argument("kind", choices=("rehearsal", "gate"))
-    parser.add_argument("receipt", type=Path)
+    parser.add_argument("kind", choices=("rehearsal", "gate", "live"))
+    parser.add_argument("receipt", type=Path, help="receipt file, or for live an adapter --json output file")
     parser.add_argument("--evidence", required=True, type=Path, help="existing evidence directory")
     parser.add_argument("--stage", help="select a declared stage (required for multi-stage rehearsals)")
     args = parser.parse_args(argv)
@@ -190,11 +225,12 @@ def main(argv=None):
         if args.kind == "rehearsal":
             records = [from_rehearsal(args.receipt, args.stage, now)]
         else:
-            records = from_gate(args.receipt, now)
+            records = from_gate(args.receipt, now) if args.kind == "gate" else from_live(args.receipt, now)
             if args.stage is not None:
                 records = [record for record in records if record["stage"] == args.stage]
                 if not records:
-                    raise ValueError("stage is not declared in the gate receipt")
+                    raise ValueError("stage is not declared in the "
+                                     + ("gate receipt" if args.kind == "gate" else "live input"))
         for record in records:
             print(append(record, args.evidence).name)
     except (ValueError, OSError) as exc:
