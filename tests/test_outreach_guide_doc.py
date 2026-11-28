@@ -12,6 +12,7 @@ import socket
 import sys
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -25,7 +26,7 @@ EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 FINDING_ID, SLUG = "fnd_0000000000000001", "cedar-policy-posted"
 WARNING = "These offline commands post, send and publish nothing. A draft is not approval to use it."
 ORDER = ["1. Read the finding first", "2. Social posts, one draft per platform", "3. A thread for one finding",
-         "4. Posts for meetings", "5. Press release and letter to the editor", "6. The flyer",
+         "4. Posts for meetings, meeting outcomes and campaign events", "5. Press release and letter to the editor", "6. The flyer",
          "7. The newsletter draft", "8. The newsletter approval card (described, not run)",
          "9. Record coverage you received", "10. What the tool never does"]
 
@@ -126,7 +127,7 @@ class OutreachGuideTests(unittest.TestCase):
                 self.assertTrue(namespace.thread == ("--thread" in tokens))
         self.assertEqual(list_modes, {False, True})
         for needed in (("campaign_tool", ("social",)), ("campaign_tool", ("press", "draft")),
-                       ("campaign_tool", ("press", "letter")), ("campaign_tool", ("flyer",)),
+                       ("campaign_tool", ("press", "letter")), ("campaign_tool", ("press", "check")), ("campaign_tool", ("flyer",)),
                        ("campaign_tool", ("content", "coverage", "add")),
                        ("campaign_tool", ("content", "coverage", "remove")),
                        ("campaign_tool", ("supporters", "list")),
@@ -205,6 +206,128 @@ class OutreachGuideTests(unittest.TestCase):
         for promise in ("not co-sign approval", "`content-check`", "private record without public entry",
                         "SITE-CONTENT.md#supporting-organizations"):
             self.assertIn(promise, section)
+
+    def test_check_commands_behave_as_the_guide_says(self):
+        """DF1125-10: social --check reads every draft folder, press check and newsletter --check are read-only."""
+        text = read(GUIDE)
+        self.assertNotIn("reads only the older", text)
+        self.assertIn("PUBLICATION.md#checking-every-draft-folder-read-only", text)
+        results = self.run_guide()
+        self.assertIn("kit/press/letters/", results["press check"][1])
+        before = tree(self.root)
+        check = ["social", "--directory", "$CAMPAIGN", "--check", "--text"]
+        code, out, _ = self.run_command("campaign_tool", check)
+        self.assertEqual(code, 3)  # the guide: platform-only drafts leave kit/social/ itself missing
+        for folder in ("kit/social:", "kit/social/x:", "kit/social/bluesky:", "kit/social/mastodon:",
+                       "kit/social/threads/bluesky:", "kit/social/meetings/bluesky:",
+                       "kit/social/outcomes/bluesky:", "kit/social/events/bluesky:"):
+            self.assertIn(folder, out)
+        self.assertIn(f"{SLUG}: missing", out)
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertEqual(tree(self.root), before)  # both checks wrote nothing
+        self.assertEqual(self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN"])[0], 0)
+        self.assertEqual(self.run_command("campaign_tool", check)[0], 0)
+        settled = tree(self.root)
+        for refused in (["--thread", "--finding", "$FINDING_ID", "--within-days", "3"], ["--events", "--check"],
+                        ["--outcomes", "--meetings"], ["--check", "--platform", "x"]):
+            code, out, err = self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN"] + refused)
+            self.assertEqual(code, 2, refused)
+            self.assertIn("cannot be combined with", out + err)
+        self.assertEqual(tree(self.root), settled)  # refused combinations write nothing
+
+    def test_check_boundaries_the_guide_warns_about(self):
+        """DF1125-10 r1: the limits the guide states for press check, newsletter --check, flyer --event and --finding."""
+        text = read(GUIDE)
+        # platform drafts cannot be narrowed by --finding
+        code, out, err = self.run_command("campaign_tool", ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky",
+                                                            "--finding", "$FINDING_ID"])
+        self.assertEqual(code, 2)
+        self.assertIn("--finding needs --thread", out + err)
+        self.assertIn("`--finding needs --thread`", text)
+        self.assertNotIn("Without `--finding`", text)
+        # an edited press copy without its draft header is `not checked`, exit 3
+        self.assertEqual(self.run_command("campaign_tool", ["press", "draft", "--directory", "$CAMPAIGN",
+                                                            "--finding", "$FINDING_ID"])[0], 0)
+        self.assertEqual(self.run_command("campaign_tool", ["press", "check", "--directory", "$CAMPAIGN"])[0], 0)
+        release = next((self.root / "kit/press").glob("*.md"))
+        edited = release.with_name(release.stem + "-edited.md")
+        edited.write_text(release.read_text(encoding="utf-8").split("\n", 1)[1], encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool", ["press", "check", "--directory", "$CAMPAIGN"])
+        self.assertEqual(code, 3)
+        self.assertIn(f"{edited.name}: not checked", out)
+        for promise in ("`not checked` means the tool could not check it", "Anything other than `ok` needs review by hand",
+                        "Even `ok` is not clearance to reuse a draft"):
+            self.assertIn(promise, text)
+        # newsletter --check does not look at campaign events: a changed venue and time still match
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        soon = now + timedelta(days=3)
+        events = self.root / "content" / "events.json"
+        row = {"id": "teach-in", "title": "Records teach-in", "starts_at": soon.isoformat(),
+               "ends_at": (soon + timedelta(hours=2)).isoformat(), "venue": "Cedar Library room 1",
+               "description_md": "A fictional teach-in."}
+        events.write_text(json.dumps([row]), encoding="utf-8")
+        newsletter = ["--directory", "$CAMPAIGN", "--from-content"]
+        result = self.run_command("campaign_tool.newsletter", newsletter)
+        self.assertEqual(result[0], 0, result)
+        draft = (self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")
+        self.assertIn("Cedar Library room 1", draft)
+        moved = soon + timedelta(hours=1)
+        row.update(venue="Cedar Town Hall", starts_at=moved.isoformat(), ends_at=(moved + timedelta(hours=2)).isoformat())
+        events.write_text(json.dumps([row]), encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertIn("Cedar Library room 1", (self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
+        self.assertIn("not campaign events", text)
+        # r2: newsletter --check compares a meeting's presence, start and agenda link only, not participation details
+        from tests.test_newsletter_participation import facts, how_line, meeting
+        deadline = now + timedelta(days=2)
+        board = meeting("qa-board", starts_at=(deadline + timedelta(days=2)).isoformat(), participation=facts(
+            verified_at=(now - timedelta(days=1)).date().isoformat(),  # yesterday: never "in the future" in any zone
+            written_comment={"how": "Use the fictional comment form", "deadline": deadline.isoformat()}))
+        board_file = self.root / "content/meetings/qa-board.json"
+        board_file.write_text(json.dumps(board), encoding="utf-8")
+        result = self.run_command("campaign_tool.newsletter", newsletter)
+        self.assertEqual(result[0], 0, result)
+        saved = how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
+        # fallback: the official agenda moved but staged content did not, so a rebuild repeats the old deadline
+        self.assertEqual(self.run_command("campaign_tool.newsletter", newsletter)[0], 0)
+        self.assertEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
+        board["participation"]["written_comment"]["deadline"] = (deadline + timedelta(hours=4)).isoformat()
+        board_file.write_text(json.dumps(board), encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
+        self.assertEqual(self.run_command("campaign_tool.newsletter", newsletter)[0], 0)
+        self.assertNotEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
+        board_file.unlink()
+        self.assertNotIn("compares findings, corrections and meetings", text)
+        for promise in ("compares only these facts saved with the draft", "its start time, its agenda link",
+                        "participation instructions (in person, remote, written comment and its deadline, speaker time)",
+                        "a changed written-comment deadline, event venue or event time still prints the match line",
+                        "against the official agenda", "read the draft text yourself",
+                        "Do not reuse a draft made earlier as it is", "not a check that a draft can be reused",
+                        "rebuilding it cannot pick up a change the organizer has not entered",
+                        "ask the organizer to correct the staged meeting or event first, then run the draft command above again"):
+            self.assertIn(promise, text)
+        for retired in ("Before you reuse a draft made earlier, run", "if anything differs, rebuild the draft"):
+            self.assertNotIn(retired, text)
+        # flyer --event: the cutoff is 00:00 UTC today, so an event that already ended today still gets a flyer
+        midnight = now.replace(hour=0, minute=0, second=0)
+        row.update(id="earlier-today", starts_at=midnight.isoformat(), ends_at=(midnight + timedelta(seconds=1)).isoformat())
+        yesterday = dict(row, id="yesterday", starts_at=(midnight - timedelta(seconds=1)).isoformat())
+        events.write_text(json.dumps([row, yesterday]), encoding="utf-8")
+        flyer = ["flyer", "--directory", "$CAMPAIGN", "--event"]
+        self.assertEqual(self.run_command("campaign_tool", flyer + ["earlier-today"])[0], 0)
+        for suffix in (".html", ".txt"):
+            self.assertTrue((self.root / "kit/flyer" / f"event-earlier-today{suffix}").exists())
+        self.assertNotEqual(self.run_command("campaign_tool", flyer + ["yesterday"])[0], 0)
+        self.assertFalse((self.root / "kit/flyer/event-yesterday.txt").exists())
+        self.assertIn("one that starts before 00:00 UTC today is refused", text)
+        self.assertIn("Check that the event is still upcoming before you use the flyer", text)
 
     def test_refusal_and_edit_guidance_is_honest(self):
         social = ["social", "--directory", "$CAMPAIGN", "--platform", "bluesky"]
