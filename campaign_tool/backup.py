@@ -58,6 +58,8 @@ PRIVATE_WORK = (("private/drafts", _FINDING_FILE),
                 ("private/reviews", re.compile(r"[A-Za-z0-9_-]{1,64}\.json|binding-log\.jsonl")),
                 ("private/review-assignments", _FINDING_FILE),
                 ("private/reviewers.json", None))
+# The stable lock files the review and assignment writers leave behind (findings._locked); skipped, never archived.
+PRIVATE_WORK_LOCKS = frozenset(("private/reviews/.lock", "private/review-assignments/.lock"))
 
 
 class BackupError(ValueError):
@@ -120,11 +122,17 @@ def _private_work_members(root):
     Refusals name an archive member or a PRIVATE_WORK path, never a full path or an unexpected file name.
     """
     wanted = []
+    try:
+        parent = os.lstat(Path(root) / "private").st_mode
+    except FileNotFoundError:
+        return wanted  # no private folder at all: there is no private work to carry
+    if not stat.S_ISDIR(parent):
+        raise BackupError("private_work: private must be a real folder, not a link or a file; nothing was written")
     for rel, pattern in PRIVATE_WORK:
         path = Path(root) / rel
         try:
             mode = os.lstat(path).st_mode
-        except (FileNotFoundError, NotADirectoryError):
+        except FileNotFoundError:
             continue
         if pattern is None:
             if not stat.S_ISREG(mode):
@@ -134,6 +142,11 @@ def _private_work_members(root):
         if not stat.S_ISDIR(mode):
             raise BackupError(f"private_work: {rel} must be a real folder, not a link or a file; nothing was written")
         for entry in sorted(os.listdir(path)):
+            if f"{rel}/{entry}" in PRIVATE_WORK_LOCKS:
+                if not stat.S_ISREG(os.lstat(path / entry).st_mode):
+                    raise BackupError(f"private_work: {rel}/{entry} is not a regular file (a link or special file); "
+                                      "nothing was written")
+                continue  # the writers' own lock file: expected, never archived
             if pattern.fullmatch(entry) is None:
                 raise BackupError(f"private_work: unexpected name under {rel}/; nothing was written")
             if not stat.S_ISREG(os.lstat(path / entry).st_mode):

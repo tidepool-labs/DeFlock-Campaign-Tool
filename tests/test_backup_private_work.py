@@ -20,8 +20,9 @@ from unittest.mock import patch
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import backup  # noqa: E402
+from campaign_tool import backup, findings  # noqa: E402
 from tests.test_backup_encrypt import GPG, make_home  # noqa: E402
+from tests.test_findings_review import draft  # noqa: E402
 
 DRAFT = "fnd_0123456789ab"
 WORK = {f"private/drafts/{DRAFT}.json": b'{"id": "fnd_0123456789ab", "claim": "Synthetic claim."}\n',
@@ -171,6 +172,72 @@ class PrivateWorkBackupTests(unittest.TestCase):
                 # without the flag the same campaign still backs up as before
                 backup.export(root, self.out / "plain.tar")
                 (self.out / "plain.tar").unlink()
+
+    def test_lock_files_left_by_real_review_and_assignment_writes_are_skipped(self):
+        root = self.copy()
+        (root / "private/reviewers.json").unlink()  # the real writers below run without a roster
+        item = draft()
+        write(root, {f"private/drafts/{item['id']}.json": json.dumps(item).encode()})
+        findings.assign(root, item, "factual", "Rev One", "2026-03-01")
+        findings.add_receipt(root, item, "factual", "approve", "Rev One", "Checked p. 1.")
+        locks = ("private/reviews/.lock", "private/review-assignments/.lock")
+        for name in locks:
+            self.assertTrue(stat.S_ISREG(os.lstat(root / name).st_mode), name)
+        archive = self.out / "work.tar.gpg"
+        manifest = backup.export(root, archive, encrypt_to=self.pub, private_work=True)
+        for name in locks:
+            self.assertNotIn(name, manifest["files"])
+        for name in (f"private/reviews/{item['id']}.json", f"private/review-assignments/{item['id']}.json"):
+            self.assertIn(name, manifest["files"])
+        self.assertTrue(backup.verify(archive, gnupg_home=self.home)["ok"])
+        self.assertTrue(backup.diff(archive, root, gnupg_home=self.home)["current"])
+        # a lock name that is a link or a special file still refuses the whole backup
+        for label, damage in (("link", lambda p: p.unlink() or os.symlink(root / "campaign.json", p)),
+                              ("fifo", lambda p: p.unlink() or os.mkfifo(p))):
+            for name in locks:
+                with self.subTest(case=f"{label} {name}"):
+                    damaged = self.work / f"c-{label}-{name.replace('/', '-')}"
+                    shutil.copytree(root, damaged, symlinks=True)
+                    damage(damaged / name)
+                    with self.assertRaises(backup.BackupError) as raised:
+                        backup.export(damaged, self.out / "bad.tar.gpg", encrypt_to=self.pub, private_work=True)
+                    self.assertIn(f"{name} is not a regular file", str(raised.exception))
+                    self.assertNotIn(str(self.work), str(raised.exception))
+                    self.assertFalse((self.out / "bad.tar.gpg").exists())
+                    with self.assertRaises(backup.BackupError):
+                        backup.diff(archive, damaged, gnupg_home=self.home)
+        # a lock-like name anywhere else is still an unexpected name
+        stray = self.work / "stray"
+        shutil.copytree(self.root, stray, symlinks=True)
+        write(stray, {"private/drafts/.lock": b""})
+        with self.assertRaisesRegex(backup.BackupError, "unexpected name under private/drafts/"):
+            backup.export(stray, self.out / "stray.tar.gpg", encrypt_to=self.pub, private_work=True)
+
+    def test_a_private_path_that_is_not_a_folder_is_refused(self):
+        archive = self.out / "work.tar.gpg"
+        backup.export(self.root, archive, encrypt_to=self.pub, private_work=True)
+        absent = self.work / "absent"
+        shutil.copytree(self.root, absent, symlinks=True, ignore=shutil.ignore_patterns("private"))
+        manifest = backup.export(absent, self.out / "absent.tar.gpg", encrypt_to=self.pub, private_work=True)
+        self.assertFalse(any(backup._private_work_name(name) for name in manifest["files"]))
+        refusal = r"private must (be a real folder|not be a symlink)"  # a link is already refused by the readers
+        for label, damage in (("file", lambda p: p.write_bytes(b"synthetic")),
+                              ("link", lambda p: os.symlink(self.root / "private", p))):
+            with self.subTest(case=label):
+                damaged = self.work / ("c-private-" + label)
+                shutil.copytree(absent, damaged, symlinks=True)
+                damage(damaged / "private")
+                before = sorted(self.out.iterdir())
+                with self.assertRaises(backup.BackupError) as raised:
+                    backup.export(damaged, self.out / "bad.tar.gpg", encrypt_to=self.pub, private_work=True)
+                self.assertRegex(str(raised.exception), refusal)
+                self.assertNotIn(str(self.work), str(raised.exception))
+                self.assertEqual(sorted(self.out.iterdir()), before)
+                r = run_cli("backup", "--directory", damaged, "--out", self.out / "cli-bad.tar.gpg", "--encrypt-to",
+                            self.pub, "--private-work")
+                self.assertEqual(r.returncode, 1, r.stdout + r.stderr)
+                self.assertRegex(r.stderr, refusal)
+                self.assertEqual(sorted(self.out.iterdir()), before)
 
     def test_without_the_flag_the_archive_is_byte_identical(self):
         root = self.work / "small"
