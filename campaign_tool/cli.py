@@ -1729,6 +1729,9 @@ def main():
     publish_p = finding_cmds.add_parser("publish", help="Publish a fully reviewed draft to content/findings/ (no build)")
     for flag in ("--directory", "--approved-by"):
         publish_p.add_argument(flag, required=True)
+    publish_p.add_argument("--before-reply-deadline", metavar="REASON",
+                           help="Publish before the agency's reply deadline anyway (1-200 characters); the reason is "
+                                "kept in private/publication-log.jsonl")
     reply_req_p = finding_cmds.add_parser("reply-request", help="Write a private, never-sent request for comment to the "
                                           "draft's agency (kit/replies/<id>.md); preparing it is not asking")
     reply_req_p.add_argument("--directory", required=True)
@@ -2397,8 +2400,11 @@ def main():
                 print("Run build to remove it from public/. Nothing was deployed.")
                 return
             if args.finding_command == "publish":
-                result = findings.publish(root, args.draft, args.approved_by)
+                result = findings.publish(root, args.draft, args.approved_by,
+                                          before_reply_deadline=args.before_reply_deadline)
                 print(json.dumps({k: v for k, v in result.items() if k != "receipt_trust"}))
+                if args.before_reply_deadline is not None:
+                    print("Published before the agency's reply deadline; the reason is in private/publication-log.jsonl.")
                 print("Not built or deployed. Run build, then review the site before any deploy.")
                 print(findings.trust_line(result["receipt_trust"]))
                 return

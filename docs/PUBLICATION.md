@@ -289,6 +289,13 @@ nothing; asking the agency is your own manual step. It stores `agency_response: 
 prepared_on, reply_by}` on the draft. **Pending means prepared, not asked**, and a pending reply is never
 published.
 
+While the reply is still pending, `finding publish` waits for the deadline: on a day before `reply_by` it refuses,
+names the deadline and writes nothing, whether or not you have asked yet (a lost or never-sent ask looks the same).
+It publishes once a reply is recorded or from the `reply_by` day on; the day counts as the earlier of the local and
+the UTC calendar day. To publish earlier anyway, add `--before-reply-deadline REASON` (1-200 characters, no control
+characters): the publish entry in `private/publication-log.jsonl` then carries `before_reply_deadline: {reply_by,
+reason}`. The flag is refused when nothing is waiting. A finding without a pending reply publishes as before.
+
 `python3 -m campaign_tool finding reply DRAFT --directory D --status received|declined|no_response --on D
 --asked-on D [--text T] [--record PREFIX]` records the outcome on the draft. `--asked-on` is your attestation of
 the day you really asked the agency; an unsent prepared request is not evidence of asking. `received` needs
