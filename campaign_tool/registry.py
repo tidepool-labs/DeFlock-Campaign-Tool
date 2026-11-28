@@ -228,7 +228,9 @@ def bind_records(name, export_root, replace=False):
     given = Path(export_root).expanduser()
     if given.is_symlink() or not given.is_dir():
         raise ValueError("the export root is a symlink, missing or not a directory")
-    root = os.path.realpath(given)
+    root = os.path.normpath(os.path.abspath(given))
+    if os.path.realpath(root) != root:  # link-free input: no symlinked parent folder, checked before any manifest read
+        raise ValueError("the export root path goes through a symlinked folder; give its real path")
     pid = campaign_summary.project_id(root)
     path = register_path()
     with _transaction(path):
@@ -415,12 +417,16 @@ def run(args):
         elif args.campaigns_command == "remove":
             remove(args.name)
             print(f"campaign | {args.name} | unregistered; the directory and its data were not touched")
-        elif args.campaigns_command == "bind-records":
-            bind_records(args.name, args.export_root, replace=args.replace)
-            print(f"campaign | {args.name} | bound to its records export | private; nothing was copied")
-        elif args.campaigns_command == "unbind-records":
-            unbind_records(args.name)
-            print(f"campaign | {args.name} | records binding removed; the export was not touched")
+        elif args.campaigns_command in ("bind-records", "unbind-records"):
+            try:
+                if args.campaigns_command == "bind-records":
+                    bind_records(args.name, args.export_root, replace=args.replace)
+                else:
+                    unbind_records(args.name)
+            except OSError:  # an I/O error's text names a private path: a fixed refusal instead
+                raise ValueError("the campaign register could not be read or written") from None
+            print(f"campaign | {args.name} | " + ("bound to its records export | private; nothing was copied"
+                  if args.campaigns_command == "bind-records" else "records binding removed; the export was not touched"))
         elif args.campaigns_command == "list":
             for e in sorted(_load(register_path()), key=lambda e: e["name"]):
                 print(f"campaign | {e['name']} | {e['directory']} | added {e['added_at']}")

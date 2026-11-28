@@ -142,6 +142,31 @@ class BindRecords(unittest.TestCase):
         inside, _ = real_export(self.base / "pine", self.made)  # an export root inside ANOTHER campaign's directory
         self.refused("bind-records", "cedar", "--export-root", inside, rule="overlaps another campaign's directory")
 
+    def test_symlinked_parent_folder_is_refused_before_any_read(self):
+        root, pin = self.export("exports-cedar")
+        via = self.base / "linked-parent"
+        via.symlink_to(self.base)  # the export folder itself is real; one of its parents is a link
+        with mock.patch.object(campaign_summary, "project_id", side_effect=AssertionError("manifest was read")):
+            err = self.refused("bind-records", "cedar", "--export-root", via / root.relative_to(self.base),
+                               rule="goes through a symlinked folder; give its real path")
+        self.assertNotIn(str(self.base), err)
+        self.assertNotIn("records", self.entries()[0])
+
+    def test_register_io_errors_give_a_fixed_path_free_refusal(self):
+        root, pin = self.export("exports-cedar")
+        self.assertEqual(self.run_cli("campaigns", "bind-records", "cedar", "--export-root", root)[0], 0)
+        before = self.register.read_bytes()
+        blocker = self.base / "not-a-folder"
+        blocker.write_text("synthetic", encoding="utf-8")
+        with mock.patch.dict(os.environ, {registry.ENV: str(blocker / "campaigns.json")}):
+            for arguments in (("bind-records", "pine", "--export-root", root), ("unbind-records", "cedar")):
+                with self.subTest(arguments[0]):
+                    code, out, err = self.run_cli("campaigns", *arguments)
+                    self.assertEqual((code, out), (1, ""), err)
+                    self.assertEqual(err, "Stopped: the campaign register could not be read or written\n")
+                    self.assertNotIn(str(self.base), err)
+        self.assertEqual(self.register.read_bytes(), before)
+
     def test_project_id_matches_read_export(self):
         root, pin = self.export("exports-cedar")
         self.assertEqual(campaign_summary.project_id(str(root)), pin.source_project_id)
