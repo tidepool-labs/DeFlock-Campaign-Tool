@@ -272,6 +272,15 @@ class LabelsTest(unittest.TestCase):
                    "agency.law_status_reviewed", "agency.policy_check_addressed",
                    "agency.policy_check_checked", "agency.policy_check_heading", "agency.policy_check_link",
                    "agency.policy_check_not_found", "agency.policy_check_unclear"]
+        # agency.pre_meeting_*, agency.sharing_*: the fixture records no pre-implementation meeting or portal recipient
+        # list (tests/test_site_sharing_labels.py overrides every one).
+        reading += ["agency.pre_meeting_found", "agency.pre_meeting_heading", "agency.pre_meeting_not_found",
+                    "agency.pre_meeting_record_link", "agency.pre_meeting_rule", "agency.sharing_bulletin",
+                    "agency.sharing_col_agencies", "agency.sharing_col_kind", "agency.sharing_col_state",
+                    "agency.sharing_count_many", "agency.sharing_count_one", "agency.sharing_heading",
+                    "agency.sharing_intro", "agency.sharing_kind_federal", "agency.sharing_kind_local",
+                    "agency.sharing_kind_private", "agency.sharing_kind_state", "agency.sharing_kind_unknown",
+                    "agency.sharing_more", "agency.sharing_outside", "agency.sharing_portal_link", "agency.sharing_rule"]
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
