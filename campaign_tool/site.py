@@ -280,7 +280,9 @@ PUBLIC_OFFICIALS_TOP_LEVEL = {"schema_version", "campaign", "generated_from", "b
 PUBLIC_OFFICIALS_BODY_FIELDS = ("agency_id", "name", "officials")
 PUBLIC_OFFICIAL_FIELDS = ("name", "role", "profile_url", "source_url", "checked_on")
 OFFICIALS_CSV_COLUMNS = ("agency_id", "agency_name", "name", "role", "profile_url", "source_url", "checked_on")
-PUBLIC_AGENCY_JSON_ONLY = ("reports",)  # DF0237-02: recorded reports go to data/agencies.json only; the CSV header is unchanged
+PUBLIC_AGENCY_JSON_ONLY = ("reports", "policy_search")  # DF0237-02, DF1125-02: data/agencies.json only, present only when
+# recorded; the CSV header is unchanged
+PUBLIC_POLICY_SEARCH_FIELDS = ("status", "searched_url", "checked_on")  # DF1125-02: exactly the stored reading
 PUBLIC_ASKED_FIELDS = ("topic", "state", "asked_on", "updated_on")
 # DF2007-13: optional answer details, present on an exported item only when the organizer recorded them
 PUBLIC_ASKED_OPTIONAL = ("fee_quoted", "extension", "withheld_sections")
@@ -3475,6 +3477,8 @@ class Site:
                    if agency.get("actions") else {}),  # DF0237-01: likewise, the page's order
                 **({"reports": [{k: r[k] for k in PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS if k in r} for r in agency["reports"]]}
                    if agency.get("reports") else {}),  # DF0237-02: same order as the page, only when recorded
+                **({"policy_search": {k: agency["policy_search"][k] for k in PUBLIC_POLICY_SEARCH_FIELDS}}
+                   if agency.get("policy_search") else {}),  # DF1125-02: the dated "not found" reading, only when recorded
                 "camera_count": cities.get(agency["slug"], {}).get("cameraCount") or None}
 
     def officials_exported(self):
@@ -3498,6 +3502,7 @@ class Site:
                                                             "contract": (PUBLIC_CONTRACT_FIELDS + PUBLIC_ARCHIVE_FIELDS + ("cost",), {"cost": (PUBLIC_COST_FIELDS, {})}),
                                                             "funding": (PUBLIC_FUNDING_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
                                                             "reports": (PUBLIC_REPORT_FIELDS + PUBLIC_ARCHIVE_FIELDS, {}),
+                                                            "policy_search": (PUBLIC_POLICY_SEARCH_FIELDS, {}),
                                                             "transparency": (PUBLIC_TRANSPARENCY_FIELDS + PUBLIC_ARCHIVE_FIELDS, {})})})
         return json.dumps(self.stamp_license(doc), ensure_ascii=False, sort_keys=True, indent=2) + "\n"
 

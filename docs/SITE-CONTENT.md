@@ -357,6 +357,11 @@ characters), `checked_on` not after the build date. It never coexists with `prof
 both). `agencies.html` and the agency page show one fixed sentence, "We did not find a posted ALPR usage policy on the
 agency's site (checked DATE).", with "the agency's site" linked to `searched_url` (labels `agency.policy_not_found`,
 `agency.policy_not_found_site`); it is an observation on that day, never a statement that a policy is required.
+`data/agencies.json` carries the same three keys as `policy_search` for an agency with a public page, only when it is
+recorded (`data/agencies.csv` gains no column). `doctor --stale-days` names it `content/agencies.json:<agency_id>.policy_search`,
+`content agency-profile list` lists it and `content agency-profile recheck --field policy_search` updates its date like
+the other dated profile records, and `content link-check` lists `searched_url` at
+`content/agencies.json:<agency_id>.profile.policy_search.searched_url`.
 
 ### Rechecking agency-profile dates (`content agency-profile`)
 

@@ -285,6 +285,7 @@ def collect_links(root, *, today=None):
             cite(policy.get("url"), base + ".profile.alpr_policy.url", policy)
             cite(policy.get("source_url"), base + ".profile.alpr_policy.source_url")  # the archive annotates the policy url
         cite((agency.get("policy_check") or {}).get("policy_url"), base + ".profile.policy_check.policy_url")
+        cite((agency.get("policy_search") or {}).get("searched_url"), base + ".profile.policy_search.searched_url")
         contract = agency.get("contract")
         if contract:
             cite(contract.get("source_url"), base + ".profile.contract.source_url", contract)

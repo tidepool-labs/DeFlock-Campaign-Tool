@@ -105,7 +105,9 @@ page you searched, at most 500 characters; `checked_on` not after today). The pa
 ALPR usage policy on the agency's site (checked DATE)." with that page linked. It is what you saw on that day, not a
 finding that a policy is missing or required. An agency has a posted policy or a "not found" reading, never both:
 recording either one while the other is stored needs `--replace`, which swaps them in one write (swapping a posted
-policy that has a `policy_check` also needs `--drop-check`).
+policy that has a `policy_check` also needs `--drop-check`). The "not found" reading is a dated record like the others:
+`doctor --stale-days` names it, `content agency-profile list` shows it, and after you look again and still find no
+policy, `content agency-profile recheck --field policy_search` records the new day.
 
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
 `alpr_policy` paragraph).

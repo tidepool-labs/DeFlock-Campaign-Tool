@@ -103,7 +103,7 @@ _MISSING = object()  # no such public file at all (distinct from a file holding 
 _BAD = object()  # present but unreadable: never echoed
 PROFILE_REFRESH = "recheck the source and update checked_on"
 PROFILE_SINGLETONS = ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
-                      "sharing")
+                      "sharing", "policy_search")
 OFFICIALS_FILE, OFFICIAL_REFRESH = "content/officials.json", "re-check the official's page and update checked_on"
 SCHEDULES_FILE, SCHEDULE_REFRESH = "content/body-schedules.json", "re-check the body's calendar page and update checked_on"
 SOURCES_FILE, COPY_REFRESH = "content/sources.json", "re-download the public copy and run sources verify-copy"
