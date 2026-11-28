@@ -1573,7 +1573,7 @@ def main():
     profile_recheck.add_argument("--agency", required=True, help="agency_id in content/agencies.json")
     profile_recheck.add_argument("--field", required=True, choices=("alpr_policy", "policy_check", "contract", "contract_check",
                                                                    "pre_implementation_meeting", "sharing", "funding",
-                                                                   "transparency", "reports"))
+                                                                   "transparency", "reports", "policy_search"))
     profile_recheck.add_argument("--index", default=None, help="funding, transparency and reports only: the 1-based stored "
                                  "position that list prints (doctor names the same entry zero-based in brackets)")
     profile_recheck.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD",

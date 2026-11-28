@@ -1,7 +1,9 @@
 """DF1125-02 slice 1: ``content agency-profile policy-not-found`` records that an organizer looked for a posted ALPR
 usage policy and did not find one (``profile.policy_search``); the build validates it by field, never beside
 ``profile.alpr_policy``, and ``agencies.html`` / the agency page show one fixed sentence and a linked "not found" glance
-cell. Synthetic agencies in temporary storage only; nothing is fetched.
+cell. Slice 2: ``data/agencies.json`` carries it, ``doctor --stale-days`` / ``agency-profile list`` / ``recheck`` treat
+it like the other dated records and ``content link-check`` cites ``searched_url``. Synthetic agencies in temporary
+storage only; nothing is fetched.
 
 Run from the repository root: python3 -B -m unittest tests.test_policy_not_found -v
 """
@@ -20,11 +22,12 @@ from unittest import mock
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
-from campaign_tool import cli  # noqa: E402
+from campaign_tool import cli, content_links, law  # noqa: E402
 from campaign_tool.content import ContentError, load_agencies  # noqa: E402
 from campaign_tool.site import build_site  # noqa: E402
 
 TODAY = date.today()
+SCHEMA = json.loads((REPO_ROOT / "schemas" / "agencies-open-data.schema.json").read_text(encoding="utf-8"))
 A, B = "ca-alpha-pd", "ca-beta-so"
 POLICY = "https://example.invalid/alpha/policy-a.pdf"
 SEARCHED = "https://example.invalid/beta/policies"
@@ -180,6 +183,41 @@ class RecordTests(_NoNetwork):
         self.assert_silent(code, out, err)
         self.assertNotIn(MARKER, self.target.read_text(encoding="utf-8"))
 
+    # --- slice 2: the reading is a dated record like the others (list / recheck) ---
+    def listed(self, agency=B):
+        code, out, err = run("content", "agency-profile", "list", "--directory", self.root, "--agency", agency, "--json")
+        self.assertEqual(code, 0, err)
+        return json.loads(out)
+
+    def recheck(self, checked_on, agency=B):
+        return run("content", "agency-profile", "recheck", "--directory", self.root, "--agency", agency,
+                   "--field", "policy_search", "--checked-on", checked_on)
+
+    def test_list_and_recheck_treat_the_reading_like_other_dated_records(self):
+        self.assertEqual(self.not_found()[0], 0)
+        self.assertEqual(self.listed(), [{"agency_id": B, "field": "policy_search", "index": None,
+                                          "checked_on": ago(5), "age_days": 5}])
+        code, out, err = self.recheck(ago(1))
+        self.assertEqual(code, 0, err)
+        self.assertIn(f"Rechecked {B} policy_search: {ago(5)} -> {ago(1)}.", out)
+        self.assertEqual(self.profile(B)["policy_search"],
+                         {"status": "not_found", "searched_url": SEARCHED, "checked_on": ago(1)})  # only the date
+        self.assertEqual(self.listed()[0]["age_days"], 1)
+        for day, needle in ((ago(3), f"must not be before stored checked_on {ago(1)}"),
+                            ((TODAY + timedelta(days=1)).isoformat(), "must not be after today")):
+            with self.subTest(day=day):
+                before = self.target.read_bytes()
+                code, out, err = self.recheck(day)
+                self.assertNotEqual(code, 0, out)
+                self.assertIn(needle, err)
+                self.assertEqual(self.target.read_bytes(), before)
+        before = self.target.read_bytes()
+        code, out, err = self.recheck(ago(1), agency=A)  # alpha has a posted policy, not a "not found" reading
+        self.assertNotEqual(code, 0, out)
+        self.assertIn(f"{A} has no recorded policy_search; nothing to recheck", err)
+        self.assertEqual(self.target.read_bytes(), before)
+        self.assertNotIn("policy_search", [row["field"] for row in self.listed(A)])
+
 
 
 class LoaderTests(unittest.TestCase):
@@ -246,8 +284,10 @@ class SiteTests(_NoNetwork):
         self.assertIn(f'{link}not found</a> <small>checked <time datetime="2025-03-04">', glance)
         changed = sorted(name for name in set(before) | set(after) if before.get(name) != after.get(name))
         self.assertEqual(target["agency_id"], "ca-cedar-police")  # the example's police agency; its page is cedar.html
-        self.assertEqual(changed, ["agencies.html", "agencies/cedar.html"])
-        self.assertIn(sentence, after[changed[1]].decode("utf-8"))  # the agency page; open data and the rest unchanged
+        # the open data file, plus the data page and datapackage.json that list its size and digest
+        self.assertEqual(changed, ["agencies.html", "agencies/cedar.html", "data.html", "data/agencies.json",
+                                   "data/datapackage.json"])
+        self.assertIn(sentence, after[changed[1]].decode("utf-8"))  # the agency page; the CSV and the rest unchanged
         for words in ("required", "violation", "illegal", "must"):
             self.assertNotIn(words, sentence)
 
@@ -258,6 +298,33 @@ class SiteTests(_NoNetwork):
         self.assertNotIn(SENTENCE, page)
         self.assertIn(f'<p class="policy-not-found">ZZ <a href="{SEARCHED}" rel="noopener noreferrer">QQ</a> ZZ ', page)
         self.assertIn(f'<a href="{SEARCHED}" rel="noopener noreferrer">XX</a>', page)
+
+    # --- slice 2: open data and link-check ---
+    def test_open_data_carries_the_reading_only_where_recorded(self):
+        before = json.loads(self.build()["data/agencies.json"])
+        law.validate(before, SCHEMA)
+        self.assertFalse(any("policy_search" in agency for agency in before["agencies"]))
+        target = self.with_search()
+        exported = json.loads(self.build()["data/agencies.json"])
+        law.validate(exported, SCHEMA)
+        rows = {agency["agency_id"]: agency for agency in exported["agencies"]}
+        self.assertEqual(rows[target["agency_id"]]["policy_search"],
+                         {"status": "not_found", "searched_url": SEARCHED, "checked_on": "2025-03-04"})
+        self.assertIsNone(rows[target["agency_id"]]["alpr_policy"])
+        self.assertEqual([a for a in rows if "policy_search" in rows[a]], [target["agency_id"]])
+        for bad in ({"status": "missing"}, {"note": "x"}, {"searched_url": "http://example.invalid/"}):
+            with self.subTest(bad=bad):
+                document = json.loads(json.dumps(exported))
+                document["agencies"][0]["policy_search"] = {**rows[target["agency_id"]]["policy_search"], **bad}
+                with self.assertRaises(ValueError):
+                    law.validate(document, SCHEMA)
+
+    def test_link_check_cites_the_searched_page(self):
+        target = self.with_search()
+        groups = {group["url"]: group for group in content_links.collect_links(self.root, today=TODAY)[0]}
+        self.assertIn(SEARCHED, groups)
+        self.assertEqual(groups[SEARCHED]["citations"],
+                         [f"content/agencies.json:{target['agency_id']}.profile.policy_search.searched_url"])
 
 
 if __name__ == "__main__":

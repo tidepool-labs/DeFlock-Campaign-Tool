@@ -33,7 +33,8 @@ from .content import (ARCHIVE_KEYS, CHECKLIST_JURISDICTION, MAX_JSON_BYTES, TRAN
 from .content_sharing import TARGET, _install_problem, _open_content, _parse_target, _read_target
 from .privacy_patterns import categories, refusal
 
-SINGLE_FIELDS = ("alpr_policy", "policy_check", "contract", "contract_check", "pre_implementation_meeting", "sharing")
+SINGLE_FIELDS = ("alpr_policy", "policy_check", "contract", "contract_check", "pre_implementation_meeting", "sharing",
+                 "policy_search")
 LIST_FIELDS = ("funding", "transparency", "reports")
 FIELDS = SINGLE_FIELDS + LIST_FIELDS
 DEPENDENT = {"alpr_policy": "policy_check", "contract": "contract_check"}  # document -> the reading that may not be older

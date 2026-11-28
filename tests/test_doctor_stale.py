@@ -397,7 +397,7 @@ class DoctorStaleTests(unittest.TestCase):
     def test_every_family_boundary_future_and_hint(self):
         hint = "recheck the source and update checked_on"
         for singleton in ("alpr_policy", "contract", "policy_check", "contract_check", "pre_implementation_meeting",
-                          "sharing"):
+                          "sharing", "policy_search"):
             for offset, status in ((89, None), (90, None), (91, "stale"), (-1, "future")):
                 with self.subTest(field=singleton, offset=offset):
                     self.write_agencies({singleton: {"checked_on": ago(offset)}})
