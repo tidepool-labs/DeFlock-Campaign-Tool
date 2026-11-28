@@ -97,10 +97,19 @@ campaign | NAME | NOT CURRENT: <ErrorType> | private; review-required
 
 ### Records work per campaign (optional binding)
 
-A campaign can be bound, by editing the private register, to the console export of its records project. This is an
-explicit operator edit: there is no command, no automatic registration and no scan; `campaigns add` still creates an
-unbound entry. Add one `records` object to that entry (placeholder values; take the identity from `source_project_id`
-in your imported export's `EXPORT.json`):
+A campaign can be bound to the console export of its records project with one command (DF1125-05):
+
+```
+campaigns bind-records example --export-root /path/to/console-exports/example [--replace]
+campaigns unbind-records example
+```
+
+`bind-records` reads only `EXPORT.json` of the root's `current` export (the same reader `campaigns today` uses) for its
+`source_project_id`, checks the binding with the register's own rules below, and writes the register in one locked
+atomic write; every other entry is written back unchanged. A campaign that is already bound needs `--replace`.
+Refusals name the rule and never echo a path or an id. `unbind-records` removes only that entry's `records` object; the
+export is never touched. There is still no automatic registration and no scan; `campaigns add` still creates an unbound
+entry. The stored entry looks like this (placeholder values):
 
 ```json
 {"name": "example", "directory": "/path/to/campaign", "added_at": "2026-01-01T00:00:00Z",

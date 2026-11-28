@@ -143,43 +143,85 @@ def _summary(raw, files, manifest, pid):
     return doc
 
 
+class _NoExport(Exception):
+    """The export root, or its `current` link, does not exist."""
+
+
+def _current_manifest(export_root, fds):
+    """(top dir fd, the parsed manifest) of the root's current export, every directory pinned in `fds` (the caller
+    closes them); _NoExport when the root or its `current` link is absent, _Refused (or an OSError) for anything
+    that is not a private, well-formed console export."""
+    from . import console_export as ce, console_snapshot as cs, approval_queue as aq
+    try:
+        fds.append(os.open("/", os.O_RDONLY | os.O_DIRECTORY))
+        for part in (p for p in export_root.split("/") if p):
+            fds.append(_dir_at(fds[-1], part))
+        root = fds[-1]
+        _need(_private(root))
+        target = os.readlink("current", dir_fd=root)
+    except FileNotFoundError:
+        raise _NoExport from None
+    match = cs.LINK.fullmatch(target)
+    _need(match)
+    name = match.group(1)
+    fds.append(_dir_at(root, "exports"))
+    _need(_private(fds[-1]))
+    try:
+        fds.append(_dir_at(fds[-1], name))
+    except FileNotFoundError:
+        raise _Refused from None
+    top = fds[-1]
+    _need(_private(top))
+    raw = _read_leaf(top, ce.MANIFEST, cs.MAX_MANIFEST)
+    _need(raw is not None)
+    manifest = aq._strict_load(raw, "manifest")
+    _need(type(manifest) is dict)
+    run_id, pid, files = manifest["run_id"], manifest["source_project_id"], manifest["files"]
+    _need(manifest["schema"] == ce.SCHEMA and isinstance(run_id, str) and ce.RUN_ID.fullmatch(run_id)
+          and name[17:] == run_id and isinstance(pid, str) and PROJECT_ID.fullmatch(pid) and isinstance(files, dict)
+          and all(isinstance(v, str) and ce.HEX.fullmatch(v) for v in files.values()))
+    return top, manifest
+
+
+def _close(fds):
+    for fd in fds:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+
+
+def project_id(export_root):
+    """DF1125-05: the 16-hex source_project_id of the root's current export, read exactly as read_export reads it
+    (EXPORT.json only). ValueError with a fixed text (never a path or an id) when there is none or it is unusable."""
+    from . import approval_queue as aq
+    fds = []
+    try:
+        try:
+            return _current_manifest(export_root, fds)[1]["source_project_id"]
+        except _NoExport:
+            no_export = True
+        except (_Refused, OSError, ValueError, KeyError, TypeError, AttributeError, aq.ApprovalQueueError):
+            no_export = False
+    finally:
+        _close(fds)
+    raise ValueError("the export root has no current records export" if no_export else
+                     "the export root's current export is not a private, readable records export")
+
+
 def read_export(binding, *, now):
     """State, fixed code, export instant, age and the four counts from the campaign's current export; counts only.
 
     `binding` is {"export_root", "source_project_id"}; `now` an aware UTC datetime captured once by the caller."""
-    from . import console_export as ce, console_snapshot as cs, approval_queue as aq
+    from . import console_export as ce, approval_queue as aq
     fds = []
     try:
         try:
-            current = "/"
-            fds.append(os.open("/", os.O_RDONLY | os.O_DIRECTORY))
-            for part in (p for p in binding["export_root"].split("/") if p):
-                fds.append(_dir_at(fds[-1], part))
-            root = fds[-1]
-            _need(_private(root))
-            target = os.readlink("current", dir_fd=root)
-        except FileNotFoundError:
+            top, manifest = _current_manifest(binding["export_root"], fds)
+        except _NoExport:
             return _result("no_export", "RECORDS_NO_EXPORT")
-        match = cs.LINK.fullmatch(target)
-        _need(match)
-        name = match.group(1)
-        fds.append(_dir_at(root, "exports"))
-        _need(_private(fds[-1]))
-        try:
-            fds.append(_dir_at(fds[-1], name))
-        except FileNotFoundError:
-            raise _Refused from None
-        top = fds[-1]
-        _need(_private(top))
-        raw = _read_leaf(top, ce.MANIFEST, cs.MAX_MANIFEST)
-        _need(raw is not None)
-        manifest = aq._strict_load(raw, "manifest")
-        _need(type(manifest) is dict)
-        run_id, pid, files = manifest["run_id"], manifest["source_project_id"], manifest["files"]
-        _need(manifest["schema"] == ce.SCHEMA and isinstance(run_id, str) and ce.RUN_ID.fullmatch(run_id)
-              and name[17:] == run_id and isinstance(pid, str) and PROJECT_ID.fullmatch(pid)
-              and pid == binding["source_project_id"] and isinstance(files, dict)
-              and all(isinstance(v, str) and ce.HEX.fullmatch(v) for v in files.values()))
+        pid, files = manifest["source_project_id"], manifest["files"]
+        _need(pid == binding["source_project_id"])
         try:
             model = _dir_at(top, ce.MODEL_DIR)
         except FileNotFoundError:
@@ -197,11 +239,7 @@ def read_export(binding, *, now):
     except (_Refused, OSError, ValueError, KeyError, TypeError, AttributeError, aq.ApprovalQueueError):
         return _result("unavailable", "RECORDS_EXPORT_UNAVAILABLE")
     finally:
-        for fd in fds:
-            try:
-                os.close(fd)
-            except OSError:
-                pass
+        _close(fds)
 
 
 def line(row):

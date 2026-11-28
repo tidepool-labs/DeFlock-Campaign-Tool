@@ -1948,12 +1948,18 @@ def main():
                        ("list", "The registered names and directories"),
                        ("status", "One private line per campaign: counts and waiting gates; publishes nothing"),
                        ("today", "One private to-do list across every campaign, each item with its --campaign "
-                                 "command; read-only")):
+                                 "command; read-only"),
+                       ("bind-records", "Bind NAME to its records export root; reads only EXPORT.json of the current "
+                                        "export"),
+                       ("unbind-records", "Remove NAME's records binding; the export is not touched")):
         verb_p = campaigns.add_parser(verb, help=text)
-        if verb in ("add", "remove"):
+        if verb in ("add", "remove", "bind-records", "unbind-records"):
             verb_p.add_argument("name")
         if verb == "add":
             verb_p.add_argument("--directory", required=True)
+        if verb == "bind-records":  # DF1125-05
+            verb_p.add_argument("--export-root", required=True)
+            verb_p.add_argument("--replace", action="store_true", help="Replace an existing binding")
         if verb == "today":  # DF1109-15
             verb_p.add_argument("--as-of", help="YYYY-MM-DD to plan from (default today)")
             verb_p.add_argument("--json", dest="as_json", action="store_true", help="Print the items as JSON")
