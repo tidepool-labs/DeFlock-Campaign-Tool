@@ -189,6 +189,54 @@ class GoLiveLedgerTests(unittest.TestCase):
         self.assertEqual(rows["3"]["rehearsed"], dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED"))
         self.assertEqual(self.ledger(evidence=[record("3", "rehearsal", engine=None)])["3"]["rehearsed"], PASS)
 
+    def test_engine_c4_live_record_without_engine_establishes_no_engine(self):
+        """Engine C4: a live row with a null engine (stage 9-14 joins/adapters) is not 'the' live engine."""
+        # Bug: the null-engine stage 13 row became the newest live engine, so every engine-named
+        # rehearsal in the ledger (13's own and other stages') read ENGINE_CHANGED and next=rehearsal.
+        null_live = record("13", "live", stamp=LATER, engine=None)
+        rows = self.ledger(evidence=[record("13", "rehearsal"), record("14", "rehearsal"), null_live])
+        self.assertEqual(rows["13"], row("13", "Reply drafts to approval queue", rehearsed=PASS,
+                                         live=dict(status="evidence", recorded_at=LATER), state="LIVE",
+                                         next_kind=None))
+        self.assertEqual(rows["14"]["rehearsed"], PASS)
+        # A live record naming an engine still decides, even when a newer null-engine row exists.
+        named = record("A2", "live", stamp=STAMP, engine="b" * 40)
+        changed = dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED")
+        rows = self.ledger(evidence=[record("13", "rehearsal"), named, null_live])
+        self.assertEqual(rows["13"]["rehearsed"], changed)
+        self.assertEqual(rows["13"]["next"], "rehearsal")
+        matching = self.ledger(evidence=[record("13", "rehearsal", engine="b" * 40), named, null_live])
+        self.assertEqual(matching["13"]["rehearsed"], PASS)
+        # C3 is unchanged: with only null-engine live rows no engine is known to distrust a null rehearsal.
+        self.assertEqual(self.ledger(evidence=[record("13", "rehearsal", engine=None), null_live])["13"]["rehearsed"],
+                         PASS)
+
+    def test_engine_c5_newer_null_live_row_on_same_stage_keeps_known_engine(self):
+        """Engine C5: a newer null-engine live row does not hide the same stage's named live engine."""
+        # Bug: the per-stage latest live row was taken before null engines were dropped, so the newer
+        # null row on 13 hid engine b; then nothing was compared and other engines' proofs read pass.
+        named = record("13", "live", stamp=STAMP, engine="b" * 40)
+        null_live = record("13", "live", stamp=LATER, engine=None)
+        changed = dict(status="missing", recorded_at=STAMP, reason="ENGINE_CHANGED")
+        for evidence in ([named, null_live], [null_live, named]):
+            rows = self.ledger(evidence=[record("13", "rehearsal"), record("14", "rehearsal"),
+                                         record("3", "rehearsal"), record("3", "gate"), *evidence])
+            # The live display still follows the stage's actual newest row.
+            self.assertEqual(rows["13"]["live"], dict(status="evidence", recorded_at=LATER))
+            self.assertEqual(rows["13"]["state"], "LIVE")
+            # Engine a proofs are compared with engine b, on the same stage and elsewhere.
+            self.assertEqual(rows["13"]["rehearsed"], changed)
+            self.assertEqual(rows["13"]["next"], "rehearsal")
+            self.assertEqual(rows["14"]["rehearsed"], changed)
+            self.assertEqual(rows["3"]["gate"], changed)
+            # Proofs naming engine b pass; the null-engine gate rule (C1) is unchanged.
+            rows = self.ledger(evidence=[record("13", "rehearsal", engine="b" * 40),
+                                         record("3", "gate", engine="b" * 40), *evidence])
+            self.assertEqual(rows["13"]["rehearsed"], PASS)
+            self.assertEqual(rows["13"]["next"], None)
+            self.assertEqual(rows["3"]["gate"], PASS)
+            self.assertEqual(self.ledger(evidence=[record("3", "gate", engine=None), *evidence])["3"]["gate"], PASS)
+
     def test_c2_later_fail_supersedes_pass_independently(self):
         """C2: Later failures win in both columns regardless of input order."""
         records = [record("3", "rehearsal", "fail", LATER), record("3", "gate", "fail", LATER),
