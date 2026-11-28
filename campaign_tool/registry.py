@@ -220,6 +220,49 @@ def remove(name):  # unregisters only: the campaign directory is never read, mov
         _store(path, [e for e in entries if e["name"] != name])
 
 
+def bind_records(name, export_root, replace=False):
+    """DF1125-05: bind NAME to the records export at export_root. Only EXPORT.json of its current export is read (for
+    source_project_id); the binding is checked by the register's own rules and written in one locked atomic write.
+    Every other entry is written back unchanged. Refusals never echo a path or an id."""
+    from .records import campaign_summary
+    raw = os.path.expanduser(str(export_root))
+    # The text is validated exactly as supplied, before anything collapses it: with no "." or ".." component the only
+    # change below is joining the working folder and tidying slashes, so the OS and the reader name the same folder.
+    if not raw or any(part in (".", "..") for part in raw.split(os.sep)):
+        raise ValueError("the export root path is empty or has '.' or '..' parts; give its real path")
+    root = os.path.normpath(os.path.join(os.getcwd(), raw))
+    given = Path(root)
+    if given.is_symlink() or not given.is_dir():
+        raise ValueError("the export root is a symlink, missing or not a directory")
+    if os.path.realpath(root) != root:  # link-free input: no symlinked parent folder, checked before any manifest read
+        raise ValueError("the export root path goes through a symlinked folder; give its real path")
+    pid = campaign_summary.project_id(root)
+    path = register_path()
+    with _transaction(path):
+        entries = _load(path)
+        entry = next((e for e in entries if e["name"] == name), None)
+        if entry is None:
+            raise ValueError(_unknown(name, entries))
+        if "records" in entry and not replace:
+            raise ValueError(f"campaign {name!r} is already bound to a records export; use --replace to change it")
+        binding = {"export_root": root, "source_project_id": pid}
+        updated = [dict(e, records=binding) if e is entry else e for e in entries]
+        _check_records(updated)
+        _store(path, updated)
+
+
+def unbind_records(name):  # removes only that entry's binding: the export itself is never read, moved or deleted
+    path = register_path()
+    with _transaction(path):
+        entries = _load(path)
+        entry = next((e for e in entries if e["name"] == name), None)
+        if entry is None:
+            raise ValueError(_unknown(name, entries))
+        if "records" not in entry:
+            raise ValueError(f"campaign {name!r} has no records binding")
+        _store(path, [{k: v for k, v in e.items() if k != "records"} if e is entry else e for e in entries])
+
+
 def resolve(name):
     """Name to (the campaign's absolute root, every registered directory); the register is read once, unlocked."""
     entries = _load(register_path())
@@ -379,6 +422,16 @@ def run(args):
         elif args.campaigns_command == "remove":
             remove(args.name)
             print(f"campaign | {args.name} | unregistered; the directory and its data were not touched")
+        elif args.campaigns_command in ("bind-records", "unbind-records"):
+            try:
+                if args.campaigns_command == "bind-records":
+                    bind_records(args.name, args.export_root, replace=args.replace)
+                else:
+                    unbind_records(args.name)
+            except OSError:  # an I/O error's text names a private path: a fixed refusal instead
+                raise ValueError("the campaign register could not be read or written") from None
+            print(f"campaign | {args.name} | " + ("bound to its records export | private; nothing was copied"
+                  if args.campaigns_command == "bind-records" else "records binding removed; the export was not touched"))
         elif args.campaigns_command == "list":
             for e in sorted(_load(register_path()), key=lambda e: e["name"]):
                 print(f"campaign | {e['name']} | {e['directory']} | added {e['added_at']}")
