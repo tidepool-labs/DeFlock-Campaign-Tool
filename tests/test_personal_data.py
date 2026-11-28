@@ -1063,7 +1063,7 @@ MODULE_FUNCTIONS = {
     'map_controller': ('main',),
     "map_survey": ('_install_new', '_write_checks', 'render_csv', 'survey_import',),
     'meeting_comment_publish': ('publish',),
-    'meeting_outcome': ('record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
+    'meeting_outcome': ('clear_group', 'record_comment_counts', 'record_direction', 'record_minutes', 'record_outcome',),
     'meeting_pack': ('_commit_pack', '_discard', '_write_member', 'build',),
     'meeting_stage': ('stage',),
     'meetings': ('write_matters', 'write_meetings',),
