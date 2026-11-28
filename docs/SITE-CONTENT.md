@@ -797,6 +797,12 @@ alone never creates a page or an `agencies.html` entry (a page still needs a pub
 The section states that these are organizer transcriptions, not a determination about the agency's conduct. It is not legal
 advice and never says an agency complied or did not comply. The organizer and a human reviewer remain responsible for whether the source is
 authentic and whether the ordinance applies; nothing is checked automatically.
+Its wording follows `labels.json` (DF1125-09): `agency.local_rules_heading`, `agency.local_rules_notice`,
+`agency.local_rule_in_force` / `_future` / `_past` (the three build-date states), `agency.local_rule_label`,
+`agency.local_rule_id` (`{rule_id}`), `agency.local_rule_duty` (`{duty}`), `agency.local_rule_effective` (`{start}`,
+`{end}`), `agency.local_rule_open`, `agency.local_rule_source` and `agency.local_rule_checked` (`{date}`). The defaults are
+the English above; Spanish drafts are in `examples/labels/es.json`. Citations, rule ids, duties and dates are shown as
+recorded.
 
 `source_aliases` are derived: a city agency whose `agency_id` has entries in
 `sources.json` routes its evidence link to that entry's `fragment`, which is
@@ -1619,7 +1625,9 @@ not in the sitemap; a static file, so rebuild to refresh it),
 `cameras.html` (only with a map: the no-JS list of mapped points, one section
 per picker city by name, each point in the first city boundary holding it by the counts' half-open rule, then the
 `group_label` section; manufacturer/operator or "not tagged", an OSM node link or "no OSM link"; over 2 000 points each
-section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`),
+section lists 500 rows, then "and N more on the map"; linked from the map fallback and footer, in `sitemap.xml`; each
+section's count and the "more" line follow `labels.json`: `cameras.group_count_one` / `cameras.group_count_many` and
+`cameras.group_more`, all `{n}`, DF1125-09),
 `glossary.html` (only with a non-empty `content/glossary.json`: see Glossary),
 `faq.html` (only with a `content/faq.json`: see FAQ),
 `events.html` (only with a non-empty `content/events.json`: see Campaign events),
@@ -2271,6 +2279,7 @@ agency display name with unassigned entries last, and
 `schemas/suspected-locations-open-data.schema.json`. The campaign data licence
 applies only if specified; linked records keep their own rights. Presence reserves
 `suspected.html`; without the file, existing custom pages of that name still work.
+With no entries the page says "No suspected locations are listed." (label `suspected.none`, DF1125-09).
 The fixed notice is: **A suspected location is predicted by a document. It is not a confirmed camera.**
 
 With nonempty entries and a configured map, a separate checked “Suspected locations”

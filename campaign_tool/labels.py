@@ -248,6 +248,16 @@ DEFAULTS = {
     "agency.sharing_kind_private": "private", "agency.sharing_kind_unknown": "unknown",
     "agency.sharing_outside": "Out of state and federal:", "agency.sharing_more": "and {n} more",
     "agency.sharing_rule": "Sharing rule: {citation}.", "agency.sharing_bulletin": "Attorney General bulletin: {citation}.",
+    # DF1125-09 slice 3: the local-rules block (exact English the pages always showed).
+    "agency.local_rules_heading": "Local rules on record",
+    "agency.local_rules_notice": ("These are organizer transcriptions of local ordinances, not a determination about the "
+                                  "agency's conduct."),
+    "agency.local_rule_in_force": "In force on build date", "agency.local_rule_future": "Not yet in force on build date",
+    "agency.local_rule_past": "Past — not in force on build date",
+    "agency.local_rule_label": "local rule, organizer-transcribed, not legally reviewed",
+    "agency.local_rule_id": "Rule: {rule_id}", "agency.local_rule_duty": "Duty as written: {duty}",
+    "agency.local_rule_effective": "Effective from {start} to {end}", "agency.local_rule_open": "open",
+    "agency.local_rule_source": "Official source (organizer-recorded)", "agency.local_rule_checked": "checked {date}",
     "agency.page": "Agency page", "agency.page_description": "Records and findings for {name}",
     "agency.published_findings": "Published findings", "agency.source_records": "Source records",
     "agency.received": "received {date}", "agency.in_library": "In the source library",
@@ -509,6 +519,9 @@ PAGE_DEFAULTS = {
     "cameras.page_heading": "Community-mapped points; ownership unconfirmed.",
     "cameras.page_lead": "Points are community reports from OpenStreetMap, not confirmed agency ownership.",
     "cameras.page_description": "List of community-mapped points by city; ownership unconfirmed",
+    # DF1125-09 slice 3: the cameras-list counters and the empty suspected-locations line.
+    "cameras.group_count_one": "{n} mapped point", "cameras.group_count_many": "{n} mapped points",
+    "cameras.group_more": "and {n} more on the map", "suspected.none": "No suspected locations are listed.",
     "packet.link": "Printable packet", "packet.heading": "Findings packet", "packet.title": "Findings packet",
     "packet.description": "Every published finding on one printable page",
     "packet.intro": "As of {date} · {count} published findings · print or save as PDF",

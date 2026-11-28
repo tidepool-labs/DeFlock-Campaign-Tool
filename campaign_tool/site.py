@@ -1772,23 +1772,25 @@ class Site:
         for rule in scoped:
             end = rule["effective_to"]
             if end is not None and end < today:
-                state = "Past — not in force on build date"
+                state = "agency.local_rule_past"
             elif rule["effective_from"] > today:
-                state = "Not yet in force on build date"
+                state = "agency.local_rule_future"
             else:
-                state = "In force on build date"
+                state = "agency.local_rule_in_force"
+            effective = self.t("agency.local_rule_effective", start=time_tag(rule["effective_from"]),
+                               end=time_tag(end) if end is not None else self.t("agency.local_rule_open"))
+            code = f'<code>{e(rule["rule_id"])}</code>'
             items.append(
                 f'<article class="local-rule"><h4>{e(rule["citation"])}</h4>'
-                f'<p><span class="status-pill">{e(state)}</span> <span class="status-pill">{e(law.LOCAL_RULE_LABEL)}</span></p>'
-                f'<p>Rule: <code>{e(rule["rule_id"])}</code></p>'
-                f'<p>Duty as written: {e(rule["duty"])}</p>'
-                f'<p>Effective from {time_tag(rule["effective_from"])} to '
-                f'{time_tag(end) if end is not None else "open"}</p>'
-                f'<p><a href="{e(rule["source_url"])}" rel="noopener noreferrer">Official source (organizer-recorded)</a>'
-                f' · checked {time_tag(rule["checked_on"])}</p></article>')
-        return ('<section class="local-rules"><h3>Local rules on record</h3>'
-                "<p>These are organizer transcriptions of local ordinances, not a determination about the agency's "
-                "conduct.</p>" + "".join(items) + "</section>")
+                f'<p><span class="status-pill">{self.t(state)}</span> <span class="status-pill">'
+                f'{self.t("agency.local_rule_label")}</span></p>'
+                f'<p>{self.t("agency.local_rule_id", rule_id=code)}</p>'
+                f'<p>{self.t("agency.local_rule_duty", duty=e(rule["duty"]))}</p>'
+                f'<p>{effective}</p>'
+                f'<p><a href="{e(rule["source_url"])}" rel="noopener noreferrer">{self.t("agency.local_rule_source")}</a>'
+                f' · {self.t("agency.local_rule_checked", date=time_tag(rule["checked_on"]))}</p></article>')
+        return (f'<section class="local-rules"><h3>{self.t("agency.local_rules_heading")}</h3>'
+                f'<p>{self.t("agency.local_rules_notice")}</p>' + "".join(items) + "</section>")
 
     def agency_html(self, agency):
         """``agencies/<slug>.html`` (DF2237-08): one agency's card facts, findings, source records and upcoming meetings."""
@@ -2916,9 +2918,11 @@ class Site:
             table = ('<table><thead><tr><th scope="col">Manufacturer</th><th scope="col">Operator</th>'
                      '<th scope="col">OpenStreetMap</th>' + check_head + '</tr></thead><tbody>'
                      + "".join(f"<tr>{row[2]}</tr>" for row in shown) + '</tbody></table>') if rows else ""
-            more = f'<p>and {len(rows) - len(shown)} more on the map</p>' if len(shown) < len(rows) else ""
+            more = (f'<p>{self.t("cameras.group_more", n=len(rows) - len(shown))}</p>'
+                    if len(shown) < len(rows) else "")
+            count = self.t("cameras.group_count_one" if len(rows) == 1 else "cameras.group_count_many", n=len(rows))
             sections += (f'<section class="camera-group"><h3>{e(name or self.map["group_label"])}</h3>'
-                         f'<p>{len(rows)} mapped point{"" if len(rows) == 1 else "s"}</p>{table}{more}</section>')
+                         f'<p>{count}</p>{table}{more}</section>')
         # DF0137-13: map/history.json as a plain table once it has 2+ records (else nothing: the page is unchanged);
         # city columns only when every record has by_city, a city one record lacks shows a dash
         records, history = self.map.get("history") or [], ""
@@ -3072,7 +3076,7 @@ class Site:
         main = f'<section class="section"><h1>Suspected locations</h1><p>{NOTICE}</p>'
         main += '<p><a href="/data/suspected-locations.json">Suspected locations (JSON)</a> · <a href="/data.html">Open data catalogue</a></p>'
         if not groups:
-            main += '<p>No suspected locations are listed.</p>'
+            main += f'<p>{self.t("suspected.none")}</p>'
         for agency_id in sorted(groups, key=group_key):
             name = self.agencies_by_id[agency_id]['name'] if agency_id else 'Agency not specified'
             main += f'<h2>{e(name)}</h2><ul>'
