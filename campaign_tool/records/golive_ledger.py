@@ -100,13 +100,15 @@ def build(reports, evidence, now):
                        and row["source"]["schema"] != "records-e2e-proof-v1")
     live_records = {stage: golive_evidence.latest(evidence, stage, "live")
                     for stage in golive_catalog.STAGES}
-    settled = tuple(row for row in evidence if not _is_future(row, now))
-    settled_live = (golive_evidence.latest(settled, stage, "live") for stage in golive_catalog.STAGES)
     # Only a live record that names an engine establishes one. Most live adapters (the stage 9-14
     # joins and output adapters) write engine null; treating null as "the" engine would turn every
-    # engine-named rehearsal into ENGINE_CHANGED as soon as one such row is recorded.
+    # engine-named rehearsal into ENGINE_CHANGED as soon as one such row is recorded. Null-engine
+    # rows are dropped BEFORE the per-stage latest is taken, so a newer null row on the same stage
+    # cannot hide that stage's last known engine (the live column above still shows the newest row).
+    named = tuple(row for row in evidence if not _is_future(row, now) and row["engine"] is not None)
+    named_live = (golive_evidence.latest(named, stage, "live") for stage in golive_catalog.STAGES)
     # Match the evidence reader's timestamp/filename ordering across stages.
-    newest_live = max((record for record in settled_live if record is not None and record["engine"] is not None),
+    newest_live = max((record for record in named_live if record is not None),
                       key=lambda record: (record["recorded_at"], record["stage"],
                                           record["source"]["sha256"][:8]), default=None)
     rows = []
