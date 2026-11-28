@@ -328,6 +328,37 @@ def record_comment_counts(root, meeting_id, *, spoke=None, written=None, comment
     return updated["outcome"]
 
 
+CLEAR_GROUPS = {"direction": ("staff direction", DIRECTION_KEYS), "counts": ("public comment counts", COMMENT_KEYS)}
+
+
+def clear_group(root, meeting_id, group, *, today=None):
+    """DF1125-06: remove exactly one group (``direction`` or ``counts``) from an already recorded outcome.
+
+    Only that group's keys are dropped; every other outcome and meeting key stays exactly as stored. Refused, with
+    nothing written, when the meeting is cancelled, has no outcome or has no such group. The whole prospective meeting
+    and its continuation references are validated before the one atomic write."""
+    today = today or date.today()
+    if group not in CLEAR_GROUPS:
+        raise MeetingOutcomeError(f"--clear: must be one of {', '.join(CLEAR_GROUPS)}")
+    words, keys = CLEAR_GROUPS[group]
+    path, document = _find(root, meeting_id)
+    label = f"meetings/{path.name}"
+    meeting = load_meeting(document, label, today=today)
+    if meeting["status"] == "cancelled":
+        raise MeetingOutcomeError(f"--clear {group}: meeting {meeting_id} is cancelled; it has no outcome")
+    if meeting["outcome"] is None:
+        raise MeetingOutcomeError(f"--clear {group}: needs a recorded outcome (meeting {meeting_id} has none)")
+    if not any(key in document["outcome"] for key in keys):
+        raise MeetingOutcomeError(f"--clear {group}: nothing to clear; meeting {meeting_id} has no {words} recorded")
+    updated = {**document, "outcome": {key: value for key, value in document["outcome"].items() if key not in keys}}
+    prospective = load_meeting(updated, label, today=today)
+    if "continued_to" in prospective["outcome"]:  # the staged meetings with only this outcome replaced
+        _check_continuation(root, path, prospective, today)
+    _check_writable(root, path)  # checked again right before the write
+    _write_json(path, updated)
+    return updated["outcome"]
+
+
 CREATION_FLAGS = (("result", "--result"), ("on", "--on"), ("source", "--source"), ("verified_by", "--verified-by"))
 MINUTES_ONLY_REFUSES = (("vote", "--vote"), ("votes", "--votes"), ("recording_url", "--recording-url"),
                         ("recording_start", "--recording-start"), ("continued_to", "--continued-to"),
@@ -358,7 +389,22 @@ COUNTS_ONLY_REFUSES = MINUTES_ONLY_REFUSES + (("direction", "--direction"), ("re
                                                ("direction_source", "--direction-source"))
 
 
+CLEAR_REFUSES = (CREATION_FLAGS + (("minutes_url", "--minutes-url"), ("minutes_approved_on", "--minutes-approved-on"))
+                 + COUNTS_ONLY_REFUSES + COMMENT_FLAGS)
+
+
 def _run_outcome_mode(root, args):
+    groups = getattr(args, "clear", None)
+    if groups is not None:  # DF1125-06: clear mode takes exactly one --clear and no other outcome flag
+        if len(groups) != 1:  # argparse would otherwise keep only the last one and clear the wrong group
+            raise MeetingOutcomeError("--clear takes exactly one group (direction or counts); nothing was changed")
+        mixed = [flag for name, flag in CLEAR_REFUSES if getattr(args, name, None) is not None]
+        mixed += ["--replace"] if args.replace else []
+        if mixed:
+            raise MeetingOutcomeError(f"--clear cannot be combined with {', '.join(mixed)}; nothing was changed")
+        group = groups[0]
+        outcome = clear_group(root, args.id, group)
+        return [json.dumps(outcome, indent=2), f"Cleared {group} only. Nothing was published."]
     minutes_url, minutes_on = args.minutes_url, args.minutes_approved_on
     direction, return_by, source = args.direction, args.return_by, args.direction_source
     comments = {name: getattr(args, name, None) for name, _ in COMMENT_FLAGS}  # DF0022-09
