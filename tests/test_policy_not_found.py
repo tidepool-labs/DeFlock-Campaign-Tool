@@ -31,6 +31,7 @@ SEARCHED = "https://example.invalid/beta/policies"
 EXAMPLE = REPO_ROOT / "examples" / "fictional-campaign"
 SENTENCE = "We did not find a posted ALPR usage policy on"
 NO_NETWORK = AssertionError("no network in these tests")
+MARKER = "fictional-private-marker-7f3a"  # stands for date text that must never reach either output stream
 POLICY_IDS = ("authorized_purposes", "authorized_users_training", "security_monitoring", "sharing_restrictions",
               "custodian_title", "accuracy_correction", "retention_destruction")
 
@@ -87,9 +88,10 @@ class RecordTests(_NoNetwork):
         return run("content", "agency-profile", "policy-not-found", "--directory", self.root, "--agency", agency,
                    "--searched-url", url, "--checked-on", checked_on or ago(5), *extra)
 
-    def policy(self, *extra, agency=B):
+    def policy(self, *extra, agency=B, checked_on=None):
         return run("content", "agency-profile", "policy", "--directory", self.root, "--agency", agency, "--url",
-                   "https://example.invalid/beta/policy.pdf", "--source-url", SEARCHED, "--checked-on", ago(2), *extra)
+                   "https://example.invalid/beta/policy.pdf", "--source-url", SEARCHED, "--checked-on",
+                   checked_on or ago(2), *extra)
 
     def assert_refused(self, result, needle):
         before = self.target.read_bytes()
@@ -142,6 +144,42 @@ class RecordTests(_NoNetwork):
         profile = self.profile(B)
         self.assertNotIn("policy_search", profile)
         self.assertEqual(profile["alpr_policy"]["url"], "https://example.invalid/beta/policy.pdf")
+
+    def assert_silent(self, code, out, err):
+        self.assertNotIn(MARKER, out, code)
+        self.assertNotIn(MARKER, err, code)
+
+    def test_an_invalid_checked_on_is_refused_without_repeating_it(self):
+        for verb in (self.not_found, self.policy):
+            with self.subTest(verb=verb.__name__):
+                before = self.target.read_bytes()
+                code, out, err = verb(checked_on=MARKER)
+                self.assertNotEqual(code, 0, out)
+                self.assertEqual(out, "")
+                self.assertIn("--checked-on: must be a YYYY-MM-DD calendar day; nothing was written", err)
+                self.assert_silent(code, out, err)
+                self.assertEqual(self.target.read_bytes(), before)
+
+    def test_removed_records_with_malformed_dates_are_reported_as_unknown(self):
+        document = agencies()
+        document[0]["profile"]["alpr_policy"]["checked_on"] = MARKER
+        document[0]["profile"]["policy_check"]["checked_on"] = MARKER
+        self.target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        code, out, err = self.not_found("--replace", "--drop-check", agency=A)
+        self.assertEqual(code, 0, err)
+        self.assertIn("Removed profile.alpr_policy (checked_on unknown)", out)
+        self.assertIn("Dropped profile.policy_check (checked_on unknown)", out)
+        self.assert_silent(code, out, err)
+        document = agencies()
+        document[1]["profile"]["policy_search"] = {"status": "not_found", "searched_url": SEARCHED,
+                                                   "checked_on": MARKER}
+        self.target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        code, out, err = self.policy("--replace")
+        self.assertEqual(code, 0, err)
+        self.assertIn("Removed profile.policy_search (checked_on unknown)", out)
+        self.assert_silent(code, out, err)
+        self.assertNotIn(MARKER, self.target.read_text(encoding="utf-8"))
+
 
 
 class LoaderTests(unittest.TestCase):
