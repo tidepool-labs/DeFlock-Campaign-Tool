@@ -13,7 +13,7 @@ from pathlib import Path
 from . import admin_panel, console_snapshot, pipeline_health
 
 
-PAGES = ("/", "/board", "/documents", "/calendar", "/settings", "/next-steps")
+PAGES = ("/", "/board", "/documents", "/calendar", "/settings", "/next-steps", "/golive")
 POST_PATH = "/approvals/reject"
 CSP = dict(admin_panel.SECURITY)["Content-Security-Policy"]
 FAILURES = ("FINGERPRINT_MISSING", "SEND_EXPOSED", "POST_ACCEPTED", "EXPORT_STALE", "EXPORT_BROKEN",
