@@ -350,6 +350,14 @@ absent shows nothing. `agencies.html` shows "Posted ALPR usage policy (checked
 <date>, where we found it)" on that agency's card only; neither URL is fetched.
 Linking a policy says only that it was posted; it is not a finding about compliance.
 
+An agency's optional `profile.policy_search` (DF1125-02) records that an organizer looked for a posted ALPR usage
+policy and did not find one: `{"status": "not_found", "searched_url": "https://…", "checked_on": "YYYY-MM-DD"}`,
+exactly these three keys; `status` is always `not_found`, `searched_url` the https page searched (at most 500
+characters), `checked_on` not after the build date. It never coexists with `profile.alpr_policy` (the build refuses
+both). `agencies.html` and the agency page show one fixed sentence, "We did not find a posted ALPR usage policy on the
+agency's site (checked DATE).", with "the agency's site" linked to `searched_url` (labels `agency.policy_not_found`,
+`agency.policy_not_found_site`); it is an observation on that day, never a statement that a policy is required.
+
 ### Rechecking agency-profile dates (`content agency-profile`)
 
 `python3 -m campaign_tool content agency-profile list --directory D [--agency ID] [--json]` prints every recorded
@@ -568,7 +576,8 @@ then "Latest report" (DF0237-02, see `profile.reports`).
 The note above the table ends "Records items asked is our own count on DATE." (DF1125-07, label
 `agencies.glance_asked_counted`), DATE being the build date: that column is the campaign's own build-time tally, not a
 number a source reported.
-A missing value shows "not checked"; content has no "policy not found" record yet, so that state is never shown.
+A missing value shows "not checked". An agency with `profile.policy_search` (DF1125-02) shows "not found" in the
+policy cell, linked to the searched page with "checked DATE".
 No agencies, no table. On screens ≤ 640 px rows stack with each cell's header; print keeps the bordered table.
 
 #### Where things stand (home strip)

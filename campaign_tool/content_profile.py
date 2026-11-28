@@ -325,14 +325,35 @@ def _admit_document(document, position, field, today):
         raise ContentProfileError(f"{exc}; nothing was written") from None
 
 
+def _new_day(value, today):
+    """The supplied ``--checked-on``: a fixed refusal that never repeats the typed text, or the calendar day."""
+    try:
+        day = _calendar_day(value, "--checked-on")
+    except ContentError:
+        raise ContentProfileError("--checked-on: must be a YYYY-MM-DD calendar day; nothing was written") from None
+    if day > today:
+        raise ContentProfileError("--checked-on: must not be after today; nothing was written")
+    return day
+
+
+def _removed_day(record):
+    """DF1125-02: the ``checked_on`` of a record a write removed, for the CLI message. The removed record is not in the
+    prospective file the privacy check reads, so only a valid calendar day is repeated; anything else is "unknown"."""
+    value = record.get("checked_on") if isinstance(record, dict) else None
+    try:
+        _calendar_day(value, "checked_on")
+    except ContentError:
+        return "unknown"
+    return value
+
+
 def _write_document(root, agency_id, field, new, replace, drop_check, today):
     """Record one whole document; -> ``{agency_id, field, checked_on, dropped, reading, verb, archive_removed}``."""
     today = today or date.today()
     url_key, reading, reading_url, verb = DOCUMENTS[field]
     if drop_check and not replace:
         raise ContentProfileError("--drop-check requires --replace; nothing was written")
-    if _calendar_day(new["checked_on"], "--checked-on") > today:
-        raise ContentProfileError("--checked-on: must not be after today; nothing was written")
+    _new_day(new["checked_on"], today)
 
     def change(document):
         position = _agency(document, agency_id)
@@ -342,6 +363,12 @@ def _write_document(root, agency_id, field, new, replace, drop_check, today):
         profile = entry["profile"]
         if not isinstance(profile, dict):
             raise ContentProfileError(f"content/agencies.json[{position}].profile: must be an object; nothing was written")
+        swapped = None
+        if field == "alpr_policy" and profile.get("policy_search") is not None:  # DF1125-02: never both
+            if not replace:
+                raise ContentProfileError(f"profile.policy_search: {agency_id} has a 'policy not found' reading; pass "
+                                          "--replace to record the posted policy in its place; nothing was written")
+            swapped = _removed_day(profile.pop("policy_search"))
         old = profile.get(field)
         if old is not None and not replace:
             raise ContentProfileError(f"profile.{field}: {agency_id} already has one; pass --replace to record the "
@@ -365,12 +392,13 @@ def _write_document(root, agency_id, field, new, replace, drop_check, today):
                                           f"pass --drop-check or redo {verb} first with --checked-on not before "
                                           f"{new['checked_on']}; nothing was written")
             if drop_check:  # removed, never rebound to the new document: the old reading is of the old one
-                dropped = stored if isinstance(stored, str) else "unknown"
+                dropped = _removed_day(check)
                 del profile[reading]
         profile[field] = new
         _admit_document(document, position, field, today)
         return {"agency_id": agency_id, "field": field, "checked_on": new["checked_on"], "dropped": dropped,
-                "reading": reading, "verb": verb, "archive_removed": archive_removed, "_document": document}, True
+                "reading": reading, "verb": verb, "archive_removed": archive_removed, "swapped": swapped,
+                "_document": document}, True
     return _transaction(root, change, "write")
 
 
@@ -396,8 +424,53 @@ def write_contract(root, agency_id, *, vendor, start, end, source_url, checked_o
     return _write_document(root, agency_id, "contract", new, replace, drop_check, today)
 
 
+def write_policy_not_found(root, agency_id, *, searched_url, checked_on, replace=False, drop_check=False, today=None):
+    """DF1125-02: ``profile.policy_search`` = the organizer looked for a posted ALPR usage policy on ``searched_url``
+    on ``checked_on`` and found none. Never stored beside ``profile.alpr_policy``: ``replace`` swaps one for the other
+    in the same atomic write; the posted policy's reading (``policy_check``) goes only with ``drop_check``."""
+    today = today or date.today()
+    if drop_check and not replace:
+        raise ContentProfileError("--drop-check requires --replace; nothing was written")
+    _new_day(checked_on, today)
+
+    def change(document):
+        position = _agency(document, agency_id)
+        entry = document[position]
+        if entry.get("profile") is None:
+            entry["profile"] = {}
+        profile = entry["profile"]
+        if not isinstance(profile, dict):
+            raise ContentProfileError(f"content/agencies.json[{position}].profile: must be an object; nothing was written")
+        for field in ("policy_search", "alpr_policy"):
+            if profile.get(field) is not None and not replace:
+                raise ContentProfileError(f"profile.{field}: {agency_id} already has one; pass --replace to record "
+                                          "'policy not found' in its place; nothing was written")
+        swapped = dropped = None
+        if profile.get("alpr_policy") is not None:
+            check = profile.get("policy_check")
+            if check is not None:
+                if not drop_check:
+                    raise ContentProfileError("profile.policy_check is a reading of the posted policy; pass --replace "
+                                              "--drop-check to remove it too; nothing was written")
+                dropped = _removed_day(check)
+                del profile["policy_check"]
+            swapped = _removed_day(profile.pop("alpr_policy"))
+        profile["policy_search"] = {"status": "not_found", "searched_url": searched_url, "checked_on": checked_on}
+        _admit_document(document, position, "policy_search", today)
+        return {"agency_id": agency_id, "field": "policy_search", "checked_on": checked_on, "dropped": dropped,
+                "reading": "policy_check", "verb": "policy-check", "archive_removed": False, "swapped": swapped,
+                "_document": document}, True
+    return _transaction(root, change, "write")
+
+
+SWAPPED = {"alpr_policy": "policy_search", "policy_search": "alpr_policy"}  # DF1125-02: the field a write replaced
+
+
 def format_document(result):
     lines = [f"Recorded profile.{result['field']} for {result['agency_id']} (checked_on {result['checked_on']})."]
+    if result.get("swapped") is not None:
+        lines.append(f"Removed profile.{SWAPPED[result['field']]} (checked_on {result['swapped']}): an agency has "
+                     "either a posted policy or a 'not found' reading, never both.")
     if result["archive_removed"]:
         lines.append(f"Removed profile.{result['field']} archived_url and archived_on: they were a copy of the previous "
                      "document.")

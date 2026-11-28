@@ -98,6 +98,15 @@ python3 -m campaign_tool content agency-profile policy --directory $CAMPAIGN --a
 An agency that already has a policy needs `--replace`; see [replacing a policy or contract](#replacing-a-policy-or-contract-you-recorded)
 under task 5.
 
+If you looked on the agency's site and found no posted policy, record that instead with
+`content agency-profile policy-not-found --directory $CAMPAIGN --agency ID --searched-url URL --checked-on YYYY-MM-DD`
+(field `profile.policy_search` = `{"status": "not_found", "searched_url", "checked_on"}`; `searched_url` is the https
+page you searched, at most 500 characters; `checked_on` not after today). The pages then say "We did not find a posted
+ALPR usage policy on the agency's site (checked DATE)." with that page linked. It is what you saw on that day, not a
+finding that a policy is missing or required. An agency has a posted policy or a "not found" reading, never both:
+recording either one while the other is stored needs `--replace`, which swaps them in one write (swapping a posted
+policy that has a `policy_check` also needs `--drop-check`).
+
 Reference: [SITE-CONTENT.md, agencies, cards and the picker](SITE-CONTENT.md#agencies-cards-and-the-picker) (the
 `alpr_policy` paragraph).
 

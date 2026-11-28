@@ -287,6 +287,9 @@ class LabelsTest(unittest.TestCase):
                     "agency.local_rule_future", "agency.local_rule_id", "agency.local_rule_in_force",
                     "agency.local_rule_label", "agency.local_rule_open", "agency.local_rule_past",
                     "agency.local_rule_source", "agency.local_rules_heading", "agency.local_rules_notice"]
+        # agency.policy_not_found*, agencies.glance_not_found: the fixture records no policy search (DF1125-02;
+        # tests/test_policy_not_found.py overrides every one).
+        reading += ["agencies.glance_not_found", "agency.policy_not_found", "agency.policy_not_found_site"]
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",

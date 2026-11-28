@@ -224,6 +224,9 @@ DEFAULTS = {
     "agency.policy_check_addressed": "addressed", "agency.policy_check_unclear": "unclear",
     "agency.policy_check_not_found": "not found in the posted policy",
     "agency.policy_check_checked": "Checked {date} against {policy}.", "agency.policy_check_link": "the posted policy",
+    # DF1125-02: the organizer looked for a posted policy and did not find one (an observation, never a conclusion).
+    "agency.policy_not_found": "We did not find a posted ALPR usage policy on {site} (checked {date}).",
+    "agency.policy_not_found_site": "the agency's site",
     "agency.contract_check_heading": "What the contract says (organizer reading, not a legal review)",
     "agency.contract_check_addressed": "addressed", "agency.contract_check_unclear": "unclear",
     "agency.contract_check_not_found": "not found in the linked contract",
@@ -288,6 +291,7 @@ DEFAULTS = {
     "agencies.glance_asked": "Records items asked", "agencies.glance_report": "Latest report",
     "agencies.glance_no_report": "none on record",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
+    "agencies.glance_not_found": "not found",  # DF1125-02
     "agencies.glance_asked_counted": "Records items asked is our own count on {date}.",  # DF1125-07
     "footer.requests": "What we have asked for",  # DF1103-13
     "standings.heading": "Where things stand",  # DF1952-10
