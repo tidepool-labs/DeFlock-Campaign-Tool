@@ -34,6 +34,7 @@ PUBLICATION_FIELDS = ("state", "published_at", "updated_at", "corrections", "upd
 DECISIONS = ("approve", "reject", "changes_requested")
 MAX_DRAFT_BYTES = 1024 * 1024
 MAX_RECEIPTS_BYTES = 4 * 1024 * 1024
+REPLY_ASKS = Path("private") / "reply-asks.json"  # DF1125-04: the private record of the day each agency was asked
 _ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
 _DAY = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}")
 MAX_ROSTER_BYTES, MAX_REVIEWERS = 256 * 1024, 200
@@ -1020,16 +1021,20 @@ def publish(root, draft_path, approved_by, now=None, before_reply_deadline=None)
     when = moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
     finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
-    waits_for, early = _reply_wait(document, moment), None
+    waits_for, early, asked = _reply_wait(document, moment), None, None
     if before_reply_deadline is not None:
         reason = _text("before-reply-deadline", before_reply_deadline, 200)
         if waits_for is None:
             raise ValueError("--before-reply-deadline is only for a finding whose agency reply deadline has not "
                              "come yet and has no reply recorded; nothing was written")
         early = {"reply_by": str(waits_for), "reason": reason}
-    elif waits_for is not None:
+    response = document.get("agency_response")
+    if isinstance(response, dict) and response.get("status") == "pending":  # a broken record refuses either way
+        asked = _reply_ask(root, draft["id"], response.get("reply_by"))
+    if before_reply_deadline is None and waits_for is not None:
+        record = f"the asking record says you asked on {asked}" if asked else "no asking record exists"
         raise ValueError(f"publish refused: the agency was given until {waits_for} to reply and no reply is recorded; "
-                         f"no asking record exists. Wait until {waits_for}, record the reply with finding reply, or "
+                         f"{record}. Wait until {waits_for}, record the reply with finding reply, or "
                          "give --before-reply-deadline REASON; nothing was written")
     _fitting(document, f"content/findings/{finding['slug']}.json", "publish", True)  # before any folder, lock or log
     if not _real_dir(root / "content"):
@@ -1518,6 +1523,63 @@ def reply_request(root, draft_path, by, today=None):
     return {"id": draft["id"], "status": "pending", "written": str(target)}
 
 
+def _reply_ask(root, finding_id, reply_by):
+    """DF1125-04: the asked_on day in private/reply-asks.json for this finding, else None. A present file that is not
+    a regular, valid record (or whose reply_by is not the draft's) refuses, naming the file and field, never content."""
+    path = Path(root) / REPLY_ASKS
+    if not os.path.lexists(path):
+        return None
+    asks = _read_json(path, MAX_DRAFT_BYTES, "asking record")
+    if not isinstance(asks, dict) or not all(isinstance(k, str) and _ID.fullmatch(k) for k in asks):
+        raise _PathError(f"{path}: asking record must be a JSON object keyed by finding id; nothing was written")
+    entry = asks.get(finding_id)
+    if entry is None:
+        return None
+    if not isinstance(entry, dict) or set(entry) != {"asked_on", "reply_by"}:
+        raise _PathError(f"{path}: entry {finding_id} must have exactly asked_on and reply_by; nothing was written")
+    for field in ("asked_on", "reply_by"):
+        if not isinstance(entry[field], str) or content.reply_day(entry[field]) is None:
+            raise _PathError(f"{path}: entry {finding_id} field {field} must be a real YYYY-MM-DD date; "
+                             "nothing was written")
+    if entry["reply_by"] != reply_by:
+        raise _PathError(f"{path}: entry {finding_id} field reply_by ({entry['reply_by']}) is not the draft's reply "
+                         f"deadline ({reply_by}); nothing was written")
+    return entry["asked_on"]
+
+
+def record_asked(root, draft_path, asked_on, today=None):
+    """Record privately the day the organizer really asked the agency (private/reply-asks.json, 0600). The draft is
+    never rewritten, so its reviewed content and receipts stay current. Sends nothing."""
+    root, today = Path(root), today or date.today()
+    asked = content.reply_day(asked_on)
+    if asked is None or asked > today:
+        raise ValueError("--asked-on: must be a real YYYY-MM-DD date, not after today; nothing was written")
+    _reply_draft_path(root, draft_path)
+    if not _real_dir(root / "private"):
+        raise ValueError(f"{root / 'private'}: no private/ directory in this campaign")
+    with _locked(root / "private", ".publish.lock"):
+        _, draft, _ = _reply_context(root, draft_path)
+        response = draft.get("agency_response")
+        if not isinstance(response, dict):
+            raise ValueError("prepare a reply request first; nothing was written")
+        if response.get("status") != "pending":
+            raise ValueError("a reply is already recorded on this draft; nothing was written")
+        prepared = content._agency_response(response, "agency_response", _cited_hashes(draft), today)
+        if not content.reply_day(prepared["prepared_on"]) <= asked <= content.reply_day(prepared["reply_by"]):
+            raise ValueError(f"--asked-on: must be from the request's prepared day ({prepared['prepared_on']}) "
+                             f"through its reply deadline ({prepared['reply_by']}); nothing was written")
+        before = _reply_ask(root, draft["id"], prepared["reply_by"])
+        if before == str(asked):
+            return {"id": draft["id"], "asked_on": before, "unchanged": True}
+        if before is not None:
+            raise ValueError(f"an asking record already says you asked on {before}; nothing was written")
+        path = root / REPLY_ASKS
+        asks = _read_json(path, MAX_DRAFT_BYTES, "asking record") if os.path.lexists(path) else {}
+        asks[draft["id"]] = {"asked_on": str(asked), "reply_by": prepared["reply_by"]}
+        _write_private(path, dict(sorted(asks.items())), ".reply-asks-")
+    return {"id": draft["id"], "asked_on": str(asked), "reply_by": prepared["reply_by"]}
+
+
 def record_reply(root, draft_path, status, on, asked_on, text=None, record=None, today=None):
     """Record the agency's reply (or silence) on the prepared draft; only the draft is rewritten, atomically.
     ``asked_on`` attests that the organizer really asked; ``record``: a library prefix of the record received."""
@@ -1539,6 +1601,10 @@ def record_reply(root, draft_path, status, on, asked_on, text=None, record=None,
         prepared = content._agency_response(draft["agency_response"], "agency_response", _cited_hashes(draft), today)
         if not content.reply_day(prepared["prepared_on"]) <= asked <= content.reply_day(prepared["reply_by"]):
             raise ValueError("--asked-on: invalid date or date order")
+        recorded = _reply_ask(root, draft["id"], prepared["reply_by"])
+        if recorded is not None and recorded != str(asked):
+            raise ValueError(f"--asked-on {asked} is not the day in the asking record ({recorded}); "
+                             "nothing was written")
         if status == "no_response" and when < content.reply_day(prepared["reply_by"]):
             raise ValueError("no_response requires --on on or after the reply deadline")
         reply = {"status": status, "prepared_on": prepared["prepared_on"], "reply_by": prepared["reply_by"],

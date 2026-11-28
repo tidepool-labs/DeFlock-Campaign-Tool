@@ -932,7 +932,7 @@ FUNCTION_UNKNOWN = {
     **{f"findings.{name}": _FINDING for name in (
         "_append", "_correct_locked", "_create_text", "_ensure_campaign_id", "_locked", "_open_log", "_publish_locked",
         "_update_locked", "_verifies", "_withdraw_locked", "_write_draft", "_write_logged", "add_receipt",
-        "bind_receipts", "new_draft", "new_gap_draft", "record_reply", "reply_request")},
+        "bind_receipts", "new_draft", "new_gap_draft", "record_asked", "record_reply", "reply_request")},
     "findings._write_private": "shared private-file helper; each catalog caller is pinned above",
     **{f"kit.{name}": "generated drafts and the agency list; request-settings.json has no writer"
        for name in ("_write_json", "_write_readme", "_write_text", "build_kit", "verify_agencies_csv", "verify_agency")},

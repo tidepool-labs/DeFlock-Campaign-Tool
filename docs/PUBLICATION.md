@@ -296,6 +296,15 @@ the UTC calendar day. To publish earlier anyway, add `--before-reply-deadline RE
 characters): the publish entry in `private/publication-log.jsonl` then carries `before_reply_deadline: {reply_by,
 reason}`. The flag is refused when nothing is waiting. A finding without a pending reply publishes as before.
 
+`python3 -m campaign_tool finding reply-asked DRAFT --directory D --asked-on D` records privately the day you really
+asked the agency, in `private/reply-asks.json` (0600, one entry per finding id: `asked_on` and the draft's
+`reply_by`). The day must lie from the request's `prepared_on` through its `reply_by` and not after today. The draft
+is not rewritten, so its reviewed content and receipts stay current; nothing is sent. A second record for the same
+finding with another day is refused. The publish refusal then says on which day you asked; publishing still waits
+for `reply_by`. If that file is present but is not a regular file of valid entries, or its `reply_by` is not the
+draft's, `finding publish` for a pending finding refuses and names the file and the field. `finding reply` then needs
+`--asked-on` to be the recorded day.
+
 `python3 -m campaign_tool finding reply DRAFT --directory D --status received|declined|no_response --on D
 --asked-on D [--text T] [--record PREFIX]` records the outcome on the draft. `--asked-on` is your attestation of
 the day you really asked the agency; an unsent prepared request is not evidence of asking. `received` needs
