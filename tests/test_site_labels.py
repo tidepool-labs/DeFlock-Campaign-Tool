@@ -281,6 +281,12 @@ class LabelsTest(unittest.TestCase):
                     "agency.sharing_intro", "agency.sharing_kind_federal", "agency.sharing_kind_local",
                     "agency.sharing_kind_private", "agency.sharing_kind_state", "agency.sharing_kind_unknown",
                     "agency.sharing_more", "agency.sharing_outside", "agency.sharing_portal_link", "agency.sharing_rule"]
+        # agency.local_rule*: the fixture has no law/local-rules.json (tests/test_site_rules_cameras_labels.py overrides
+        # every one).
+        reading += ["agency.local_rule_checked", "agency.local_rule_duty", "agency.local_rule_effective",
+                    "agency.local_rule_future", "agency.local_rule_id", "agency.local_rule_in_force",
+                    "agency.local_rule_label", "agency.local_rule_open", "agency.local_rule_past",
+                    "agency.local_rule_source", "agency.local_rules_heading", "agency.local_rules_notice"]
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
@@ -300,6 +306,8 @@ class LabelsTest(unittest.TestCase):
                   "agency.transparency_same", "agency.transparency_searches_last_30_days",
                   "agency.transparency_shared_with_agencies", "agency.transparency_up",
                   "agency.votes_heading", "agency.votes_more", "agency.votes_none", "agency.votes_source",
+                  # cameras.group_more: only over 2 000 mapped points (tests/test_site_rules_cameras_labels.py).
+                  "cameras.group_more",
                   "correction_counts.caption", "correction_counts.col_accepted", "correction_counts.col_declined",
                   "correction_counts.col_open", "correction_counts.col_quarter", "correction_counts.col_received",
                   "correction_counts.empty", "correction_counts.heading", "correction_counts.lead",
@@ -366,7 +374,9 @@ class LabelsTest(unittest.TestCase):
                   "supporters.description", "supporters.joined", "supporters.kind.business",
                   "supporters.kind.civil_liberties", "supporters.kind.community", "supporters.kind.faith",
                   "supporters.kind.labor", "supporters.kind.neighborhood", "supporters.kind.other", "supporters.title",
-                  "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes"]
+                  "vote.absent", "vote.abstain", "vote.no", "vote.recused", "vote.yes",
+                  # suspected.none: the fixture has no suspected-locations file (tests/test_site_rules_cameras_labels.py).
+                  "suspected.none"]
         # DF1109-16 page labels the fixture does not reach, or that a bare marker hides (a marker without {month},
         # {kinds} or {methods} drops the nested label): tests/test_site_label_completion.py observes every one.
         completion = ["footer.newsletters", "legal.duty", "legal.exceptions", "legal.exceptions_text", "legal.heading",
