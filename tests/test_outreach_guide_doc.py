@@ -281,7 +281,32 @@ class OutreachGuideTests(unittest.TestCase):
         self.assertTrue(out.startswith("draft matches current content"))
         self.assertIn("Cedar Library room 1", (self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
         self.assertIn("not campaign events", text)
-        self.assertIn("Check every event detail and the draft text yourself", text)
+        # r2: newsletter --check compares a meeting's presence, start and agenda link only, not participation details
+        from tests.test_newsletter_participation import facts, how_line, meeting
+        deadline = now + timedelta(days=2)
+        board = meeting("qa-board", starts_at=(deadline + timedelta(days=2)).isoformat(), participation=facts(
+            verified_at=(now - timedelta(days=1)).date().isoformat(),  # yesterday: never "in the future" in any zone
+            written_comment={"how": "Use the fictional comment form", "deadline": deadline.isoformat()}))
+        board_file = self.root / "content/meetings/qa-board.json"
+        board_file.write_text(json.dumps(board), encoding="utf-8")
+        result = self.run_command("campaign_tool.newsletter", newsletter)
+        self.assertEqual(result[0], 0, result)
+        saved = how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
+        board["participation"]["written_comment"]["deadline"] = (deadline + timedelta(hours=4)).isoformat()
+        board_file.write_text(json.dumps(board), encoding="utf-8")
+        code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
+        self.assertEqual(code, 0)
+        self.assertTrue(out.startswith("draft matches current content"))
+        self.assertEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
+        self.assertEqual(self.run_command("campaign_tool.newsletter", newsletter)[0], 0)
+        self.assertNotEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
+        board_file.unlink()
+        self.assertNotIn("compares findings, corrections and meetings", text)
+        for promise in ("compares only these facts saved with the draft", "its start time, its agenda link",
+                        "participation instructions (in person, remote, written comment and its deadline, speaker time)",
+                        "a changed written-comment deadline, event venue or event time still prints the match line",
+                        "against the official agenda", "read the draft text yourself before reuse"):
+            self.assertIn(promise, text)
         # flyer --event: the cutoff is 00:00 UTC today, so an event that already ended today still gets a flyer
         midnight = now.replace(hour=0, minute=0, second=0)
         row.update(id="earlier-today", starts_at=midnight.isoformat(), ends_at=(midnight + timedelta(seconds=1)).isoformat())
