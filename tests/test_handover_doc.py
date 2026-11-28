@@ -178,6 +178,9 @@ class HandoverGuideTests(unittest.TestCase):
         for excluded in ("private/drafts/", "private/reviews/", "private/review-assignments/",
                          "private/reviewers.json", "campaign register"):
             self.assertIn(excluded, text)
+        # what task 3 says --private-work carries is exactly the tool's PRIVATE_WORK profile
+        self.assertEqual({rel for rel, _ in backup.PRIVATE_WORK},
+                         {"private/drafts", "private/reviews", "private/review-assignments", "private/reviewers.json"})
         self.assertNotRegex(text.lower(), r"roster (is|was|has been) (backed up|restored)")
         self.assertNotRegex(read(GUIDE).lower(), r"complete (backup|archive) (is|was) (made|written)")
 

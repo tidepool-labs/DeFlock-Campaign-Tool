@@ -29,7 +29,10 @@ hash-named file (`intake integrity problem`), leaving nothing behind on failure.
 A manifest may list only these `files` names, matched as exact strings (no normalization, no
 prefix-only matching): `campaign.json`; any nonempty path below `content/` or `kit/` (organizer-authored,
 any safe nested name); `private/ledger.sqlite`; `private/d1-export.json`; and
-`private/objects/<64 lowercase hex>`. `manifest.json` is the archive envelope and is never listed. Every
+`private/objects/<64 lowercase hex>`; and, only in an archive made with `--private-work` (see
+[private finding work](#private-finding-work---private-work)), `private/drafts/<id>.json`,
+`private/reviews/<id>.json`, `private/reviews/binding-log.jsonl`, `private/review-assignments/<id>.json`
+(`<id>` is 1-64 of `A-Z a-z 0-9 _ -`) and `private/reviewers.json`. `manifest.json` is the archive envelope and is never listed. Every
 other name, including a bare `content`, `kit`, `private` or `private/objects` file, a root file such as
 `untracked.txt`, an unknown `private/` file, or components after a listed member, is refused with
 `invalid_manifest: unsupported_member_path` by `verify`, `restore`, `backup-diff`, `backup-list` and
@@ -204,6 +207,21 @@ These checks cover the archive's documented originals and metadata. They do not
 provide a transaction spanning mutable `content/` and `kit/` files, an inventory
 of the full records runtime, or recovery of hosted derived R2 text. The records
 recovery-v2 library has a separate declared-profile and caller-quiescence contract.
+
+## Private finding work (`--private-work`)
+
+`python3 -m campaign_tool backup --directory D --out F --encrypt-to organizer.asc --private-work` also
+archives the finding drafts (`private/drafts/`), review receipts and their binding log
+(`private/reviews/`), review assignments (`private/review-assignments/`) and the reviewer roster
+(`private/reviewers.json`), by the exact names listed in the [member namespace](#member-namespace), each
+hashed in the manifest. They hold reviewer names and declared interests, so the flag is refused unless the
+archive is encrypted (`--encrypt-to`, or `backup.encrypt_to` in `campaign.json` with `--into`). Only files
+directly in those folders are taken: a symlink, a special file, a subfolder or any other name there refuses
+the whole backup and nothing is written; the refusal names the folder, never the unexpected name. `verify`,
+`restore` (0600 files in 0700 folders, empty target only), `backup-diff`, `backup-list` and `backup-drill`
+accept these members; `backup-diff` compares them only against an archive that holds them. Without the flag
+the archive is unchanged. The campaign register, `public/` and every other `private/` file (for example
+withdrawn findings and the publication log) stay outside every archive.
 
 ## Restore drill
 
