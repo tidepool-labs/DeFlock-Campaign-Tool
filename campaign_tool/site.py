@@ -1331,13 +1331,17 @@ class Site:
         check = agency.get("policy_check")
         if not check:
             return ""
-        words = {"not_found": "not found in the posted policy", "unclear": "unclear", "addressed": "addressed"}
-        items = "".join(f'<li>{e(item["label"])}: {words[item["status"]]}'
-                        + (f' (page {item["page"]})' if "page" in item else "") + "</li>" for item in check["elements"])
-        return ('<section class="policy-check"><h4>What the posted policy covers (organizer reading, not a legal review)</h4>'
-                f'<ul>{items}</ul><p>Checked {date_label(check["checked_on"])} against <a href="{e(check["policy_url"])}" '
-                f'rel="noopener noreferrer">the posted policy</a>. Law package: {e(self.checklist_law_status or "status unavailable")}.'
-                '</p></section>')
+        items = "".join(f'<li>{e(item["label"])}: {self.t("agency.policy_check_" + item["status"])}'
+                        + self.check_page(item) + "</li>" for item in check["elements"])
+        link = f'<a href="{e(check["policy_url"])}" rel="noopener noreferrer">{self.t("agency.policy_check_link")}</a>'
+        status = e(self.checklist_law_status) if self.checklist_law_status else self.t("agency.law_package_unavailable")
+        return (f'<section class="policy-check"><h4>{self.t("agency.policy_check_heading")}</h4><ul>{items}</ul>'
+                f'<p>{self.t("agency.policy_check_checked", date=date_label(check["checked_on"]), policy=link)} '
+                f'{self.t("agency.law_package", status=status)}</p></section>')
+
+    def check_page(self, item):
+        """DF1125-09: `` (page N)`` after a policy- or contract-check element that records its page; "" otherwise."""
+        return " " + self.t("agency.check_page", page=e(str(item["page"]))) if "page" in item else ""
 
     def pre_meeting_section(self, agency):
         """DF1207-07: the public meeting an organizer found before the camera program, or that none has been found yet.
@@ -1396,15 +1400,14 @@ class Site:
         check = agency.get("contract_check")
         if not check:
             return ""
-        words = {"not_found": "not found in the linked contract", "unclear": "unclear", "addressed": "addressed"}
-        items = "".join(f'<li>{e(item["label"])}: {words[item["status"]]}'
-                        + (f' (page {item["page"]})' if "page" in item else "")
+        items = "".join(f'<li>{e(item["label"])}: {self.t("agency.contract_check_" + item["status"])}' + self.check_page(item)
                         + (f' <span class="contract-check-note">— {e(item["note"])}</span>' if "note" in item else "") + "</li>"
                         for item in check["elements"])
-        return (f'<section class="contract-check"><{heading}>What the contract says (organizer reading, not a legal review)</{heading}>'
-                f'<ul>{items}</ul><p>Not found describes this reading, not whether a term exists elsewhere.</p>'
-                f'<p>Checked {date_label(check["checked_on"])} against <a href="{e(check["contract_url"])}" '
-                'rel="noopener noreferrer">the linked contract</a>. Checklist: draft.</p></section>')
+        link = f'<a href="{e(check["contract_url"])}" rel="noopener noreferrer">{self.t("agency.contract_check_link")}</a>'
+        return (f'<section class="contract-check"><{heading}>{self.t("agency.contract_check_heading")}</{heading}>'
+                f'<ul>{items}</ul><p>{self.t("agency.contract_check_scope")}</p>'
+                f'<p>{self.t("agency.contract_check_checked", date=date_label(check["checked_on"]), contract=link)} '
+                f'{self.t("agency.contract_check_checklist")}</p></section>')
 
     def transparency_block(self, agency, heading="h4"):
         """Newest organizer-transcribed portal snapshot, as the vendor reported it, with change since the previous one."""

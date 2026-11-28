@@ -263,6 +263,14 @@ class LabelsTest(unittest.TestCase):
         # agency.action*: the fixture records no agency actions (test_agency_actions_labels_replace_every_fixed_string below).
         # agency.report*: the fixture records no reports (tests/test_agency_reports.py overrides every one).
         # agency.archived_copy: the fixture records no archived copy (tests/test_agency_archives.py overrides it).
+        # agency.policy_check_*, agency.contract_check_*, agency.check_page, agency.law_package*: the fixture records no
+        # policy or contract reading (tests/test_site_reading_labels.py overrides every one).
+        reading = ["agency.check_page", "agency.contract_check_addressed", "agency.contract_check_checked",
+                   "agency.contract_check_checklist", "agency.contract_check_heading", "agency.contract_check_link",
+                   "agency.contract_check_not_found", "agency.contract_check_scope", "agency.contract_check_unclear",
+                   "agency.law_package", "agency.law_package_unavailable", "agency.policy_check_addressed",
+                   "agency.policy_check_checked", "agency.policy_check_heading", "agency.policy_check_link",
+                   "agency.policy_check_not_found", "agency.policy_check_unclear"]
         absent = ["agency.action_kind_cameras_added", "agency.action_kind_cameras_removed",
                   "agency.action_kind_contract_ended", "agency.action_kind_contract_paused",
                   "agency.action_kind_contract_renewed", "agency.action_kind_contract_signed", "agency.action_kind_other",
@@ -360,7 +368,7 @@ class LabelsTest(unittest.TestCase):
                       "timeline.event_records_requested", "timeline.event_request_update", "timeline.event_statement",
                       "timeline.join_three", "timeline.join_two", "timeline.kind_coverage", "timeline.kind_finding_update",
                       "timeline.kind_statement", "timeline.source_link", "timeline.unknown_agency"]
-        self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), sorted(absent + completion))  # js.*: the script tests below
+        self.assertEqual(sorted(set(DEFAULTS) - set(JS_DEFAULTS) - seen), sorted(absent + completion + reading))  # js.*: the script tests below
 
     def test_supporters_labels_replace_every_fixed_string_when_organizations_are_listed(self):
         root = self.root("rich", labels={key: f"X{key}X" for key in DEFAULTS})
