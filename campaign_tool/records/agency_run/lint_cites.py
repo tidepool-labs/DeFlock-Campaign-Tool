@@ -14,7 +14,7 @@ import re
 import stat
 import sys
 
-RULES_VERSION = "1"  # bump on any rule change: agency lint receipts bind it
+RULES_VERSION = "2"  # bump on any rule change: agency lint receipts bind it
 DRAFT_MAX, PACKAGE_MAX = 512 * 1024, 2 * 1024 * 1024
 NUM = r"[0-9]+(?:\.[0-9]+)*"
 CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|"
@@ -22,9 +22,31 @@ CODE = (r"(?:Gov\.?|Government|Civ\.?|Civil|Penal|Veh\.?|Vehicle|Sts\.? & Hy\.?|
 CITATION = re.compile(rf"{CODE}\s+(?:§§?\s*|[Ss]ections?\s+)?({NUM})(?:\([a-z0-9]+\))*|§§?\s*({NUM})(?:\([a-z0-9]+\))*")
 LABEL = re.compile(r"(?<![\w-])(?:VERIFIED-IN-PACKAGE|UNVERIFIED)(?![\w-])")
 ET_SEQ = re.compile(r"(?i:\bet\s+seq\b)|\bff\.")
+ORDERED_MARKER = r"\d+[.)]"
+LIST_PREFIX = re.compile(rf"^\s*(?:[-+*]|{ORDERED_MARKER})\s+")
+ORDERED_PREFIX = re.compile(rf"^[^\S\n]*{ORDERED_MARKER}(?=\s|\Z)")
+# A line holding only an ordered marker starts an item only with boundary evidence:
+# paragraph start, a previous line that ends a sentence, or the next ordinal (same
+# delimiter) of the current ordered item. Otherwise, and always after a month name
+# (the day of "March\n12."), it is wrapped text and stays a possible fact.
+MARKER_ONLY = re.compile(r"^\s*(\d+)([.)])\s*$")
+ORDERED_ITEM = re.compile(r"^\s*(\d+)([.)])(?:\s|$)")
+SENTENCE_END = re.compile(r"[.!?][\"'\u201d\u2019)\]]*\s*$")
 SENTENCE_SPLIT = re.compile(r"(?<=[.!?])(?<!\bpp\.)(?<!\bp\.)(?<!\bNo\.)(?<!\be\.g\.)(?<!\bi\.e\.)\s+")
 MONTH = r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\.?"
 NUMWORD = r"(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|twenty|thirty)"
+MONTH_END = re.compile(rf"\b{MONTH}\s*$", re.I)
+
+
+def _lone_marker_starts_item(raw, span):
+    """True when a marker-only line has list-boundary evidence (see MARKER_ONLY)."""
+    marker = MARKER_ONLY.match(raw)
+    if not marker or not span or MONTH_END.search(span[-1][1]):
+        return False
+    if SENTENCE_END.search(span[-1][1]):
+        return True
+    item = ORDERED_ITEM.match(span[0][1])
+    return bool(item) and item.group(2) == marker.group(2) and int(marker.group(1)) == int(item.group(1)) + 1
 FACT = re.compile(
     r"\b\d{4}-\d{2}-\d{2}\b|\b" + MONTH + r"\s+\d{1,2}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b"
     r"|\b\d{2,}\b|\b" + NUMWORD + r"\s+(?:documents|pages|requests|records|cameras|days|files|messages)\b"
@@ -96,7 +118,8 @@ def lint(text, sections):
         # List items delimit C4 sentence spans even without terminal punctuation.
         spans, span = [], []
         for number, raw in paragraph:
-            if re.match(r"^\s*(?:[-+*]|\d+[.)])\s+", raw) and span:
+            starts_item = bool(LIST_PREFIX.match(raw)) or _lone_marker_starts_item(raw, span)
+            if starts_item and span:
                 spans.append(span)
                 span = []
             span.append((number, raw))
@@ -124,7 +147,10 @@ def lint(text, sections):
                     hits.append((number, "C1_label_missing"))
                 elif (label.group() == "UNVERIFIED") != (section not in sections):
                     hits.append((number, "C2_label_mismatch"))
-            blanked = CITATION.sub(lambda m: " " * len(m.group()), joined)
+            # Mask only for C4, after finding item boundaries and citation labels.
+            # Preserve the newline and character offsets for diagnostics.
+            blanked = ORDERED_PREFIX.sub(lambda m: " " * len(m.group()), joined)
+            blanked = CITATION.sub(lambda m: " " * len(m.group()), blanked)
             joined = ET_SEQ.sub(lambda m: " " * len(m.group()), blanked)
             start = 0
             for boundary in list(SENTENCE_SPLIT.finditer(joined)) + [None]:
