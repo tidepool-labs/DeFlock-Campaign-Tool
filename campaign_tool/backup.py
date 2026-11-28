@@ -50,6 +50,14 @@ INCLUDED_DIRS = ("content", "kit")
 MAX_MEMBER_BYTES = 2 * 1024 * 1024 * 1024
 MAX_MEMBERS = 200_000
 HEX64 = frozenset("0123456789abcdef")
+# Private finding work that ``export(..., private_work=True)`` adds to an encrypted archive: (path, file-name
+# pattern for a folder's direct files, or None for a single file). verify, restore, backup-diff, backup-list
+# and backup-drill accept exactly these names; a later private member is one more entry here.
+_FINDING_FILE = re.compile(r"[A-Za-z0-9_-]{1,64}\.json")
+PRIVATE_WORK = (("private/drafts", _FINDING_FILE),
+                ("private/reviews", re.compile(r"[A-Za-z0-9_-]{1,64}\.json|binding-log\.jsonl")),
+                ("private/review-assignments", _FINDING_FILE),
+                ("private/reviewers.json", None))
 
 
 class BackupError(ValueError):
@@ -92,6 +100,46 @@ def _members(root):
         for path in sorted(objects.iterdir()):
             if path.is_file() and not path.is_symlink() and len(path.name) == 64 and set(path.name) <= HEX64:
                 wanted.append(("private/objects/" + path.name, path))
+    return wanted
+
+
+def _private_work_name(name):
+    """True only for a name in the PRIVATE_WORK profile (exact string match)."""
+    for path, pattern in PRIVATE_WORK:
+        if pattern is None:
+            if name == path:
+                return True
+        elif name.startswith(path + "/") and pattern.fullmatch(name[len(path) + 1:]) is not None:
+            return True
+    return False
+
+
+def _private_work_members(root):
+    """(archive_name, path) for every PRIVATE_WORK file; anything else under those paths refuses the whole backup.
+
+    Refusals name an archive member or a PRIVATE_WORK path, never a full path or an unexpected file name.
+    """
+    wanted = []
+    for rel, pattern in PRIVATE_WORK:
+        path = Path(root) / rel
+        try:
+            mode = os.lstat(path).st_mode
+        except (FileNotFoundError, NotADirectoryError):
+            continue
+        if pattern is None:
+            if not stat.S_ISREG(mode):
+                raise BackupError(f"private_work: {rel} is not a regular file (a link or special file); nothing was written")
+            wanted.append((rel, path))
+            continue
+        if not stat.S_ISDIR(mode):
+            raise BackupError(f"private_work: {rel} must be a real folder, not a link or a file; nothing was written")
+        for entry in sorted(os.listdir(path)):
+            if pattern.fullmatch(entry) is None:
+                raise BackupError(f"private_work: unexpected name under {rel}/; nothing was written")
+            if not stat.S_ISREG(os.lstat(path / entry).st_mode):
+                raise BackupError(f"private_work: {rel}/{entry} is not a regular file (a link or special file); "
+                                  "nothing was written")
+            wanted.append((f"{rel}/{entry}", path / entry))
     return wanted
 
 
@@ -296,12 +344,16 @@ def _publish_archive(staged, out_path):
         raise BackupError("archive appeared before publication; choose a new file name") from None
 
 
-def export(root, out_path, encrypt_to=None):
+def export(root, out_path, encrypt_to=None, private_work=False):
     """Write the archive; returns the manifest dict. Refuses to overwrite ``out_path``.
 
     With ``encrypt_to`` (a public key file) the plain tar exists only in a private
     temp dir and ``out_path`` is the OpenPGP message encrypted to that key.
+    ``private_work`` also archives the PRIVATE_WORK files and needs ``encrypt_to``.
     """
+    if private_work and encrypt_to is None:
+        raise BackupError("private_work: needs an encryption key (--encrypt-to, or backup.encrypt_to in campaign.json "
+                          "with --into): drafts, review receipts and the roster hold reviewer names; nothing was written")
     root = Path(root).resolve()
     out_path = Path(out_path)
     if not (root / "campaign.json").is_file():
@@ -323,6 +375,8 @@ def export(root, out_path, encrypt_to=None):
         # Take the database snapshot before enumerating mutable source paths.
         # Its references, not the later live database, define the required bytes.
         members = [(n, p) for n, p in _members(root) if n != "private/ledger.sqlite"]
+        if private_work:
+            members.extend(_private_work_members(root))
         if snapshot:
             members.append(("private/ledger.sqlite", snapshot))
         if len(members) + 1 > MAX_MEMBERS:
@@ -373,7 +427,7 @@ def scheduled_name(now=None):
     return "deflock-backup-" + (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ") + ".tar"
 
 
-def export_into(root, folder, encrypt_to=None, now=None):
+def export_into(root, folder, encrypt_to=None, now=None, private_work=False):
     """New timestamped archive in ``folder``, never overwriting; returns ``(name, manifest)``. ``backup: `` messages are whole lines."""
     folder, root = Path(folder), Path(root)
     mode = os.lstat(folder).st_mode if os.path.lexists(folder) else 0
@@ -401,7 +455,7 @@ def export_into(root, folder, encrypt_to=None, now=None):
     try:
         if os.path.lexists(folder / name):
             raise BackupError(f"backup: {name} exists; not overwritten")
-        return name, export(root, folder / name, encrypt_to=encrypt_to)
+        return name, export(root, folder / name, encrypt_to=encrypt_to, private_work=private_work)
     finally:
         lock.unlink(missing_ok=True)
 
@@ -439,6 +493,8 @@ def _diff_tar(archive, root, expected_manifest_sha256=None):
         raise BackupError("unsafe_private_directory: private must not be a symlink")
     with tempfile.TemporaryDirectory(prefix="deflock-diff-") as tmp:
         members = dict(_members(root))
+        if any(_private_work_name(name) for name in manifest["files"]):
+            members.update(_private_work_members(root))  # compare private work only against an archive that holds it
         ledger = root / "private" / "ledger.sqlite"
         if ledger.exists() or ledger.is_symlink():
             if not ledger.is_file() or ledger.is_symlink():
@@ -633,7 +689,7 @@ def _archive_members(tar):
 
 def _supported_member_path(name):
     """True only for names the exporter can produce and restore can recreate (exact string match)."""
-    if name in ("campaign.json", "private/ledger.sqlite", "private/d1-export.json"):
+    if name in ("campaign.json", "private/ledger.sqlite", "private/d1-export.json") or _private_work_name(name):
         return True
     top, _, rest = name.partition("/")
     if top in INCLUDED_DIRS:

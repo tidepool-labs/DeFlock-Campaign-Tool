@@ -11,7 +11,7 @@ Names used below, all synthetic: `D` is the existing external campaign directory
 | `campaign.json` | the campaign's configuration | private; part of a backup |
 | `content/` | approved public inputs the build reads | not a privacy bypass: it is only public once built and published |
 | `kit/` | drafts, request history, sent and response records, private notes | private; part of a backup |
-| `private/` | originals, the receipt ledger, finding drafts, review receipts, the reviewer roster, review assignments | private; only part of it is in a backup (task 4) |
+| `private/` | originals, the receipt ledger, finding drafts, review receipts, the reviewer roster, review assignments | private; only part of it is in a backup (task 3) |
 | `public/` | rebuildable site output | not a backup: rebuild it, do not carry it |
 
 "Never leaves the machine" means never public, never in source control and never in outreach. A custody transfer is a separate, intentional step: it goes only to the incoming organizer, over a channel both organizers have agreed, and the archive is encrypted. It is not permission to email an unencrypted archive or to send private notes. This guide has no bulk-copy, git-add, upload or hosted-export step, on purpose.
@@ -25,10 +25,10 @@ Next: task 2.
 Agree, by word, that neither organizer edits `D` until the handover is signed off. No command locks the directory. Review the private inventory together (task 9 prints it), then on the outgoing machine:
 
 ```sh
-python3 -m campaign_tool backup --directory D --out ARCHIVE --encrypt-to KEY.pub
+python3 -m campaign_tool backup --directory D --out ARCHIVE --encrypt-to KEY.pub --private-work
 ```
 
-`--encrypt-to` is required here: it writes an archive encrypted for a public key that the incoming organizer made, and no key material belongs in `D`. Do not copy or transfer an unencrypted archive. If the output does not name the key's fingerprint, or says unencrypted, do not transfer the file; make it again with `--encrypt-to`. The output prints `manifest_sha256`: copy it as `DIGEST` into a place that is not the archive (a password manager, a private note on another device).
+`--encrypt-to` is required here: it writes an archive encrypted for a public key that the incoming organizer made, and no key material belongs in `D`. `--private-work` also carries the finding drafts, review receipts, review assignments and the reviewer roster (task 3 says exactly what); it is refused without `--encrypt-to`. Do not copy or transfer an unencrypted archive. If the output does not name the key's fingerprint, or says unencrypted, do not transfer the file; make it again with `--encrypt-to`. The output prints `manifest_sha256`: copy it as `DIGEST` into a place that is not the archive (a password manager, a private note on another device).
 
 After the encrypted archive is copied over the approved channel, check it with the digest:
 
@@ -42,9 +42,9 @@ Stop here if `verify` fails or the digest differs; make a new archive. Next: tas
 
 ## 3. A passing backup-drill does not prove the whole campaign was transferred
 
-**A passing backup-drill does not prove the whole campaign was transferred.** The archive holds `campaign.json`, `content/`, `kit/`, the receipt ledger and the stored originals. It does not hold `private/drafts/`, `private/reviews/`, `private/review-assignments/` or `private/reviewers.json` (finding drafts, review receipts, review assignments and the reviewer roster), and it does not hold this machine's campaign register or `public/`. The tool does not yet back those up and this guide does not change that.
+**A passing backup-drill does not prove the whole campaign was transferred.** Every archive holds `campaign.json`, `content/`, `kit/`, the receipt ledger and the stored originals. With `--private-work` (task 2) it also holds the files directly in `private/drafts/`, `private/reviews/` and `private/review-assignments/`, and `private/reviewers.json` (finding drafts, review receipts, review assignments and the reviewer roster), by exact name, each hash-checked; the backup refuses the whole archive if a link, a subfolder or an unexpected name sits there, so sort that out together and never delete a file to get past it. No archive holds this machine's campaign register, `public/` or any other file in `private/` (for example withdrawn findings and the publication log).
 
-Before sign-off, list what is in `D/private/` and compare it with what the archive restored on the incoming machine. Agree how each missing file reaches the incoming organizer through a separately controlled private transfer, and who confirms it arrived intact. There is no flag that makes a complete archive, and no step here claims one.
+Before sign-off, list what is in `D/private/` and compare it with what the archive restored on the incoming machine. Agree how each file still missing reaches the incoming organizer through a separately controlled private transfer, and who confirms it arrived intact. There is no flag that makes a complete archive, and no step here claims one.
 
 Until that is done, write this in your sign-off notes: `Handover incomplete: private files outside the backup still need a verified custody transfer.`
 
