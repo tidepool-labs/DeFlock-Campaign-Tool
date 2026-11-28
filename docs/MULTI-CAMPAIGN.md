@@ -107,6 +107,8 @@ campaigns unbind-records example
 `bind-records` reads only `EXPORT.json` of the root's `current` export (the same reader `campaigns today` uses) for its
 `source_project_id`, checks the binding with the register's own rules below, and writes the register in one locked
 atomic write; every other entry is written back unchanged. A campaign that is already bound needs `--replace`.
+Give the export root as its real path: a path with `.` or `..` parts, or one that is or goes through a symlink, is
+refused before anything is read.
 Refusals name the rule and never echo a path or an id. `unbind-records` removes only that entry's `records` object; the
 export is never touched. There is still no automatic registration and no scan; `campaigns add` still creates an unbound
 entry. The stored entry looks like this (placeholder values):

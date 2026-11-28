@@ -152,6 +152,33 @@ class BindRecords(unittest.TestCase):
         self.assertNotIn(str(self.base), err)
         self.assertNotIn("records", self.entries()[0])
 
+    def test_dot_dot_after_a_link_is_refused_before_any_read(self):
+        # The OS resolves "link/.." from the link's TARGET; a lexical collapse would name a different real export.
+        physical, _ = self.export("exports-physical")  # what the OS reaches through hop/../export-root
+        lexical, _ = self.export("lexical")  # what a lexical collapse (abspath/normpath) would name instead
+        hop = lexical.parent / "hop"
+        hop.symlink_to(physical.parent / "live")  # hop/.. is physical's folder for the OS, lexical's for normpath
+        supplied = f"{hop}/../{physical.name}"
+        self.assertEqual((os.path.realpath(supplied), os.path.normpath(supplied)), (str(physical), str(lexical)))
+        cases = [(supplied, "has '.' or '..' parts; give its real path"),
+                 (f"{physical}/./", "has '.' or '..' parts; give its real path"),
+                 (f"{physical}/../{physical.name}", "has '.' or '..' parts; give its real path")]
+        with mock.patch.object(campaign_summary, "project_id", side_effect=AssertionError("manifest was read")):
+            for given, rule in cases:
+                with self.subTest(given=given.replace(str(self.base), "BASE")):
+                    err = self.refused("bind-records", "cedar", "--export-root", given, rule=rule)
+                    self.assertNotIn(str(self.base), err)
+        self.assertNotIn("records", self.entries()[0])
+
+    def test_relative_path_is_bound_as_its_real_absolute_folder(self):
+        root, pin = self.export("exports-cedar")
+        previous = os.getcwd()
+        os.chdir(root.parent)
+        self.addCleanup(os.chdir, previous)
+        code, out, err = self.run_cli("campaigns", "bind-records", "cedar", "--export-root", root.name)
+        self.assertEqual(code, 0, err)
+        self.assertEqual(self.entries()[0]["records"]["export_root"], str(root))
+
     def test_register_io_errors_give_a_fixed_path_free_refusal(self):
         root, pin = self.export("exports-cedar")
         self.assertEqual(self.run_cli("campaigns", "bind-records", "cedar", "--export-root", root)[0], 0)

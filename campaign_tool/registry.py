@@ -225,10 +225,15 @@ def bind_records(name, export_root, replace=False):
     source_project_id); the binding is checked by the register's own rules and written in one locked atomic write.
     Every other entry is written back unchanged. Refusals never echo a path or an id."""
     from .records import campaign_summary
-    given = Path(export_root).expanduser()
+    raw = os.path.expanduser(str(export_root))
+    # The text is validated exactly as supplied, before anything collapses it: with no "." or ".." component the only
+    # change below is joining the working folder and tidying slashes, so the OS and the reader name the same folder.
+    if not raw or any(part in (".", "..") for part in raw.split(os.sep)):
+        raise ValueError("the export root path is empty or has '.' or '..' parts; give its real path")
+    root = os.path.normpath(os.path.join(os.getcwd(), raw))
+    given = Path(root)
     if given.is_symlink() or not given.is_dir():
         raise ValueError("the export root is a symlink, missing or not a directory")
-    root = os.path.normpath(os.path.abspath(given))
     if os.path.realpath(root) != root:  # link-free input: no symlinked parent folder, checked before any manifest read
         raise ValueError("the export root path goes through a symlinked folder; give its real path")
     pid = campaign_summary.project_id(root)
