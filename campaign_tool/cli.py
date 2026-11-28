@@ -1617,6 +1617,8 @@ def main():
     snapshot.add_argument("--drop-oldest", action="store_true",
                           help="When 24 snapshots are stored, discard the oldest (only then) to make room")
     for verb, about in (("policy", "profile.alpr_policy: the posted ALPR policy document and the page you found it on"),
+                        ("policy-not-found", "profile.policy_search: you looked for a posted ALPR usage policy on the "
+                         "agency's site and did not find one (an agency has this or a posted policy, never both)"),
                         ("contract", "profile.contract: the signed agreement's vendor, term and optional stated cost")):
         writer = profile_cmds.add_parser(verb, help=f"Record {about} (the whole document; nothing is fetched)")
         writer.add_argument("--directory", required=True)
@@ -1624,6 +1626,9 @@ def main():
         if verb == "policy":
             writer.add_argument("--url", required=True, help="https URL of the policy document itself")
             writer.add_argument("--source-url", required=True, help="https URL of the agency page where you found it")
+        elif verb == "policy-not-found":
+            writer.add_argument("--searched-url", required=True,
+                                help="https URL of the agency page you searched, at most 500 characters")
         else:
             writer.add_argument("--vendor", required=True, help="Vendor as the agreement names it, 1-80 characters")
             writer.add_argument("--start", required=True, metavar="YYYY-MM-DD", help="Term start as the agreement states it")
@@ -1638,7 +1643,7 @@ def main():
         writer.add_argument("--checked-on", required=True, metavar="YYYY-MM-DD", help="Day you read it, not after today")
         writer.add_argument("--replace", action="store_true", help="Record the whole document again over an existing one")
         writer.add_argument("--drop-check", action="store_true", help="With --replace: remove the existing reading "
-                            f"({'policy_check' if verb == 'policy' else 'contract_check'}) in the same write")
+                            f"({'contract_check' if verb == 'contract' else 'policy_check'}) in the same write")
     for verb, about, kind in (("policy-check", "profile.policy_check: your reading of the stored policy against the seven-element checklist", "policy"),
                               ("contract-check", "profile.contract_check: your reading of the stored agreement against the eight-element checklist", "contract")):
         reader = profile_cmds.add_parser(verb, help=f"Record {about} (the URL is copied from the stored document; nothing is fetched; "
@@ -2551,6 +2556,10 @@ def main():
             elif args.agency_profile_command == "policy":
                 sys.stdout.write(content_profile.format_document(content_profile.write_policy(
                     root, args.agency, url=args.url, source_url=args.source_url, checked_on=args.checked_on,
+                    replace=args.replace, drop_check=args.drop_check)))
+            elif args.agency_profile_command == "policy-not-found":  # DF1125-02
+                sys.stdout.write(content_profile.format_document(content_profile.write_policy_not_found(
+                    root, args.agency, searched_url=args.searched_url, checked_on=args.checked_on,
                     replace=args.replace, drop_check=args.drop_check)))
             elif args.agency_profile_command == "contract":
                 sys.stdout.write(content_profile.format_document(content_profile.write_contract(

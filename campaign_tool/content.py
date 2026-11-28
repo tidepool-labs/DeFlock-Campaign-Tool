@@ -1439,6 +1439,34 @@ def _alpr_policy(value, label, today=None):
             **_archive_fields(value, label, today)}
 
 
+POLICY_SEARCH_KEYS = {"status", "searched_url", "checked_on"}
+
+
+def _policy_search(value, label, alpr_policy, today=None):
+    """DF1125-02: the organizer looked for a posted ALPR usage policy on ``searched_url`` and did not find one
+    (``profile.policy_search``). A dated observation only, never a finding that a policy is missing or required;
+    it never coexists with ``profile.alpr_policy``."""
+    if value is None:
+        return None
+    if isinstance(value, dict) and not POLICY_SEARCH_KEYS <= set(value):
+        raise ContentError(f"{label}: needs status, searched_url and checked_on")
+    _require_keys(value, POLICY_SEARCH_KEYS, POLICY_SEARCH_KEYS, label)
+    if alpr_policy is not None:
+        raise ContentError(f"{label}: must not be recorded together with profile.alpr_policy")
+    if value["status"] != "not_found":
+        raise ContentError(f"{label}.status: must be \"not_found\"")
+    _https(value["searched_url"], f"{label}.searched_url")
+    if len(value["searched_url"]) > 500:
+        raise ContentError(f"{label}.searched_url: at most 500 characters")
+    try:
+        checked = _calendar_day(value["checked_on"], f"{label}.checked_on")
+    except ContentError:
+        checked = None
+    if checked is None or checked > (today or date.today()):
+        raise ContentError(f"{label}.checked_on: must be a YYYY-MM-DD date not after the build date")
+    return {"status": "not_found", "searched_url": value["searched_url"], "checked_on": value["checked_on"]}
+
+
 POLICY_CHECK_KEYS = {"checked_on", "policy_url", "elements"}
 POLICY_STATUSES = ("addressed", "not_found", "unclear")
 CHECKLIST_JURISDICTION = "us-ca"  # the only checklist resource; see jurisdictions/us-ca/policy-checklist.json
@@ -1960,7 +1988,7 @@ def load_agencies(document, label, today=None):
         if portal["vendor"] not in PORTAL_VENDORS:
             raise ContentError(f"{item}.portal.vendor: choose one of {list(PORTAL_VENDORS)}")
         profile = entry.get("profile", {})
-        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "transparency", "funding", "reports", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
+        _require_keys(profile, PROFILE_KEYS | {"contract", "contract_check", "alpr_policy", "policy_check", "policy_search", "transparency", "funding", "reports", "pre_implementation_meeting", "sharing"}, set(), f"{item}.profile")  # not county_profile
         slug = _agency_slug(entry)
         if entry["agency_id"] in ids or slug in slugs:
             raise ContentError(f"{item}: duplicate agency_id or slug")
@@ -1984,6 +2012,8 @@ def load_agencies(document, label, today=None):
             "contract_check": _contract_check(profile.get("contract_check"), contract, f"{item}.profile.contract_check", today),  # likewise
             "alpr_policy": (alpr_policy := _alpr_policy(profile.get("alpr_policy"), f"{item}.profile.alpr_policy", today)),  # likewise
             "policy_check": _policy_check(profile.get("policy_check"), f"{item}.profile.policy_check", alpr_policy, today),  # likewise
+            "policy_search": _policy_search(profile.get("policy_search"), f"{item}.profile.policy_search",  # DF1125-02
+                                            alpr_policy, today),
             "pre_implementation_meeting": _pre_meeting(profile.get("pre_implementation_meeting"),  # likewise
                                                        f"{item}.profile.pre_implementation_meeting", today),
             "transparency": _transparency(profile.get("transparency"), f"{item}.profile.transparency",  # likewise

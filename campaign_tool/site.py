@@ -1326,6 +1326,17 @@ class Site:
         return (f'<section class="agency-reports"><{heading}>{self.t("agency.reports_heading")}</{heading}>'
                 f'<ul>{"".join(items)}</ul></section>')
 
+    def policy_not_found_line(self, agency):
+        """DF1125-02: one fixed sentence when the organizer looked for a posted ALPR usage policy and found none;
+        the searched page is linked and the day shown. An observation only, never a conclusion."""
+        search = agency.get("policy_search")
+        if not search:
+            return ""
+        site = (f'<a href="{e(search["searched_url"])}" rel="noopener noreferrer">'
+                f'{self.t("agency.policy_not_found_site")}</a>')
+        return (f'<p class="policy-not-found">'
+                f'{self.t("agency.policy_not_found", site=site, date=date_label(search["checked_on"]))}</p>')
+
     def policy_check_section(self, agency):
         """DF1207-06: the organizer's reading of which listed elements a posted policy addresses; fixed wording, no judgement."""
         check = agency.get("policy_check")
@@ -1568,7 +1579,9 @@ class Site:
             cells = [f'<a href="{e(page)}">{e(agency["name"])}</a>'] + [
                 sourced(newest["source_url"], e(newest[key]), newest["checked_on"]) if newest.get(key) is not None
                 else unchecked for key in ("cameras", "searches_last_30_days", "retention_days")]
-            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy else unchecked,
+            cells += [sourced(policy["url"], self.t("agencies.glance_posted"), policy["checked_on"]) if policy
+                      else sourced(agency["policy_search"]["searched_url"], self.t("agencies.glance_not_found"),
+                                   agency["policy_search"]["checked_on"]) if agency.get("policy_search") else unchecked,
                       sourced(contract["source_url"], time_tag(contract["end"]), contract["checked_on"]) if contract else unchecked,
                       sourced(contract["source_url"], e(self.contract_cost_amount(contract["cost"])) + " "
                               + self.t("agency.cost_" + contract["cost"]["period"]), contract["checked_on"])
@@ -1604,6 +1617,7 @@ class Site:
                     + (f'<p>{self.t("agency.findings", count=len(findings))} ' + ", ".join(
                         f'<a href="/findings/{e(f["slug"])}.html">{e(f["title"])}</a>' for f in findings) + '</p>' if findings else f'<p>{self.t("agency.no_findings")}</p>')
                     + (f'<p>{" · ".join(links)}</p>' if links else "") + policy_line(agency.get("alpr_policy"), self.labels["agency.archived_copy"])
+                    + self.policy_not_found_line(agency)
                     + self.policy_check_section(agency)
                     + self.pre_meeting_section(agency)
                     + self.contract_line(agency["contract"]) + self.contract_check_block(agency) + self.funding_block(agency) + self.reports_block(agency, "h4") + self.transparency_block(agency) + self.sharing_section(agency)
@@ -1812,7 +1826,8 @@ class Site:
                 + (f'<p>{e(profile["open"])}</p>' if profile["open"] else "")
                 + ('<p>' + " ".join(f'<span class="status-pill">{e(flag)}</span>' for flag in profile["flags"]) + '</p>'
                    if profile["flags"] else "")
-                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_check_section(agency) + self.pre_meeting_section(agency)
+                + (f'<p>{" · ".join(links)}</p>' if links else "") + self.policy_not_found_line(agency)
+                + self.policy_check_section(agency) + self.pre_meeting_section(agency)
                 + (policy_line(agency["alpr_policy"], self.labels["agency.archived_copy"]) if (agency.get("alpr_policy") or {}).get("archived_url") else "")
                 + (self.contract_line(agency["contract"]) if (agency["contract"] or {}).get("cost") or (agency["contract"] or {}).get("archived_url") else "")
                 + self.contract_check_block(agency, "h3")
