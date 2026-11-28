@@ -292,6 +292,9 @@ class OutreachGuideTests(unittest.TestCase):
         result = self.run_command("campaign_tool.newsletter", newsletter)
         self.assertEqual(result[0], 0, result)
         saved = how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8"))
+        # fallback: the official agenda moved but staged content did not, so a rebuild repeats the old deadline
+        self.assertEqual(self.run_command("campaign_tool.newsletter", newsletter)[0], 0)
+        self.assertEqual(how_line((self.root / "kit/newsletter-draft.txt").read_text(encoding="utf-8")), saved)
         board["participation"]["written_comment"]["deadline"] = (deadline + timedelta(hours=4)).isoformat()
         board_file.write_text(json.dumps(board), encoding="utf-8")
         code, out, _ = self.run_command("campaign_tool.newsletter", ["--directory", "$CAMPAIGN", "--check"])
@@ -305,8 +308,13 @@ class OutreachGuideTests(unittest.TestCase):
         for promise in ("compares only these facts saved with the draft", "its start time, its agenda link",
                         "participation instructions (in person, remote, written comment and its deadline, speaker time)",
                         "a changed written-comment deadline, event venue or event time still prints the match line",
-                        "against the official agenda", "read the draft text yourself before reuse"):
+                        "against the official agenda", "read the draft text yourself",
+                        "Do not reuse a draft made earlier as it is", "not a check that a draft can be reused",
+                        "rebuilding it cannot pick up a change the organizer has not entered",
+                        "ask the organizer to correct the staged meeting or event first, then run the draft command above again"):
             self.assertIn(promise, text)
+        for retired in ("Before you reuse a draft made earlier, run", "if anything differs, rebuild the draft"):
+            self.assertNotIn(retired, text)
         # flyer --event: the cutoff is 00:00 UTC today, so an event that already ended today still gets a flyer
         midnight = now.replace(hour=0, minute=0, second=0)
         row.update(id="earlier-today", starts_at=midnight.isoformat(), ends_at=(midnight + timedelta(seconds=1)).isoformat())
