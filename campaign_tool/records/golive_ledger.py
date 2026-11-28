@@ -83,7 +83,8 @@ def build(reports, evidence, now):
     LIVE reflects observed proof, not permission to run a stage. ``next`` names
     the first required column without positive evidence, even if a later
     column already has it. Freshness is relative to the newest live record
-    across the ledger; absence of a live record does not establish an engine.
+    across the ledger that names an engine; absence of such a record (including
+    live records whose engine is null) does not establish an engine.
     A gate record with a null engine (as written by ``golive_record.from_gate``)
     is not compared with that engine; rehearsals and gates naming an engine are.
     A record dated after ``now`` is FUTURE_DATED: missing, never a pass or a
@@ -101,8 +102,11 @@ def build(reports, evidence, now):
                     for stage in golive_catalog.STAGES}
     settled = tuple(row for row in evidence if not _is_future(row, now))
     settled_live = (golive_evidence.latest(settled, stage, "live") for stage in golive_catalog.STAGES)
+    # Only a live record that names an engine establishes one. Most live adapters (the stage 9-14
+    # joins and output adapters) write engine null; treating null as "the" engine would turn every
+    # engine-named rehearsal into ENGINE_CHANGED as soon as one such row is recorded.
     # Match the evidence reader's timestamp/filename ordering across stages.
-    newest_live = max((record for record in settled_live if record is not None),
+    newest_live = max((record for record in settled_live if record is not None and record["engine"] is not None),
                       key=lambda record: (record["recorded_at"], record["stage"],
                                           record["source"]["sha256"][:8]), default=None)
     rows = []
