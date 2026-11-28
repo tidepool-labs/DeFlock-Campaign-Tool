@@ -273,15 +273,19 @@ def recheck_profile(root, agency_id, field, checked_on, index=None, today=None):
     today = today or date.today()
     if field not in FIELDS:
         raise ContentProfileError(f"--field: choose one of {list(FIELDS)}")
-    if _calendar_day(checked_on, "--checked-on") > today:
-        raise ContentProfileError("--checked-on: must not be after today")
+    new_day = _new_day(checked_on, today)  # fixed refusals: the typed text is never repeated
     if isinstance(index, int) and not isinstance(index, bool):
         index = str(index)
 
     def change(document):
         fact, name, position = _target_fact(document, agency_id, field, index)
         old = fact["checked_on"]
-        if checked_on < _calendar_day(old, f"{name}.checked_on").isoformat():
+        try:  # the stored value is repeated below only once it is a valid calendar day
+            old_day = _calendar_day(old, f"{name}.checked_on")
+        except ContentError:
+            raise ContentProfileError(f"{name}.checked_on: the stored value is not a YYYY-MM-DD calendar day; "
+                                      "nothing was written") from None
+        if new_day < old_day:
             raise ContentProfileError(f"--checked-on: must not be before stored checked_on {old}")
         fact["checked_on"] = checked_on  # the only change, in the parsed copy of the whole file
         _admit_prospective(document, position, field, index, checked_on, today)

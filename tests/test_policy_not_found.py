@@ -218,6 +218,28 @@ class RecordTests(_NoNetwork):
         self.assertEqual(self.target.read_bytes(), before)
         self.assertNotIn("policy_search", [row["field"] for row in self.listed(A)])
 
+    def test_recheck_never_repeats_a_malformed_date(self):
+        self.assertEqual(self.not_found()[0], 0)
+        before = self.target.read_bytes()
+        code, out, err = self.recheck(MARKER)  # typed --checked-on
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(out, "")
+        self.assertIn("--checked-on: must be a YYYY-MM-DD calendar day; nothing was written", err)
+        self.assert_silent(code, out, err)
+        self.assertEqual(self.target.read_bytes(), before)
+        document = agencies()  # stored checked_on
+        document[1]["profile"]["policy_search"] = {"status": "not_found", "searched_url": SEARCHED,
+                                                   "checked_on": MARKER}
+        self.target.write_text(json.dumps(document, indent=2) + "\n", encoding="utf-8")
+        before = self.target.read_bytes()
+        code, out, err = self.recheck(ago(1))
+        self.assertNotEqual(code, 0, out)
+        self.assertEqual(out, "")
+        self.assertIn("policy_search.checked_on: the stored value is not a YYYY-MM-DD calendar day; nothing was written",
+                      err)
+        self.assert_silent(code, out, err)
+        self.assertEqual(self.target.read_bytes(), before)
+
 
 
 class LoaderTests(unittest.TestCase):
