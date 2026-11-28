@@ -394,12 +394,15 @@ CLEAR_REFUSES = (CREATION_FLAGS + (("minutes_url", "--minutes-url"), ("minutes_a
 
 
 def _run_outcome_mode(root, args):
-    group = getattr(args, "clear", None)
-    if group is not None:  # DF1125-06: clear mode takes no other outcome flag
+    groups = getattr(args, "clear", None)
+    if groups is not None:  # DF1125-06: clear mode takes exactly one --clear and no other outcome flag
+        if len(groups) != 1:  # argparse would otherwise keep only the last one and clear the wrong group
+            raise MeetingOutcomeError("--clear takes exactly one group (direction or counts); nothing was changed")
         mixed = [flag for name, flag in CLEAR_REFUSES if getattr(args, name, None) is not None]
         mixed += ["--replace"] if args.replace else []
         if mixed:
             raise MeetingOutcomeError(f"--clear cannot be combined with {', '.join(mixed)}; nothing was changed")
+        group = groups[0]
         outcome = clear_group(root, args.id, group)
         return [json.dumps(outcome, indent=2), f"Cleared {group} only. Nothing was published."]
     minutes_url, minutes_on = args.minutes_url, args.minutes_approved_on

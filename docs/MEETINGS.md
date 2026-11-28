@@ -576,7 +576,9 @@ recording, minutes, continuation, the other group and every other key stay exact
 page, `today` and `data/meetings.json` show the outcome as if that group had never been recorded. Refused with nothing
 written: a meeting with no recorded outcome (`--clear direction: needs a recorded outcome`), a group that is not there
 (`--clear counts: nothing to clear; meeting ID has no public comment counts recorded`), a cancelled meeting, and
-`--clear` together with any other outcome flag, `--replace` included (`--clear cannot be combined with FLAG`). Success
+`--clear` together with any other outcome flag, `--replace` included (`--clear cannot be combined with FLAG`), and
+more than one `--clear` in one command, in either order (`--clear takes exactly one group`); clear the two groups
+with two commands. Success
 prints the updated outcome and `Cleared direction only. Nothing was published.` (or `Cleared counts only. ...`).
 
 ## Regular meeting schedules

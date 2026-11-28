@@ -138,6 +138,18 @@ class ClearTests(unittest.TestCase):
         self.assertIn("invalid choice", done.stderr)
         self.assertEqual(self.files(), before)
 
+    def test_more_than_one_clear_is_refused_in_either_order_and_writes_nothing(self):
+        self.set_outcome({**BASE, **DIRECTION, **COUNTS})
+        before = self.files()
+        for selectors in (("direction", "counts"), ("counts", "direction"), ("direction", "direction")):
+            with self.subTest(selectors=selectors):
+                done = self.cli(*(arg for group in selectors for arg in ("--clear", group)))
+                self.assertEqual(done.returncode, 1, done.stdout)
+                self.assertIn("--clear takes exactly one group (direction or counts); nothing was changed", done.stderr)
+                self.assertEqual(done.stdout, "")
+                self.assertEqual(self.files(), before)
+        self.assertEqual(self.outcome(), {**BASE, **DIRECTION, **COUNTS})
+
     def test_page_today_and_open_data_match_an_outcome_never_given_the_groups(self):
         self.set_outcome(BASE)
         build_site(self.root, today=TODAY)
