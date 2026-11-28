@@ -101,6 +101,18 @@ class GoLiveRecordLiveTests(unittest.TestCase):
                 self.assertEqual(self.cli(self.save(value)), (2, [], f"golive_record: {message}\n"))
                 self.assertEqual(list(self.evidence.iterdir()), [])
 
+    def test_oversized_later_row_refused_before_any_write(self):
+        # Both rows pass the schema; the second is over the writer's 64 KiB
+        # limit once serialized. Nothing may be written, with or without
+        # --stage selecting only the first row.
+        big = row("10", name="o" * (golive_evidence._MAX_SIZE + 1))
+        golive_evidence.validate(big)
+        path = self.save([row("9"), big])
+        for args in ((), ("--stage", "9")):
+            with self.subTest(args=args):
+                self.assertEqual(self.cli(path, *args), (2, [], "golive_record: evidence file exceeds 64 KiB\n"))
+                self.assertEqual(list(self.evidence.iterdir()), [])
+
     def test_symlinked_input_refused(self):
         target = self.save([row("9")])
         link = self.root / "link.json"

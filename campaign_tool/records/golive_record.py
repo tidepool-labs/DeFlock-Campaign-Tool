@@ -148,6 +148,10 @@ def from_live(path, now):
         if row["stage"] in stages:
             raise ValueError("live input names a stage twice")
         stages.add(row["stage"])
+        # The writer's own size limit, checked here for every row (selected
+        # by --stage or not) so a later oversized row cannot fail after an
+        # earlier row was already written.
+        _payload(row)
     return rows
 
 
@@ -168,12 +172,18 @@ def _rename_new(dir_fd, scratch, name):
         raise OSError(error, os.strerror(error), name)
 
 
-def append(record, evidence_dir):
-    """Append a private JSON record to an existing directory; return its Path."""
+def _payload(record):
+    """Return the exact bytes append() writes, refusing a record over 64 KiB."""
     golive_evidence.validate(record)
     payload = (json.dumps(record, sort_keys=True) + "\n").encode("utf-8")
     if len(payload) > golive_evidence._MAX_SIZE:
         raise ValueError("evidence file exceeds 64 KiB")
+    return payload
+
+
+def append(record, evidence_dir):
+    """Append a private JSON record to an existing directory; return its Path."""
+    payload = _payload(record)
     name = golive_evidence._filename(record)
     directory = Path(evidence_dir)
     dir_fd = golive_evidence._open_directory(directory)
