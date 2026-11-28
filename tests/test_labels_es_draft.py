@@ -17,7 +17,8 @@ ROOT = Path(__file__).resolve().parents[1]
 DRAFT = ROOT / "examples" / "labels" / "es.json"
 EXAMPLE = ROOT / "examples" / "fictional-campaign"
 # Values that are the same word or form in Spanish and English (no translation needed).
-SAME_AS_ENGLISH = {"agency.portal", "vote.no", "timeline.event_agency_action"}  # the last: placeholders and colons only
+SAME_AS_ENGLISH = {"agency.portal", "vote.no", "timeline.event_agency_action",  # the last: placeholders and colons only
+                   "agency.sharing_kind_local", "agency.sharing_kind_federal"}  # "local" and "federal" are Spanish too
 
 
 def draft():

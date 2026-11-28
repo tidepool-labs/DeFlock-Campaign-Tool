@@ -467,6 +467,9 @@ shipped law package by rule id `ca-civ-1798.90.55-public-comment-before-implemen
 the Rule line is left out and the build is not refused. It is an organizer-verified record and never fetched: "not found
 yet" is not a statement that no meeting was held, and the section makes no finding that one was required, missed or
 adequate. It is not in card JS, open data or feeds.
+Its wording follows `labels.json` (DF1125-09): `agency.pre_meeting_heading`, `agency.pre_meeting_found` (`{body}`,
+`{date}`, `{record}`, `{checked}`), `agency.pre_meeting_record_link`, `agency.pre_meeting_not_found` (`{checked}`),
+`agency.pre_meeting_rule` (`{citation}`) and the shared `agency.law_package` / `agency.law_status_*` labels above.
 
 An agency's optional `profile.sharing` (DF1207-08) records the agencies the vendor transparency portal names as receiving
 the agency's data, as an organizer transcribed them: `{"checked_on", "source_url", "recipients": [{"name", "state", "kind"}]}`.
@@ -491,6 +494,14 @@ sharing rule (`ca-civ-1798.90.55-sharing-limits`) and the 2023 Attorney General 
 rule the package lacks leaves out its line and never refuses the build. It lists what the portal names and draws no
 conclusion about any agency; `build` and `content-check` refuse a hand-edited list that breaks these rules. It is not in card
 JS, open data or feeds, and the portal is never contacted.
+Its wording follows `labels.json` (DF1125-09): `agency.sharing_heading`, `agency.sharing_intro` (`{portal}`, `{date}`,
+`{count}`), `agency.sharing_portal_link`, `agency.sharing_count_one` / `agency.sharing_count_many` (`{n}`),
+`agency.sharing_col_state`, `agency.sharing_col_kind`, `agency.sharing_col_agencies`, `agency.sharing_kind_local`,
+`_state`, `_federal`, `_private`, `_unknown` (the kind shown in the table and the list), `agency.sharing_outside`,
+`agency.sharing_more` (`{n}`), `agency.sharing_rule` and `agency.sharing_bulletin` (`{citation}`), and
+`agency.law_package` / `agency.law_status_*`. State codes and recipient names are shown as recorded. The defaults are
+the English above; Spanish drafts are in `examples/labels/es.json`. `/sharing.html` below keeps its fixed English (it
+is not part of DF1125-09).
 
 With at least one agency list, the build also writes `/sharing.html` (DF0237-04), "Who receives data from our agencies", with
 a footer link "Data-sharing lists" and a sitemap entry (only with a `base_url`); with none, none of these exist and every other

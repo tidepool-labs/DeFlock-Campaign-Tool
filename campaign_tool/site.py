@@ -688,7 +688,7 @@ class Site:
             try:
                 package = law.load_package(CHECKLIST_JURISDICTION)
                 rule = next((r for r in package["rules"] if r["rule_id"] == PRE_MEETING_RULE_ID), None)
-                self.pre_meeting_rule = (rule["citation"], law_status(package)) if rule else None
+                self.pre_meeting_rule = (rule["citation"], self.law_status_label(package)) if rule else None
             except (OSError, ValueError):
                 pass
         # DF1207-08: the two rules a recipient list is read beside, by rule id from the checklist's package; one missing -> its line is left out.
@@ -697,9 +697,9 @@ class Site:
             try:
                 package = law.load_package(CHECKLIST_JURISDICTION)
                 cited = {r["rule_id"]: r["citation"] for r in package["rules"]}
-                self.sharing_rules = ([("Sharing rule", cited[i]) for i in (SHARING_RULE_ID,) if i in cited]
-                                      + [("Attorney General bulletin", cited[i]) for i in (SHARING_BULLETIN_ID,) if i in cited],
-                                      law_status(package))
+                self.sharing_rules = ([("agency.sharing_rule", cited[i]) for i in (SHARING_RULE_ID,) if i in cited]
+                                      + [("agency.sharing_bulletin", cited[i]) for i in (SHARING_BULLETIN_ID,) if i in cited],
+                                      self.law_status_label(package))
             except (OSError, ValueError, KeyError, TypeError):
                 pass
         # DF0237-04: the receiving agencies across every agency's list; the page cites the same two rules, by id, whatever the findings cite.
@@ -1359,14 +1359,17 @@ class Site:
             return ""
         checked = date_label(meeting["checked_on"])
         if meeting["status"] == "found":
-            line = (f'{e(meeting["body"])} discussed it on {date_label(meeting["meeting_on"])} '
-                    f'(<a href="{e(meeting["source_url"])}" rel="noopener noreferrer">official record</a>). Checked {checked}.')
+            record = (f'<a href="{e(meeting["source_url"])}" rel="noopener noreferrer">'
+                      f'{self.t("agency.pre_meeting_record_link")}</a>')
+            line = self.t("agency.pre_meeting_found", body=e(meeting["body"]), date=date_label(meeting["meeting_on"]),
+                          record=record, checked=checked)
         else:
-            line = f"We have not found a record of one yet (checked {checked})."
-        rule = (f"<p>Rule: {e(self.pre_meeting_rule[0])}. Law package: {e(self.pre_meeting_rule[1])}.</p>"
-                if self.pre_meeting_rule else "")
+            line = self.t("agency.pre_meeting_not_found", checked=checked)
+        rule = (f'<p>{self.t("agency.pre_meeting_rule", citation=e(self.pre_meeting_rule[0]))} '
+                f'{self.t("agency.law_package", status=self.pre_meeting_rule[1])}</p>' if self.pre_meeting_rule else "")
         note = f'<p>{e(meeting["note"])}</p>' if meeting.get("note") else ""
-        return f'<section class="pre-meeting"><h4>Public meeting before the camera program</h4><p>{line}</p>{rule}{note}</section>'
+        return (f'<section class="pre-meeting"><h4>{self.t("agency.pre_meeting_heading")}</h4><p>{line}</p>'
+                f'{rule}{note}</section>')
 
     def sharing_section(self, agency):
         """DF1207-08: who the vendor transparency portal lists as receiving data, as the organizer transcribed it.
@@ -1382,22 +1385,26 @@ class Site:
             by_state[row["state"]] = by_state.get(row["state"], 0) + 1
         states = sorted(by_state, key=lambda code: (code != home, code))
         by_kind = {kind: sum(1 for row in rows if row["kind"] == kind) for kind in SHARING_KINDS}
-        count = lambda title, pairs: (f'<table><thead><tr><th scope="col">{title}</th><th scope="col">Agencies</th></tr></thead><tbody>'  # noqa: E731
-                                      + "".join(f'<tr><td>{e(label)}</td><td>{n}</td></tr>' for label, n in pairs) + '</tbody></table>')
+        kind = lambda code: (self.t("agency.sharing_kind_" + code) if "agency.sharing_kind_" + code in self.labels  # noqa: E731
+                             else e(code))
+        count = lambda title, pairs: (f'<table><thead><tr><th scope="col">{title}</th><th scope="col">'  # noqa: E731
+                                      f'{self.t("agency.sharing_col_agencies")}</th></tr></thead><tbody>'
+                                      + "".join(f'<tr><td>{label}</td><td>{n}</td></tr>' for label, n in pairs) + '</tbody></table>')
         outside = [row for row in rows if row["state"] != home or row["kind"] == "federal"]
-        listed = "".join(f'<li>{e(row["name"])}, {e(row["state"])} ({e(row["kind"])})</li>'
+        listed = "".join(f'<li>{e(row["name"])}, {e(row["state"])} ({kind(row["kind"])})</li>'
                          for row in outside[:100])
-        more = f'<p>and {len(outside) - 100} more</p>' if len(outside) > 100 else ""
+        more = f'<p>{self.t("agency.sharing_more", n=len(outside) - 100)}</p>' if len(outside) > 100 else ""
         rules = self.sharing_rules[0] if self.sharing_rules else []
-        cited = ("".join(f'<p>{e(label)}: {e(citation)}.</p>' for label, citation in rules)
-                 + (f'<p>Law package: {e(self.sharing_rules[1])}.</p>' if rules else ""))
-        return ('<section class="agency-sharing"><h4>Who the vendor portal lists as receiving data</h4>'
-                f'<p>As listed on <a href="{e(sharing["source_url"])}" rel="noopener noreferrer">the vendor transparency portal</a>, '
-                f'transcribed by the organizer (checked {date_label(sharing["checked_on"])}): '
-                f'{len(rows)} {"agency" if len(rows) == 1 else "agencies"}.</p>'
-                + count("State", [(code, by_state[code]) for code in states])
-                + count("Kind", [(kind, n) for kind, n in by_kind.items() if n])
-                + ('<p>Out of state and federal:</p>' + f'<ul>{listed}</ul>' + more if outside else "")
+        cited = ("".join(f'<p>{self.t(key, citation=e(citation))}</p>' for key, citation in rules)
+                 + (f'<p>{self.t("agency.law_package", status=self.sharing_rules[1])}</p>' if rules else ""))
+        portal = (f'<a href="{e(sharing["source_url"])}" rel="noopener noreferrer">'
+                  f'{self.t("agency.sharing_portal_link")}</a>')
+        total = self.t("agency.sharing_count_one" if len(rows) == 1 else "agency.sharing_count_many", n=len(rows))
+        return (f'<section class="agency-sharing"><h4>{self.t("agency.sharing_heading")}</h4>'
+                f'<p>{self.t("agency.sharing_intro", portal=portal, date=date_label(sharing["checked_on"]), count=total)}</p>'
+                + count(self.t("agency.sharing_col_state"), [(e(code), by_state[code]) for code in states])
+                + count(self.t("agency.sharing_col_kind"), [(kind(code), n) for code, n in by_kind.items() if n])
+                + (f'<p>{self.t("agency.sharing_outside")}</p>' + f'<ul>{listed}</ul>' + more if outside else "")
                 + cited + '</section>')
 
     def contract_check_block(self, agency, heading="h4"):
