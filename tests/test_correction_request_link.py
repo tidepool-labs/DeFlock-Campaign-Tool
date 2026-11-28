@@ -93,6 +93,21 @@ class CorrectionLinkTests(base.CorrectionRequestTests):
                      self.accept, correction_date="2026-03-09")
         self.assertEqual(json.loads(self.file.read_text())["requests"][0]["state"], "open")
 
+    def test_a_finding_with_no_corrections_is_refused_naming_the_count_of_zero(self):
+        self.add(received="2026-03-06")
+        self.refused("--correction-date 2026-03-08: the finding has 0 corrections dated that day; exactly one is needed",
+                     self.accept, correction_date="2026-03-08")
+        before = self.file.read_bytes()
+        result = self.cli("correction-request", "decide", "accepted", "--directory", self.root, "--id", "1",
+                          "--on", "2026-03-10", "--note", "Quote fixed.", "--correction-date", "2026-03-08",
+                          returncode=3)
+        self.assertIn("the finding has 0 corrections dated that day; exactly one is needed", result.stderr)
+        self.assertNotIn("accept only after recording the correction", result.stderr)
+        self.assertEqual(self.file.read_bytes(), before)
+        # an unlinked accept keeps the old guard and its wording
+        self.refused("accept only after recording the correction: finding correct", self.accept)
+        self.assertEqual(json.loads(self.file.read_text())["requests"][0]["state"], "open")
+
     def test_a_date_outside_the_window_or_not_a_date_is_refused(self):
         self.add(received="2026-03-06")
         self.correct("2026-03-05")  # before the request
@@ -159,6 +174,11 @@ class CorrectionLinkTests(base.CorrectionRequestTests):
              lambda r: r.update(correction={"date": "2026-03-08", "note_sha256": sha("x").upper()})),
             ("'correction.note_sha256' in requests[0] is not a sha256 hex digest",
              lambda r: r.update(correction={"date": "2026-03-08", "note_sha256": 7})),
+            # the whole value must match: a trailing newline is not a digest (or a date)
+            ("'correction.note_sha256' in requests[0] is not a sha256 hex digest",
+             lambda r: r.update(correction={"date": "2026-03-08", "note_sha256": sha("Fixed the quote.") + "\n"})),
+            ("'correction.date' in requests[0] is not a YYYY-MM-DD date",
+             lambda r: r.update(correction={"date": "2026-03-08\n", "note_sha256": sha("Fixed the quote.")})),
             ("requests[0] has a 'correction' link but is not accepted",
              lambda r: r.update(state="declined", correction={"date": "2026-03-08", "note_sha256": sha("x")})),
         )

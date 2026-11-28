@@ -20,8 +20,8 @@ REQUIRED = ("id", "finding_id", "received_on", "summary", "state")
 DECIDED = ("decided_on", "note")
 LINK = "correction"  # DF1125-01: optional on an accepted request, {"date", "note_sha256"} of the correction that answered it
 LINK_KEYS = ("date", "note_sha256")
-DAY = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-SHA256 = re.compile(r"^[0-9a-f]{64}$")
+DAY = re.compile(r"\d{4}-\d{2}-\d{2}")  # used with fullmatch: '$' would admit a trailing newline
+SHA256 = re.compile(r"[0-9a-f]{64}")
 
 
 def _today(today):
@@ -30,7 +30,7 @@ def _today(today):
 
 def _date(value):
     try:
-        return date.fromisoformat(value) if isinstance(value, str) and DAY.match(value) else None
+        return date.fromisoformat(value) if isinstance(value, str) and DAY.fullmatch(value) else None
     except ValueError:
         return None
 
@@ -54,7 +54,7 @@ def _check_link(where, item):
         raise _unreadable(f"{LINK!r} in {where} must be an object with exactly date and note_sha256")
     if _date(link["date"]) is None:
         raise _unreadable(f"'{LINK}.date' in {where} is not a YYYY-MM-DD date")
-    if not isinstance(link["note_sha256"], str) or not SHA256.match(link["note_sha256"]):
+    if not isinstance(link["note_sha256"], str) or not SHA256.fullmatch(link["note_sha256"]):
         raise _unreadable(f"'{LINK}.note_sha256' in {where} is not a sha256 hex digest")
 
 
@@ -233,10 +233,12 @@ def decide(root, request_id, decision, on, note, today=None, correction_date=Non
         if decision == "accepted":
             finding = _published(root, request["finding_id"])
             received = date.fromisoformat(request["received_on"])
-            if not any(_correction_day(c) >= received for c in finding["corrections"]):
-                raise ValueError("accept only after recording the correction: finding correct "
-                                 f"{request['finding_id']} --date D --note T (dated {request['received_on']} or later)")
-            if correction_date is not None:
+            if correction_date is None:
+                if not any(_correction_day(c) >= received for c in finding["corrections"]):
+                    raise ValueError("accept only after recording the correction: finding correct "
+                                     f"{request['finding_id']} --date D --note T "
+                                     f"(dated {request['received_on']} or later)")
+            else:
                 linked = _day(correction_date, "--correction-date", today)
                 if not received <= linked <= day:
                     raise ValueError(f"--correction-date {correction_date} is outside this request's window "
