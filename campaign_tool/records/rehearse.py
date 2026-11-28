@@ -6,6 +6,7 @@ import importlib.util
 import json
 import pkgutil
 import re
+import sys
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -95,12 +96,19 @@ def main(argv=None):
     if args.out is None:
         parser.error("--out is required unless --list is used")
 
-    out = args.out.resolve()
-    out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    try:
+        out = args.out.resolve()
+        out.mkdir(mode=0o700, parents=True, exist_ok=True)
+    except (OSError, RuntimeError):
+        parser.error("--out is not a usable directory")
     engine = rehearsal_receipt.engine_identity()
     all_qualified = True
     for driver in selected:
-        receipt, path = _run_driver(driver, out, engine)
+        try:
+            receipt, path = _run_driver(driver, out, engine)
+        except OSError:
+            print("rehearse: cannot create a sandbox under --out", file=sys.stderr)
+            return 2
         all_qualified &= receipt["qualified"]
         if args.json:
             print(json.dumps({**receipt, "receipt": str(path)}))

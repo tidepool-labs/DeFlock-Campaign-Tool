@@ -3,6 +3,7 @@
 import importlib
 import io
 import json
+import os
 import stat
 import sys
 import tempfile
@@ -141,6 +142,70 @@ class SyntheticDrivers(unittest.TestCase):
         self.assertEqual(invoke("--list"), (0, ""))
         self.driver("rehearse_a")
         self.refusal(error="--out is required unless --list is used")
+
+    def unusable_out(self, out):
+        """Refuse an unusable --out with one parser line, before any driver or engine lookup runs."""
+        before = sorted(self.root.rglob("*"))
+        with patch.object(rehearse, "_run_driver") as run_driver, \
+                redirect_stderr(io.StringIO()) as stderr, self.assertRaises(SystemExit) as exc:
+            invoke("--out", out, "--stage", "3")
+        self.assertEqual(exc.exception.code, 2)
+        self.assertEqual(stderr.getvalue().splitlines()[-1].partition(": error: ")[2], "--out is not a usable directory")
+        run_driver.assert_not_called()
+        self.engine.assert_not_called()
+        self.assertEqual(sorted(self.root.rglob("*")), before)
+
+    def test_out_that_is_a_file_refused(self):
+        """Unit C1: --out naming a regular file exits 2 with one line, not a FileExistsError traceback."""
+        self.driver("rehearse_a")
+        self.out.write_text("not a directory", encoding="utf-8")
+        self.unusable_out(self.out)
+        self.assertEqual(self.out.read_text(encoding="utf-8"), "not a directory")
+
+    def test_out_under_a_file_parent_refused(self):
+        """Unit C1: a parent chain that cannot be created (regular-file parent) gets the same refusal."""
+        self.driver("rehearse_a")
+        (self.root / "parent").write_text("not a directory", encoding="utf-8")
+        self.unusable_out(self.root / "parent" / "child" / "runs")
+
+    def test_unwritable_out_stops_after_kept_receipts(self):
+        """Unit C2: a sandbox failure prints one stderr line, returns 2, keeps earlier receipts and stops."""
+        self.driver("rehearse_a")
+        self.driver("rehearse_b", DRIVER + "\nSTAGES = ('20',)\n")
+        self.driver("rehearse_c", DRIVER + "\nSTAGES = ('21',)\n")
+        mkdtemp, calls = tempfile.mkdtemp, []
+
+        def second_fails(*args, **kwargs):
+            # tempfile is shared with the receipt writer; only count the runner's sandbox calls.
+            if kwargs.get("prefix", "").startswith("rehearse_"):
+                calls.append(kwargs["prefix"])
+                if len(calls) == 2:
+                    raise PermissionError(13, "synthetic")
+            return mkdtemp(*args, **kwargs)
+
+        with patch.object(rehearse.tempfile, "mkdtemp", side_effect=second_fails), \
+                redirect_stderr(io.StringIO()) as stderr:
+            status, output = invoke("--out", self.out, "--json")
+        self.assertEqual((status, stderr.getvalue()), (2, "rehearse: cannot create a sandbox under --out\n"))
+        self.assertEqual(calls, ["rehearse_a-", "rehearse_b-"])  # rehearse_c never started
+        self.assertEqual(self.check_receipt(json.loads(output)).parent, self.out)
+        self.assertEqual(len(output.splitlines()), 1)
+        self.assertEqual(list(self.out.iterdir()), [self.check_receipt(json.loads(output))])
+
+    def test_directory_without_write_permission_returns_2(self):
+        """Unit C2: a real mode-0500 --out reports the sandbox line, not a traceback, and writes nothing."""
+        if os.geteuid() == 0:
+            self.skipTest("running as root: mode 0500 does not stop root from creating sandboxes")
+        self.driver("rehearse_a")
+        self.out.mkdir(mode=0o700)
+        self.out.chmod(0o500)
+        self.addCleanup(self.out.chmod, 0o700)  # run before the temporary root is removed
+        if os.access(self.out, os.W_OK):
+            self.skipTest("filesystem ignores mode 0500 for this user (ACL or capability)")
+        with redirect_stderr(io.StringIO()) as stderr:
+            status, output = invoke("--out", self.out)
+        self.assertEqual((status, output, stderr.getvalue()), (2, "", "rehearse: cannot create a sandbox under --out\n"))
+        self.assertEqual(list(self.out.iterdir()), [])
 
     def test_stage_selection_and_fresh_repeated_runs(self):
         """C2: Overlapping stage filters run a driver once; repeats keep distinct evidence."""
