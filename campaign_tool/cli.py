@@ -1745,6 +1745,11 @@ def main():
                          "an unsent prepared request is not evidence of asking")
     reply_p.add_argument("--text", help="The reply as written, 1-2000 characters (received needs it)")
     reply_p.add_argument("--record", metavar="PREFIX", help="With received: 12-64 hex of the library record holding the reply")
+    asked_p = finding_cmds.add_parser("reply-asked", help="Record privately the day you really asked the agency "
+                                      "(private/reply-asks.json; the draft is not changed, nothing is sent)")
+    asked_p.add_argument("--directory", required=True)
+    asked_p.add_argument("--asked-on", required=True, metavar="YYYY-MM-DD",
+                         help="Day you asked, from the request's prepared day through its deadline, not after today")
     preview_p = finding_cmds.add_parser("preview", help="Render one draft's finding page privately to --out "
                                         "(banner, noindex; never public/, feed or sitemap)")
     for flag in ("--directory", "--out"):
@@ -2417,6 +2422,11 @@ def main():
                 print(json.dumps(findings.record_reply(root, args.draft, args.status, args.on, args.asked_on,
                                                        text=args.text, record=args.record)))
                 print("Recorded only. Nothing was sent. The reply changes the reviewed text: review it again.")
+                return
+            if args.finding_command == "reply-asked":
+                print(json.dumps(findings.record_asked(root, args.draft, args.asked_on)))
+                print("Recorded privately in private/reply-asks.json. Nothing was sent, and the reviewed draft is "
+                      "unchanged. finding publish still waits for the reply deadline.")
                 return
             draft = findings.load_draft(args.draft)
             if args.finding_command == "review-payload":
