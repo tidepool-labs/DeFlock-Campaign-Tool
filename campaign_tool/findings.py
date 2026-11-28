@@ -157,6 +157,10 @@ def _text(name, value, limit):
         raise ValueError(f"--{name} is longer than {limit} characters")
     if any(unicodedata.category(ch) == "Cc" for ch in value):
         raise ValueError(f"--{name} contains control characters")
+    try:  # e.g. undecodable command-line bytes: the private log could never store it
+        value.encode("utf-8")
+    except UnicodeEncodeError:
+        raise ValueError(f"--{name} is not valid UTF-8 text; nothing was written") from None
     return value.strip()
 
 
@@ -983,9 +987,26 @@ def _known_for(root, document):
     return None
 
 
-def publish(root, draft_path, approved_by, now=None):
-    """Write content/findings/<slug>.json as published and log it privately; never builds or deploys."""
+def _reply_wait(document, moment):
+    """DF1125-04: the reply_by day that a still-pending agency_response makes this publish wait for, else None.
+    The publish day is the earlier of the local and the UTC calendar day, so a publish never counts as early as the
+    deadline day before both calendars have reached it."""
+    response = document.get("agency_response")
+    if not isinstance(response, dict) or response.get("status") != "pending":
+        return None
+    reply_by = content.reply_day(response.get("reply_by"))
+    if reply_by is None:  # the loader refuses this first; never read as "no deadline"
+        raise ValueError("agency_response.reply_by: must be a real YYYY-MM-DD date; nothing was written")
+    day = min(moment.astimezone(timezone.utc).date(), moment.astimezone().date())
+    return reply_by if day < reply_by else None
+
+
+def publish(root, draft_path, approved_by, now=None, before_reply_deadline=None):
+    """Write content/findings/<slug>.json as published and log it privately; never builds or deploys.
+    A pending agency reply request holds the publish until its reply_by day unless ``before_reply_deadline`` gives
+    the reason (1-200 characters), which is logged with the publish."""
     draft = load_draft(draft_path)
+    moment = now or datetime.now(timezone.utc)
     if "updates" in draft and draft["updates"] != []:  # DF0022-06: history is outside the reviewed hash, so it cannot ride a first publish
         raise ValueError("updates require an already published finding")
     receipts = _load_receipts(_receipts_path(root, draft))
@@ -996,9 +1017,20 @@ def publish(root, draft_path, approved_by, now=None):
     approved_by = _text("approved-by", approved_by, 120)
     if _who(approved_by) == _who(draft.get("author")):
         raise ValueError("the author cannot approve publication of their own finding")
-    when = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    when = moment.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     document = dict(reviewed_view(draft), state="published", published_at=when, corrections=[])
     finding = content.load_finding(document, str(draft_path), known_agency_ids=_known_for(root, document))
+    waits_for, early = _reply_wait(document, moment), None
+    if before_reply_deadline is not None:
+        reason = _text("before-reply-deadline", before_reply_deadline, 200)
+        if waits_for is None:
+            raise ValueError("--before-reply-deadline is only for a finding whose agency reply deadline has not "
+                             "come yet and has no reply recorded; nothing was written")
+        early = {"reply_by": str(waits_for), "reason": reason}
+    elif waits_for is not None:
+        raise ValueError(f"publish refused: the agency was given until {waits_for} to reply and no reply is recorded; "
+                         f"no asking record exists. Wait until {waits_for}, record the reply with finding reply, or "
+                         "give --before-reply-deadline REASON; nothing was written")
     _fitting(document, f"content/findings/{finding['slug']}.json", "publish", True)  # before any folder, lock or log
     if not _real_dir(root / "content"):
         raise ValueError(f"{root / 'content'}: no content/ directory in this campaign")
@@ -1010,10 +1042,10 @@ def publish(root, draft_path, approved_by, now=None):
         approval = {"artefact_id": draft["id"], "content_hash": reviewed_hash(draft), "approved_by": approved_by,
                     "approved_on": when[:10], "status": "approved"}  # the person at the CLI is the recorded approver
         publication_gate.assert_publishable(draft["id"], reviewed_hash(load_draft(draft_path)), [approval])  # re-read: an edit refuses
-        return dict(_publish_locked(root, draft, finding, document, approved_by, when), receipt_trust=trust)
+        return dict(_publish_locked(root, draft, finding, document, approved_by, when, early), receipt_trust=trust)
 
 
-def _publish_locked(root, draft, finding, document, approved_by, when):
+def _publish_locked(root, draft, finding, document, approved_by, when, early=None):
     folder = root / "content" / "findings"
     if not _real_dir(folder):
         folder.mkdir()
@@ -1030,6 +1062,8 @@ def _publish_locked(root, draft, finding, document, approved_by, when):
         raise ValueError(f"cited records not registered and stored: {problems}")
     entry = {"at": when, "action": "publish", "id": finding["id"], "slug": finding["slug"],
              "content_sha256": reviewed_hash(draft), "approved_by": approved_by}
+    if early is not None:  # DF1125-04: published before the agency's reply deadline, and why
+        entry["before_reply_deadline"] = early
     _write_logged(root, folder, target, document, entry)
     return {"published": finding["slug"], "path": f"content/findings/{target.name}"}
 
@@ -1145,8 +1179,13 @@ def _open_log(root):
     return log_fd
 
 
+def _log_line(entry):
+    """The exact bytes one log entry appends; a writer builds them before it writes anything else."""
+    return (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
 def _append(log_fd, entry):
-    os.write(log_fd, (json.dumps(entry, sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8"))
+    os.write(log_fd, entry if isinstance(entry, bytes) else _log_line(entry))
     os.fsync(log_fd)
 
 
@@ -1163,6 +1202,7 @@ def _fitting(document, label, operation, sort_keys):
 def _write_logged(root, folder, target, document, entry):
     """Atomically (re)write ``target`` and append ``entry`` to private/publication-log.jsonl (0600)."""
     data = _fitting(document, f"content/findings/{target.name}", entry["action"], True).encode("utf-8")  # before the log
+    line = _log_line(entry)  # DF1125-04: an entry that cannot be logged refuses before the finding is written
     log_fd = _open_log(root)  # a bad log refuses before the finding is written, never leaving an unlogged publish
     try:
         fd, temporary = tempfile.mkstemp(dir=folder, prefix=".publish-", suffix=".tmp")
@@ -1178,7 +1218,7 @@ def _write_logged(root, folder, target, document, entry):
         finally:
             if os.path.lexists(temporary):
                 os.unlink(temporary)
-        _append(log_fd, entry)
+        _append(log_fd, line)
     finally:
         os.close(log_fd)
 

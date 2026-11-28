@@ -146,7 +146,7 @@ python3 -m campaign_tool finding reply-request "$DRAFT" --directory "$CAMPAIGN" 
 python3 -m campaign_tool finding reply "$DRAFT" --directory "$CAMPAIGN" --status received --on "$TODAY" --asked-on "$TODAY" --text "The office says the schedule was current when it was produced."
 ```
 
-The reply is reviewed content. Recording or changing it makes earlier receipts stale, and the page shows it under "Agency response" as the agency's statement, not as a verified fact. Nothing in `finding publish` waits for the deadline, and a pending request is not shown on the page: if you told the agency you would wait, wait. Make the preview and the packet again into new folders, so reviewers see the reply:
+The reply is reviewed content. Recording or changing it makes earlier receipts stale, and the page shows it under "Agency response" as the agency's statement, not as a verified fact. While the request is pending, `finding publish` waits for the deadline: before the `--by` day it refuses and names the deadline, until a reply is recorded. If you must publish earlier, add `--before-reply-deadline "REASON"`; the reason is kept in the private publication log. A pending request is not shown on the page. Make the preview and the packet again into new folders, so reviewers see the reply:
 
 ```sh
 python3 -m campaign_tool finding preview "$DRAFT" --directory "$CAMPAIGN" --out "$PREVIEW_DIR_2"

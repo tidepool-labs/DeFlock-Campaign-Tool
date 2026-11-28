@@ -694,21 +694,26 @@ class GuideTests(unittest.TestCase):
         self.assertTrue({"missing_factual_review", "need_two_independent_reviewers"} <= set(walk.status()["review_blockers"]))
         err = walk.refused("finding", "publish", walk.draft, "--directory", walk.root, "--approved-by", "Organizer Y")
         self.assertIn("missing_", err)
-        # a prepared (pending) request is never shown on the page, and nothing in publish waits for the deadline
+        # a prepared (pending) request is never shown on the page, and publish waits for its deadline (DF1125-04)
         other = Walk(self)
         other.advance(match("finding", "reply-request"))
         for role, who in (("factual", "Reviewer A"), ("legal", "Reviewer B"), ("privacy", "Reviewer B")):
             other.ok("finding", "reviewers", "add", "--directory", other.root, "--name", who, "--role", role)
             self.assertEqual(other.review(role, "approve", who)[0], 0)
         self.assertEqual(other.status()["review_blockers"], [])
-        other.ok("finding", "publish", other.draft, "--directory", other.root, "--approved-by", "Organizer Y")
+        err = other.refused("finding", "publish", other.draft, "--directory", other.root, "--approved-by", "Organizer Y")
+        self.assertIn(f"until {other.mapping['REPLY_BY']} to reply", err)
+        other.ok("finding", "publish", other.draft, "--directory", other.root, "--approved-by", "Organizer Y",
+                 "--before-reply-deadline", "The meeting vote moved up.")
         other.ok("build", "--directory", other.root)
         shown = (other.root / "public" / "findings" / f"{other.slug()}.html").read_text(encoding="utf-8")
         self.assertNotIn("Agency response", shown)
         self.assertNotIn("pending", shown.lower())
+        self.assertNotIn("meeting vote", shown)
         text = read(GUIDE)
-        self.assertIn("Nothing in `finding publish` waits for the deadline", text)
-        self.assertIn("a pending request is not shown on the page", text)
+        self.assertIn("`finding publish` waits for the deadline", text)
+        self.assertIn("`--before-reply-deadline \"REASON\"`", text)
+        self.assertIn("A pending request is not shown on the page", text)
 
     # --- 6 -------------------------------------------------------------------------------------------------------
     def test_gap_is_an_alternative_not_absence_proof(self):
