@@ -86,17 +86,24 @@ class ReplyAskedTests(reply_tests.ReplyBase):
                  ("a missing field", {ID: {"asked_on": str(TODAY)}}, f"entry {ID} must have exactly asked_on and "
                                                                      "reply_by"),
                  ("a bad day", {ID: dict(good, asked_on="MARKER-9Z")}, f"entry {ID} field asked_on must be a real"),
-                 ("another deadline", {ID: dict(good, reply_by=str(SOON + timedelta(days=1)))},
-                  f"entry {ID} field reply_by ({SOON + timedelta(days=1)}) is not the draft's reply deadline "
-                  f"({SOON})"))
+                 ("a null entry", {ID: None}, f"entry {ID} must have exactly asked_on and reply_by"),
+                 ("another id with a null entry", {"syn-other": None},
+                  "entry syn-other must have exactly asked_on and reply_by"),
+                 ("another id with a bad day", {"syn-other": dict(good, reply_by="MARKER-9Z")},
+                  "entry syn-other field reply_by must be a real"),
+                 ("another deadline", {ID: dict(good, reply_by="2099-12-31")},
+                  f"entry {ID} field reply_by is not the draft's reply deadline; nothing was written"))
         for what, value, needle in cases:
             with self.subTest(what=what):
                 self.asks().write_text(value if isinstance(value, str) else json.dumps(value), encoding="utf-8")
+                stored = self.asks().read_bytes()
                 for extra in ({}, {"before_reply_deadline": "Vote moved up."}):
                     err = self.refused(needle, findings.publish, self.root, self.draft, "Pat Organizer", **extra)
                     self.assertIn("reply-asks.json", err)
                     self.assertNotIn("MARKER-9Z", err)
+                    self.assertNotIn("2099-12-31", err)  # the stored private deadline is never repeated
                 self.refused(needle, findings.record_asked, self.root, self.draft, str(TODAY), today=TODAY)
+                self.assertEqual(self.asks().read_bytes(), stored)  # never overwritten or repaired
                 self.asks().unlink()
         for kind in ("symlink", "folder"):
             with self.subTest(what=kind):
@@ -129,6 +136,20 @@ class ReplyAskedTests(reply_tests.ReplyBase):
         refused = self.cli("finding", "publish", self.draft, "--directory", self.root, "--approved-by",
                            "Pat Organizer", returncode=1)
         self.assertIn(f"the asking record says you asked on {TODAY}", refused.stderr)
+        self.assertFalse(self.published().exists())
+
+    def test_cli_deadline_mismatch_names_the_field_without_the_stored_date(self):
+        self.pending()
+        self.asks().write_text(json.dumps({ID: {"asked_on": str(TODAY), "reply_by": "2099-12-31"}}), encoding="utf-8")
+        stored = self.asks().read_bytes()
+        for extra in ((), ("--before-reply-deadline", "Vote moved up.")):
+            with self.subTest(extra=extra):
+                refused = self.cli("finding", "publish", self.draft, "--directory", self.root, "--approved-by",
+                                   "Pat Organizer", *extra, returncode=1)
+                self.assertIn(f"entry {ID} field reply_by is not the draft's reply deadline", refused.stderr)
+                self.assertNotIn("2099-12-31", refused.stdout + refused.stderr)
+                self.assertNotIn("Traceback", refused.stderr)
+        self.assertEqual(self.asks().read_bytes(), stored)
         self.assertFalse(self.published().exists())
 
 

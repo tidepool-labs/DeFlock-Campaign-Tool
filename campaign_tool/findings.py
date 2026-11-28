@@ -1523,27 +1523,35 @@ def reply_request(root, draft_path, by, today=None):
     return {"id": draft["id"], "status": "pending", "written": str(target)}
 
 
-def _reply_ask(root, finding_id, reply_by):
-    """DF1125-04: the asked_on day in private/reply-asks.json for this finding, else None. A present file that is not
-    a regular, valid record (or whose reply_by is not the draft's) refuses, naming the file and field, never content."""
+def _reply_asks(root):
+    """DF1125-04: every entry of private/reply-asks.json, validated ({} when the file is absent). A present file that
+    is not a regular, valid record refuses as a whole, naming the file, entry and field, never their content."""
     path = Path(root) / REPLY_ASKS
     if not os.path.lexists(path):
-        return None
+        return {}
     asks = _read_json(path, MAX_DRAFT_BYTES, "asking record")
     if not isinstance(asks, dict) or not all(isinstance(k, str) and _ID.fullmatch(k) for k in asks):
         raise _PathError(f"{path}: asking record must be a JSON object keyed by finding id; nothing was written")
-    entry = asks.get(finding_id)
+    for finding_id, entry in asks.items():
+        if not isinstance(entry, dict) or set(entry) != {"asked_on", "reply_by"}:
+            raise _PathError(f"{path}: entry {finding_id} must have exactly asked_on and reply_by; "
+                             "nothing was written")
+        for field in ("asked_on", "reply_by"):
+            if not isinstance(entry[field], str) or content.reply_day(entry[field]) is None:
+                raise _PathError(f"{path}: entry {finding_id} field {field} must be a real YYYY-MM-DD date; "
+                                 "nothing was written")
+    return asks
+
+
+def _reply_ask(root, finding_id, reply_by):
+    """DF1125-04: the asked_on day in private/reply-asks.json for this finding, else None. The whole file is validated
+    first; an entry whose reply_by is not the draft's refuses without repeating either date."""
+    entry = _reply_asks(root).get(finding_id)
     if entry is None:
         return None
-    if not isinstance(entry, dict) or set(entry) != {"asked_on", "reply_by"}:
-        raise _PathError(f"{path}: entry {finding_id} must have exactly asked_on and reply_by; nothing was written")
-    for field in ("asked_on", "reply_by"):
-        if not isinstance(entry[field], str) or content.reply_day(entry[field]) is None:
-            raise _PathError(f"{path}: entry {finding_id} field {field} must be a real YYYY-MM-DD date; "
-                             "nothing was written")
     if entry["reply_by"] != reply_by:
-        raise _PathError(f"{path}: entry {finding_id} field reply_by ({entry['reply_by']}) is not the draft's reply "
-                         f"deadline ({reply_by}); nothing was written")
+        raise _PathError(f"{Path(root) / REPLY_ASKS}: entry {finding_id} field reply_by is not the draft's reply "
+                         "deadline; nothing was written")
     return entry["asked_on"]
 
 
@@ -1573,10 +1581,9 @@ def record_asked(root, draft_path, asked_on, today=None):
             return {"id": draft["id"], "asked_on": before, "unchanged": True}
         if before is not None:
             raise ValueError(f"an asking record already says you asked on {before}; nothing was written")
-        path = root / REPLY_ASKS
-        asks = _read_json(path, MAX_DRAFT_BYTES, "asking record") if os.path.lexists(path) else {}
+        asks = dict(_reply_asks(root))  # every entry validated before the file is rewritten
         asks[draft["id"]] = {"asked_on": str(asked), "reply_by": prepared["reply_by"]}
-        _write_private(path, dict(sorted(asks.items())), ".reply-asks-")
+        _write_private(root / REPLY_ASKS, dict(sorted(asks.items())), ".reply-asks-")
     return {"id": draft["id"], "asked_on": str(asked), "reply_by": prepared["reply_by"]}
 
 
