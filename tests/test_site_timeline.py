@@ -610,7 +610,7 @@ MAIN_TIMELINE_DIGEST = "efa29cd2bb4b6da62d6e72a69410785a5dc93ddd8bc6700954e5f629
 # DF1109-09 recaptured MAIN_POPULATED_OTHER_DIGEST on top of that: its tree holds search.html/search.js, which now also search agencies and meetings.
 # DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html changes in
 # the populated TODAY tree; preserve timeline exclusion and packet normalization.
-MAIN_POPULATED_OTHER_DIGEST = "046cc1b4365fb4918cbd4ea51dc20685c20c11a75b857e40a0ae9c3a4cbbda59"  # pragma: allowlist secret -- public rendered-file SHA-256
+MAIN_POPULATED_OTHER_DIGEST = "065c3d5e4dc412a018d0ba2151f409143e49d522267ccf39f1ce6d84def18e30"  # pragma: allowlist secret -- public rendered-file SHA-256
 COUNCIL = "ca-cedar-city-council"
 NEW_KINDS = ("finding_update", "statement", "coverage")
 

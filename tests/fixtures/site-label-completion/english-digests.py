@@ -4,6 +4,8 @@
 # Read with ast.literal_eval, like hash-anchors.py.
 # DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html in bare/fictional/rich
 # at 2026-10-01 and late at 2027-01-01; all other historical digests and provenance retained.
+# DF1125-07 amendment 2026-11-27, base ac42e75d: only index.html in every case and agencies.html where the
+# "At a glance" table is built (dated counts); all other historical digests and provenance retained.
 {
     'cases': {
         'bare': {
@@ -28,7 +30,7 @@
             'feed.xml': '6e72a542bfcbe00222b3ccd97637453941db2a1aeee7e6e437027df0ede62369',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/index.html': 'c250f41c22d994327a89529f21e674f041da10320b3d6067ecb27eee9d3debdb',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/packet-all.html': '124e20606548451f50a1de0e2748b7aa9341746d814de72af3dd066c1c641a14',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'index.html': 'bffba116a5a2b3981414ac38782d523b165ccd184ef0282662d34b6475499c19',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'index.html': '85a5e1f02bbea0deab28a64c0f991b969899add4cc56a1c318fbee8b0a4d3382',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.html': 'a598afbbf910faeca88a0c4a2343576b86b02b78132c0ecb8398df572038a3e2',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.ics': '39cabc1d64bf3e8af0e59f34e668a5ec23c6fa766e6f4b37def1eed7604a5170',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'methods.html': 'c3e5c6aec56ed5db557dcf99cc2b166bdfd33b39309728490631a5c3a0d087e7',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -47,7 +49,7 @@
             '404.html': 'b7f524771165c63034c77810a41a7aef3bbdc7302c4f068e89bb556c8d723bff',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             '_headers': 'd8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'about.html': '43d218ad5be03335f8e3ecaca1f10290a94e6e88acef048d4f4ade74035998cb',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'agencies.html': '7937c0051da8fea42f5c880b869fa5658c08dadbe2e08b9204701dded0ecb9d8',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'agencies.html': '561b2110f773affda8aeaae34a27c765bf9375b8dd91e8d6277096792b760c64',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar.html': '6ae9dba30b6b443dafab4420b8ebea6ca1253a785d466f633dffb5064a1f34d5',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agency-cards.js': '95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'app.js': 'ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -73,7 +75,7 @@
             'findings/cite.js': '13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/index.html': 'a3a1c24fe3696eeed4d9742fc610f30f68d4dad0ad9040f15f5b5ca339ae9799',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/packet-all.html': '4f60057398f0d369c1a1c58a34b967fb0230d06c73a144516b8b46bbe912fea4',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'index.html': '8e021eba1b06a2df574ab3ee9d74c8d12546e48ac1eaf661ac4f00246aea2f2c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'index.html': '32f6a0572ff2d4a0b1547e1173825230f50e231f9b52fe37732e1e0bf3f26187',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.html': '93bc77852a7b80bc7ff574a72eb99f8e9e9bca4663df7c17fb89a129cd8601d9',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.ics': 'dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.xml': '2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -97,7 +99,7 @@
             '404.html': '793cae3819873f3a3f0f9affa16ebe55328f47c6a4ce912f1868ce12095a4015',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             '_headers': '2175256ab37bb04fd857fbfe17978546fac639a397ba3fcfaa346781b681b1ed',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'about.html': 'cd7e6b858f5008e09ea12aa95af544db9bbaf2b9ea9d43022455b3b790503761',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'agencies.html': '8b6f570465d7b5518e25556773c7924ca6780692b2cd5f43381ef6c29da630ba',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'agencies.html': 'a1733c2f4e0d555137dd3e685fec2734d3a820a9bb7492723a72a78347b7ce64',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar-city-council.html': '812e8f772a4d32696506dcee00ac77cb3211ae6f755944e9e7dc93a4f3accf1a',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar-city-council.ics': 'd5fac501cdd244d1513d32302ae5712b94dc5a994ea802b8699151da04c6b984',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar.html': 'ac5580de58c6efdb042393d7812cd6045ffb86838f667d20690be75d34b7bac1',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -133,7 +135,7 @@
             'findings/zq-4.html': '00fb5678d9852833b23f4780e750797e33b2d8f705bb765dfdcd6f413d7733db',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/zq-5.html': '756a92ded06355e5641ef2b91ee0840b8e2a4761431c656a5acdd46a47686da2',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'glossary.html': '7d6afbe7799d5d89549da103c87f59e569235b4fb4093a7d6b765051f05e5f46',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'index.html': '1bdda0c844bc6b81fe21f153ed1b09de48b2981a6bc96c9a1e91a29d243e4d2c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'index.html': '0e5910cb0577552a5a53a7f39a99af55a69d0cc7fb352b670f4298e3845667d3',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.html': '2cfc0fd0444af0894c7e9effcac7798b222266333684faf1b27f92a99df39a14',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.ics': '39cabc1d64bf3e8af0e59f34e668a5ec23c6fa766e6f4b37def1eed7604a5170',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.xml': 'f3571428d7adf1a94c57c2395507394ec4587b6b114f550bb032c4bb44ed0a4c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -164,7 +166,7 @@
             '404.html': '6bc0e03415a65ae88bbdf1cbce18f3bc96f2eb2f351b0345c2976c37e1ad4474',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             '_headers': '2175256ab37bb04fd857fbfe17978546fac639a397ba3fcfaa346781b681b1ed',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'about.html': '243228bb2e4d7de748318d4c0398b127ce86cf2a423a3c2c5e69d5edcd31737c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'agencies.html': '14da837b738e68b4c3f6272448fd0f0297e9aeb41c4413ec2b22233bd432a88a',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'agencies.html': 'a618d85185502835e41e3b4f196df39011ebaa081426d690a1e941d75db2496d',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar-city-council.html': '9bd91df61c9eb3e5ad11893c06d02592a4efd133c792d46bfbb8ef965b68dade',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar-city-council.ics': '0b766aadc6f8d3f94437002fa383e4934510ad271001e2dd9185225c86a51054',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'agencies/cedar.html': '7938f95588a94cd322a362f2a1a92e8c5ae34ae715ea56e5884d44fcea2c09dd',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
@@ -202,7 +204,7 @@
             'findings/zq-law-7.html': '1bd67f0199d10d18968f5c2990efe74c9a3bc55ead7ff902462a0d934416969f',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'findings/zq-law-8.html': '31c040b2f7c934fd49bfad8a876f2969a8bdda1af009543c709828e1ae85241c',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'glossary.html': '8e0f00d9dee809809823cd23e0000df4b08f71971a7022bc3d384efea44085e3',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
-            'index.html': '6cdbc4a747d50591efe8658b93e2bfe554781eae789a2aca48a595af0462538f',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
+            'index.html': '4db3e435e2676aa6b029fd5fc064a9b89fe913bda0c24e1b213335fd2681adea',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.html': '5b898abd096419f368f2987878094fbd37d2b31a714874d52d8040c6792d26b6',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.ics': 'dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash
             'meetings.xml': '5fc41bd61db1dcf352de7b148fb70977b2f8ada374e5fab7e8390a919e0128c6',  # pragma: allowlist secret -- frozen nonsecret fixture/source hash

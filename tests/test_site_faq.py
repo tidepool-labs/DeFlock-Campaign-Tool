@@ -55,7 +55,7 @@ BASELINE = {
     "404.html": "5eb8c84c7ecd10e8837b67d3b9b234fda5cd2d2704291cb37287fd6ecf468f19",  # pragma: allowlist secret -- public rendered-file SHA-256
     "_headers": "d8b67b1ea84d17609529363319efc124bc818dfe7a85ae14508268369223978e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "about.html": "b377eacf453c9c363298c43f62dd465a833e6cc4d95e693e08fd578c8bfa2df6",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "agencies.html": "cb719448fe3eab2c74cbc928090ce5c1a332dd64263a155bdac15caf49484344",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "agencies.html": "7e24a3fbbbee55a4f3d9aa6cbb9193fc312eb4d6fe9b792f447d8635eaa8967f",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agencies/cedar.html": "ec9acef0d6d9ac1e16d5cf5db6b2daeb9b27e0bcb1fcdf41b4331efde0f860a4",  # pragma: allowlist secret -- public rendered-file SHA-256
     "agency-cards.js": "95d2218da220b6ec4ecd303342c0aaa090f5ea4999b0ffd05b3454c46719ca00",  # pragma: allowlist secret -- public rendered-file SHA-256
     "app.js": "ab63767de14fee8703a11531e24ebcfc4a8b845f986208772f242ef8d447db9e",  # pragma: allowlist secret -- public rendered-file SHA-256
@@ -79,7 +79,7 @@ BASELINE = {
     "findings/cite.js": "13f4d137f53aaa98bcc1cf1662769871f5629dda97e5700cf97727fca110cb47",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/index.html": "05642a4a14a1a8d798b21348d854ceba05ef5436388f862b5e44f37930782a7e",  # pragma: allowlist secret -- public rendered-file SHA-256
     "findings/packet-all.html": "aefc032fb70a0ec4ca261613a994974344a973356cd216f4c9ec5d22822db5bd",  # pragma: allowlist secret -- public rendered-file SHA-256
-    "index.html": "e6aaf6d5b016fd3a50d045729d17279b31f7519f75d9894edd37d77cbdbd88d3",  # pragma: allowlist secret -- public rendered-file SHA-256
+    "index.html": "cb6feabfda22c2f0fae360cffb459d53af7debc801ba1f0ce12d237e61a7e804",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.html": "c2f3ef307735205c905069ca60e3b1f63a4aca94ce4d8af9c9b83bc2c8a007a9",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.ics": "dd19281997628992288aaccd1a377c0b0b41c72d2110b15a641cd7a813191ae5",  # pragma: allowlist secret -- public rendered-file SHA-256
     "meetings.xml": "2af1fa8b795edc83edc9c854e689411875b401b940c3cc99569311f182b41e5e",  # pragma: allowlist secret -- public rendered-file SHA-256

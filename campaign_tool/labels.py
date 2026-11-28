@@ -249,6 +249,7 @@ DEFAULTS = {
     "agencies.glance_asked": "Records items asked", "agencies.glance_report": "Latest report",
     "agencies.glance_no_report": "none on record",
     "agencies.glance_not_checked": "not checked", "agencies.glance_posted": "posted", "agencies.glance_checked": "checked {date}",
+    "agencies.glance_asked_counted": "Records items asked is our own count on {date}.",  # DF1125-07
     "footer.requests": "What we have asked for",  # DF1103-13
     "standings.heading": "Where things stand",  # DF1952-10
     "standings.agencies": "Agencies we have asked for records",
@@ -258,6 +259,8 @@ DEFAULTS = {
     "standings.cameras": "Community-mapped camera points; ownership unconfirmed",
     "standings.none_yet": "none yet",
     "standings.deadline": "Next verified written-comment deadline",
+    "standings.as_of": "Counts as of {date}.",  # DF1125-07: the build date
+    "standings.map_as_of": "(map data as of {date})", "standings.map_date_unknown": "(map date unknown)",
     "cameras.empty": "No community-mapped points are listed yet.",
     "requests.title": "What we have asked for",
     "requests.description": ("Every records request this campaign has publicly listed for an agency, newest first, "

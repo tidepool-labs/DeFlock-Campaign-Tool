@@ -1133,16 +1133,19 @@ class Site:
                    ("records", len(self.model["sources"]), "/sources.html"),
                    ("findings", len(self.model["findings"]), "/findings/"),
                    ("cameras", points, "/cameras.html"))
+        day = self.map.get("snapshot_date") if self.map else None  # DF1125-07: the map's own day, never the build date
+        when = (self.t("standings.map_as_of", date=time_tag(day)) if day else self.t("standings.map_date_unknown"))
         rows = "".join(f'<li><a href="{href}">{self.t("standings." + key)}</a>: '
-                       + (f"<strong>{count}</strong>" if count else f'<strong>{self.t("standings.none_yet")}</strong>') + "</li>"
+                       + (f"<strong>{count}</strong>" if count else f'<strong>{self.t("standings.none_yet")}</strong>')
+                       + (f' <small class="map-as-of">{when}</small>' if key == "cameras" else "") + "</li>"
                        for key, count, href in metrics)
+        line = f'<p class="counts-as-of">{self.t("standings.as_of", date=time_tag(self.today.isoformat()))}</p>'
         deadline = self.next_written_deadline()
-        line = ""
         if deadline:
             meeting, raw = deadline
-            line = (f'<p class="comment-deadline">{self.t("standings.deadline")}: '
-                    f'<a href="/meetings/{e(meeting["id"])}.html">{e(meeting["body"])}</a>, '
-                    f'<time datetime="{e(raw)}">{e(self._deadline_when(datetime.fromisoformat(raw.replace("Z", "+00:00"))))}</time></p>')
+            line += (f'<p class="comment-deadline">{self.t("standings.deadline")}: '
+                     f'<a href="/meetings/{e(meeting["id"])}.html">{e(meeting["body"])}</a>, '
+                     f'<time datetime="{e(raw)}">{e(self._deadline_when(datetime.fromisoformat(raw.replace("Z", "+00:00"))))}</time></p>')
         return (f'    <section class="section" id="standings"><div class="section-heading"><div>'
                 f'<h2>{self.t("standings.heading")}</h2></div></div><ul>{rows}</ul>{line}</section>\n')
 
@@ -1559,7 +1562,9 @@ class Site:
             rows.append('<tr><th scope="row" data-label="' + heads[0] + f'">{cells[0]}</th>'
                         + "".join(f'<td data-label="{head}">{cell}</td>' for head, cell in zip(heads[1:], cells[1:])) + "</tr>")
         return (f'<section class="at-a-glance" id="at-a-glance"><h3>{self.t("agencies.glance_heading")}</h3>'
-                f'<p>{self.t("agencies.glance_note")}</p><table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
+                f'<p>{self.t("agencies.glance_note")} '
+                f'{self.t("agencies.glance_asked_counted", date=time_tag(self.today.isoformat()))}</p>'
+                f'<table class="glance-table"><caption>{self.t("agencies.glance_caption")}'
                 '</caption><thead><tr>' + "".join(f'<th scope="col">{head}</th>' for head in heads) + "</tr></thead><tbody>"
                 + "".join(rows) + "</tbody></table></section>")
 

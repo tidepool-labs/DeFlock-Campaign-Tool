@@ -31,9 +31,9 @@ AGENCY = "ca-cedar-city-council"
 # DF1109-09 recaptured all three: search.js and search.html now also search the fixture's agency page and meetings.
 # DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html changes in
 # all three fixed-TODAY scenarios; retain the packet transform and mixed filter-file exclusions.
-ROOTS = {"empty": "72f37d7fc5f97a10788198bcfbb01d205f7380cf3e5cfcc5c2ffa50323fb2f0f",  # pragma: allowlist secret
-         "one-body": "adfd3670cc9ab6b08bc288e4bd693779cada8e0940ca90bf7540b846bb21ca3e",  # pragma: allowlist secret
-         "mixed": "9903089613d09fb635e84c3fb555d34b8b9053b366d1a1467edbc6e637f51b0d"}  # pragma: allowlist secret
+ROOTS = {"empty": "c4b3a71f1d9722a0d1838934d54b9c28844eb400814b9b4cb04253c03ee4e4c3",  # pragma: allowlist secret
+         "one-body": "f9ea166bbacc426447274e67a7182a08bc574825329e8943852e46b50307a8e3",  # pragma: allowlist secret
+         "mixed": "db21f00a2929a78d60c21c410e0fa8c6fa600ceb71cd6c3e27ce7624af72cb91"}  # pragma: allowlist secret
 MIXED = (("alpha-up", "Council A", "2026-11-10", None), ("beta-up", "Council B", "2026-11-11", None),
          ("alpha-past", "Council A", "2026-10-01", None), ("beta-cancel", "Council B", "2026-11-12", "cancelled"))
 

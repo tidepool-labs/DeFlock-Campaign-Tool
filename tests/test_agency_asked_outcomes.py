@@ -35,8 +35,8 @@ NEW_LABELS = ("requests.state_no_records_stated", "requests.no_records_sentence"
 # Whole-tree digests of builds on the day TODAY, taken on main before DF2007-13 (see LEGACY_ASKED below).
 # DF0652-09 amendment 2026-11-15, builder base 67d04d8d: only corrections.html changes
 # in the fixed-TODAY example and LEGACY_ASKED trees; preserve whole-tree equality.
-MAIN_EXAMPLE_DIGEST = "9f89abda3400c872d9b9bddfc29ed36bdbd91c883596dd64ac5d94345ec9ecd9"  # pragma: allowlist secret
-MAIN_LEGACY_DIGEST = "6215ae7cdac0b73606c6fc60a34be7d355b1eb1c0360d1eb8be3952bf45a6294"  # pragma: allowlist secret
+MAIN_EXAMPLE_DIGEST = "97fb5bc54ff81e32132f8d45e6c0413b18085fec1930dfb8436b6283d4309f36"  # pragma: allowlist secret
+MAIN_LEGACY_DIGEST = "0ed65a8bc6f5ddb287d22a4591a64d29dd515cb16163fdd6844ada2f456b5c5a"  # pragma: allowlist secret
 LEGACY_ASKED = {CEDAR: [{"topic": "ALPR retention policy", "asked_on": "2026-08-01", "state": "answered", "updated_on": "2026-09-01"},
                         {"topic": "Data-sharing list", "asked_on": "2026-10-01", "state": "awaiting_response"},
                         {"topic": "Camera count", "asked_on": "2026-09-15", "state": "declined_in_writing",
