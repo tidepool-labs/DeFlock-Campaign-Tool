@@ -1820,6 +1820,9 @@ def main():
     cr_decide.add_argument("--id", type=int, required=True)
     for flag in ("--on", "--note", "--directory"):
         cr_decide.add_argument(flag, required=True)
+    cr_decide.add_argument("--correction-date", dest="correction_date", metavar="D",
+                           help="accepted only: link the one correction on the finding dated D (from the received "
+                                "date through --on); the reply draft then names it")
     cr_cmds.add_parser("list", help="Open requests first, with days_open").add_argument("--directory", required=True)
     cr_reply = cr_cmds.add_parser("reply", help="Write a private, never-sent reply draft from the recorded decision "
                                   "(kit/corrections/replies/N.md; an existing draft is never replaced)")
@@ -2419,7 +2422,8 @@ def main():
             read_config(root)
             try:
                 result = (cr.add(root, args.finding, args.received, args.summary) if args.cr_command == "add" else
-                          cr.decide(root, args.id, args.decision, args.on, args.note) if args.cr_command == "decide"
+                          cr.decide(root, args.id, args.decision, args.on, args.note,
+                                    correction_date=args.correction_date) if args.cr_command == "decide"
                           else cr.reply(root, args.id) if args.cr_command == "reply" else cr.list_requests(root))
             except ValueError as exc:
                 fixes.emit(exc)
